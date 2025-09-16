@@ -58,16 +58,25 @@ if [[ ! -d "$VENV" ]]; then
   say "Creating venv"
   python3 -m venv "$VENV"
 fi
+
 say "Installing Python deps"
  # Make sure pip/setuptools/wheel are installed & up-to-date
 "$VENV/bin/python" -m pip install --quiet --upgrade pip setuptools wheel
 
-# Check/install webrtcvad if missing
-if ! "$VENV/bin/python" -m pip show webrtcvad >/dev/null 2>&1; then
-    "$VENV/bin/pip" install --quiet webrtcvad
-else
-    say "Python deps already installed, skipping"
-fi
+# List of required packages
+PY_DEPS=(webrtcvad rnnoise noisereduce numpy)
+
+for pkg in "${PY_DEPS[@]}"; do
+    if ! "$VENV/bin/python" -m pip show "$pkg" >/dev/null 2>&1; then
+        say "Installing missing dep: $pkg"
+        if ! "$VENV/bin/pip" install --quiet "$pkg"; then
+            echo "Failed to install required package: $pkg" >&2
+            exit 1
+        fi
+    else
+        say "Python dep '$pkg' already installed, skipping"
+    fi
+done
 
 # create app tree
 sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}

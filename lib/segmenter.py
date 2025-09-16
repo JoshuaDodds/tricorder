@@ -21,6 +21,21 @@ VOICE_RATIO = 0.2
 RMS_THRESH = 500  # adjust if needed last: 1200
 vad = webrtcvad.Vad(2)
 
+# Noise reduction settings (use one or the other not both)
+USE_RNNOISE = False   # lightweight neural denoiser
+USE_NOISEREDUCE = True  # spectral gating
+
+try:
+    if USE_RNNOISE:
+        import rnnoise
+    if USE_NOISEREDUCE:
+        import noisereduce as nr
+        import numpy as np
+except ImportError:
+    print("[segmenter] Noise reduction library missing, continuing without NR")
+    USE_RNNOISE = False
+    USE_NOISEREDUCE = False
+
 
 def is_voice(buf):
     return vad.is_speech(buf, SAMPLE_RATE)
@@ -38,6 +53,26 @@ class TimelineRecorder:
         self.post_count = 0
         self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.start_index = None
+
+    @staticmethod
+    def _denoise(samples: bytes) -> bytes:
+        """Apply noise reduction to 16-bit PCM frames if enabled."""
+        if USE_RNNOISE:
+            denoiser = rnnoise.RNNoise()
+            frame_size = FRAME_BYTES  # 20 ms at 16kHz = 640 bytes
+            out = bytearray()
+            for i in range(0, len(samples), frame_size):
+                chunk = samples[i:i+frame_size]
+                if len(chunk) == frame_size:
+                    out.extend(denoiser.filter(chunk))
+            return bytes(out)
+
+        elif USE_NOISEREDUCE:
+            arr = np.frombuffer(samples, dtype=np.int16)
+            arr_denoised = nr.reduce_noise(y=arr, sr=SAMPLE_RATE)
+            return arr_denoised.astype(np.int16).tobytes()
+
+        return samples
 
     def ingest(self, buf, idx):
         voiced = is_voice(buf)
@@ -78,7 +113,7 @@ class TimelineRecorder:
             self.start_index = None
 
             # Only export if the event is "long enough"
-            min_frames = int(5 * 1000 / FRAME_MS)  # e.g. at least 0.5s
+            min_frames = int(0.5 * 1000 / FRAME_MS)  # at least 0.5s
             if (end_index - self.events[-1][0]) >= min_frames:
                 self.write_output()
                 self.frames.clear()
@@ -107,8 +142,9 @@ class TimelineRecorder:
             wf.setsampwidth(SAMPLE_WIDTH)
             wf.setframerate(SAMPLE_RATE)
             for start, end, _ in self.events:
-                for f in self.frames[start:end]:
-                    wf.writeframes(f)
+                segment = b''.join(self.frames[start:end])
+                segment = self._denoise(segment)
+                wf.writeframes(segment)
 
         # write sidecar log
         with open(log_txt, "w") as lf:
