@@ -13,18 +13,25 @@ ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 
 # padding in ms
 PRE_PAD = 2000
-POST_PAD = 10000
+POST_PAD = 15000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 VOICE_RATIO = 0.2
-RMS_THRESH = 500  # adjust if needed last: 1200
+RMS_THRESH = 300
 vad = webrtcvad.Vad(2)
+# Mic Digital Gain
+# Typical safe range: 0.5 → 4.0
+# 0.5 = halves the volume (attenuation)
+# 1.0 = no change
+# 2.0 = doubles amplitude (≈ +6 dB)
+# 4.0 = quadruples amplitude (≈ +12 dB)
+GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
 
 # Noise reduction settings
-USE_RNNOISE = False        # lightweight neural denoiser Note: No support for this yet! needs built from src. Do not use!
-USE_NOISEREDUCE = False     # spectral gating
-DENOISE_BEFORE_VAD = False  # run denoise before VAD/RMS decisions
+USE_RNNOISE = False
+USE_NOISEREDUCE = False
+DENOISE_BEFORE_VAD = False
 
 try:
     if USE_RNNOISE:
@@ -54,57 +61,71 @@ class TimelineRecorder:
         self.post_count = 0
         self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.start_index = None
+        self.last_log = time.monotonic()
+
+    @staticmethod
+    def _apply_gain(buf: bytes) -> bytes:
+        """Apply software gain safely with clipping."""
+        if GAIN == 1.0:
+            return buf
+        amplified, _ = audioop.mul(buf, SAMPLE_WIDTH, GAIN), None
+        # audioop.mul handles clipping internally
+        return amplified
 
     @staticmethod
     def _denoise(samples: bytes) -> bytes:
-        """Apply noise reduction to 16-bit PCM frames if enabled."""
         if USE_RNNOISE:
             denoiser = rnnoise.RNNoise()
-            frame_size = FRAME_BYTES  # 20 ms at 16kHz = 640 bytes
+            frame_size = FRAME_BYTES
             out = bytearray()
             for i in range(0, len(samples), frame_size):
                 chunk = samples[i:i+frame_size]
                 if len(chunk) == frame_size:
                     out.extend(denoiser.filter(chunk))
             return bytes(out)
-
         elif USE_NOISEREDUCE:
             arr = np.frombuffer(samples, dtype=np.int16)
             arr_denoised = nr.reduce_noise(y=arr, sr=SAMPLE_RATE)
             return arr_denoised.astype(np.int16).tobytes()
-
         return samples
 
     def ingest(self, buf, idx):
+        # Apply gain before analysis
+        buf = self._apply_gain(buf)
+
         if DENOISE_BEFORE_VAD:
             buf = self._denoise(buf)
 
+        rms_val = rms(buf)
         voiced = is_voice(buf)
-        loud = rms(buf) > RMS_THRESH
+        loud = rms_val > RMS_THRESH
         active = voiced and loud
+
+        # periodic debug logging
+        now = time.monotonic()
+        if now - self.last_log >= 5:
+            print(f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} active={active}", flush=True)
+            self.last_log = now
 
         self.frames.append(buf)
         self.prebuf.append(buf)
 
         if active:
             if not self.active:
-                # new event starts
                 self.start_index = max(0, idx - len(self.prebuf))
                 self.active = True
+                print(f"[segmenter] Event started at frame {self.start_index}", flush=True)
             self.post_count = POST_PAD_FRAMES
         elif self.active:
             self.post_count -= 1
             if self.post_count <= 0:
-                # finalize event
                 end_index = idx
                 etype = "HumanVoice" if voiced else "Other"
                 self.events.append((self.start_index, end_index, etype))
                 self.active = False
                 self.start_index = None
-
-                # this event is finished - export it to timeline file
+                print(f"[segmenter] Event ended at frame {end_index}", flush=True)
                 self.write_output()
-                # clear buffers so the next event starts fresh
                 self.frames.clear()
                 self.events.clear()
 
@@ -115,15 +136,14 @@ class TimelineRecorder:
             self.events.append((self.start_index, end_index, etype))
             self.active = False
             self.start_index = None
-
-            # Only export if the event is "long enough"
-            min_frames = int(0.5 * 1000 / FRAME_MS)  # at least 0.5s
+            min_frames = int(0.5 * 1000 / FRAME_MS)
             if (end_index - self.events[-1][0]) >= min_frames:
+                print(f"[segmenter] Flushing active event ending at {end_index}", flush=True)
                 self.write_output()
                 self.frames.clear()
                 self.events.clear()
             else:
-                print("[segmenter] Skipping tiny flush event (<0.5s)")
+                print("[segmenter] Skipping tiny flush event (<0.5s)", flush=True)
                 self.events.clear()
 
     def write_output(self):
@@ -147,18 +167,16 @@ class TimelineRecorder:
             wf.setframerate(SAMPLE_RATE)
             for start, end, _ in self.events:
                 segment = b''.join(self.frames[start:end])
-                if not DENOISE_BEFORE_VAD:  # only denoise at save time if not done earlier
+                if not DENOISE_BEFORE_VAD:
                     segment = self._denoise(segment)
                 wf.writeframes(segment)
 
-        # write sidecar log
         with open(log_txt, "w") as lf:
             for start, end, etype in self.events:
                 t0 = start * FRAME_MS / 1000.0
                 t1 = end * FRAME_MS / 1000.0
                 lf.write(f"{t0:.2f}–{t1:.2f} : {etype}\n")
 
-        # encode + cleanup
         cmd = [ENCODER, tmp_wav, "Timeline"]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
