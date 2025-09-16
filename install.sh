@@ -81,7 +81,7 @@ sudo cp -f systemd/*.service "$SYSTEMD_DIR/"
 sudo chmod 644 "$SYSTEMD_DIR"/*.service
 
 if command -v dos2unix >/dev/null 2>&1; then
-    find "$APP_DIR" -type f -exec dos2unix {} \; >/dev/null 2>&1
+    find "$BASE" -type f -exec dos2unix {} \; >/dev/null 2>&1
 fi
 
 # reload + enable + restart
