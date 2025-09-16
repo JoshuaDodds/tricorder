@@ -21,9 +21,10 @@ VOICE_RATIO = 0.2
 RMS_THRESH = 500  # adjust if needed last: 1200
 vad = webrtcvad.Vad(2)
 
-# Noise reduction settings (use one or the other not both)
-USE_RNNOISE = False   # lightweight neural denoiser
-USE_NOISEREDUCE = True  # spectral gating
+# Noise reduction settings
+USE_RNNOISE = False        # lightweight neural denoiser
+USE_NOISEREDUCE = True     # spectral gating
+DENOISE_BEFORE_VAD = True  # run denoise before VAD/RMS decisions
 
 try:
     if USE_RNNOISE:
@@ -75,9 +76,12 @@ class TimelineRecorder:
         return samples
 
     def ingest(self, buf, idx):
+        if DENOISE_BEFORE_VAD:
+            buf = self._denoise(buf)
+
         voiced = is_voice(buf)
         loud = rms(buf) > RMS_THRESH
-        active = voiced and (rms(buf) > RMS_THRESH)
+        active = voiced and loud
 
         self.frames.append(buf)
         self.prebuf.append(buf)
@@ -143,7 +147,8 @@ class TimelineRecorder:
             wf.setframerate(SAMPLE_RATE)
             for start, end, _ in self.events:
                 segment = b''.join(self.frames[start:end])
-                segment = self._denoise(segment)
+                if not DENOISE_BEFORE_VAD:  # only denoise at save time if not done earlier
+                    segment = self._denoise(segment)
                 wf.writeframes(segment)
 
         # write sidecar log
