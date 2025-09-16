@@ -59,6 +59,9 @@ if [[ ! -d "$VENV" ]]; then
   python3 -m venv "$VENV"
 fi
 say "Installing Python deps"
+ # Make sure pip/setuptools/wheel are installed & up-to-date
+"$VENV/bin/python" -m pip install --quiet --upgrade pip setuptools wheel
+
 # Check/install webrtcvad if missing
 if ! "$VENV/bin/python" -m pip show webrtcvad >/dev/null 2>&1; then
     "$VENV/bin/pip" install --quiet webrtcvad
