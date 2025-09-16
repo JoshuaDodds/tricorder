@@ -77,10 +77,15 @@ class TimelineRecorder:
             self.active = False
             self.start_index = None
 
-            # export whatever was active when shutting down
-            self.write_output()
-            self.frames.clear()
-            self.events.clear()
+            # Only export if the event is "long enough"
+            min_frames = int(0.5 * 1000 / FRAME_MS)  # e.g. at least 0.5s
+            if (end_index - self.events[-1][0]) >= min_frames:
+                self.write_output()
+                self.frames.clear()
+                self.events.clear()
+            else:
+                print("[segmenter] Skipping tiny flush event (<0.5s)")
+                self.events.clear()
 
     def write_output(self):
         if not self.events:
