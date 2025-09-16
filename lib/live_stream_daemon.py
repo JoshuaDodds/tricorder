@@ -27,11 +27,20 @@ ARECORD_CMD = [
 ]
 
 stop_requested = False
+p = None  # global handle to arecord process
+
 
 def handle_signal(signum, frame):
-    global stop_requested
+    """Handle SIGINT/SIGTERM by stopping main loop and killing arecord."""
+    global stop_requested, p
     print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
+    if p is not None and p.poll() is None:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+
 
 # Register signal handlers
 signal.signal(signal.SIGINT, handle_signal)
@@ -52,6 +61,7 @@ def spawn_arecord():
 
 
 def main():
+    global p
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     while not stop_requested:
         p = None
