@@ -20,6 +20,7 @@ POST_PAD_FRAMES = POST_PAD // FRAME_MS
 VOICE_RATIO = 0.2
 RMS_THRESH = 300
 vad = webrtcvad.Vad(2)
+
 # Mic Digital Gain
 # Typical safe range: 0.5 → 4.0
 # 0.5 = halves the volume (attenuation)
@@ -65,12 +66,9 @@ class TimelineRecorder:
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
-        """Apply software gain safely with clipping."""
         if GAIN == 1.0:
             return buf
-        amplified, _ = audioop.mul(buf, SAMPLE_WIDTH, GAIN), None
-        # audioop.mul handles clipping internally
-        return amplified
+        return audioop.mul(buf, SAMPLE_WIDTH, GAIN)
 
     @staticmethod
     def _denoise(samples: bytes) -> bytes:
@@ -90,7 +88,6 @@ class TimelineRecorder:
         return samples
 
     def ingest(self, buf, idx):
-        # Apply gain before analysis
         buf = self._apply_gain(buf)
 
         if DENOISE_BEFORE_VAD:
@@ -117,6 +114,15 @@ class TimelineRecorder:
                 print(f"[segmenter] Event started at frame {self.start_index}", flush=True)
             self.post_count = POST_PAD_FRAMES
         elif self.active:
+            # Speech just dropped this frame
+            reason = []
+            if not voiced:
+                reason.append("VAD=off")
+            if rms_val <= RMS_THRESH:
+                reason.append(f"RMS={rms_val} <= {RMS_THRESH}")
+            if reason:
+                print(f"[segmenter] Speech dropped at frame {idx} ({', '.join(reason)})", flush=True)
+
             self.post_count -= 1
             if self.post_count <= 0:
                 end_index = idx
@@ -124,7 +130,11 @@ class TimelineRecorder:
                 self.events.append((self.start_index, end_index, etype))
                 self.active = False
                 self.start_index = None
-                print(f"[segmenter] Event ended at frame {end_index}", flush=True)
+                print(
+                    f"[segmenter] Event ended at frame {end_index} "
+                    f"(reason: no active speech for {POST_PAD}ms)",
+                    flush=True
+                )
                 self.write_output()
                 self.frames.clear()
                 self.events.clear()
@@ -138,12 +148,12 @@ class TimelineRecorder:
             self.start_index = None
             min_frames = int(0.5 * 1000 / FRAME_MS)
             if (end_index - self.events[-1][0]) >= min_frames:
-                print(f"[segmenter] Flushing active event ending at {end_index}", flush=True)
+                print(f"[segmenter] Flushing active event ending at {end_index} (reason: shutdown)", flush=True)
                 self.write_output()
                 self.frames.clear()
                 self.events.clear()
             else:
-                print("[segmenter] Skipping tiny flush event (<0.5s)", flush=True)
+                print("[segmenter] Skipping tiny flush event (<0.5s) (reason: shutdown)", flush=True)
                 self.events.clear()
 
     def write_output(self):
