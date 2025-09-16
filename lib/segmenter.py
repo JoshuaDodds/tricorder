@@ -12,8 +12,8 @@ REC_DIR = "/apps/tricorder/recordings"
 ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 
 # padding in ms
-PRE_PAD = 2000
-POST_PAD = 2000
+adjust PRE_PAD = 10000
+POST_PAD = 10000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
@@ -78,7 +78,7 @@ class TimelineRecorder:
             self.start_index = None
 
             # Only export if the event is "long enough"
-            min_frames = int(0.5 * 1000 / FRAME_MS)  # e.g. at least 0.5s
+            min_frames = int(5 * 1000 / FRAME_MS)  # e.g. at least 0.5s
             if (end_index - self.events[-1][0]) >= min_frames:
                 self.write_output()
                 self.frames.clear()
