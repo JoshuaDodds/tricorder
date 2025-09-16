@@ -80,8 +80,9 @@ def main():
                 buf.extend(chunk)
 
                 while len(buf) >= FRAME_BYTES:
-                    frame = memoryview(buf)[:FRAME_BYTES]
-                    rec.ingest(frame.tobytes(), frame_idx)
+                    # FIX: copy slice instead of memoryview to avoid BufferError
+                    frame = bytes(buf[:FRAME_BYTES])
+                    rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
 
