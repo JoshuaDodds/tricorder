@@ -67,7 +67,7 @@ else
 fi
 
 # create app tree
-sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd}
+sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
 sudo chown -R "$USER":"$USER" "$BASE"
 
 # copy project files (idempotent overwrite)
