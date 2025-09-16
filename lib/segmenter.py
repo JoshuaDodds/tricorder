@@ -63,6 +63,12 @@ class TimelineRecorder:
                 self.active = False
                 self.start_index = None
 
+                # this event is finished - export it to timeline file
+                self.write_output()
+                # clear buffers so the next event starts fresh
+                self.frames.clear()
+                self.events.clear()
+
     def flush(self, idx):
         if self.active:
             end_index = idx

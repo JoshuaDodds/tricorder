@@ -86,9 +86,9 @@ def main():
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
 
-                    if (frame_idx - last_export_idx) >= IDLE_EXPORT_FRAMES:
-                        rec.write_output()
-                        last_export_idx = frame_idx
+                    # if (frame_idx - last_export_idx) >= IDLE_EXPORT_FRAMES:
+                    #     rec.write_output()
+                    #     last_export_idx = frame_idx
 
                 now = time.monotonic()
                 if now - last_stat >= 5:
