@@ -24,7 +24,7 @@ vad = webrtcvad.Vad(2)
 # Noise reduction settings
 USE_RNNOISE = False        # lightweight neural denoiser Note: No support for this yet! needs built from src. Do not use!
 USE_NOISEREDUCE = True     # spectral gating
-DENOISE_BEFORE_VAD = True  # run denoise before VAD/RMS decisions
+DENOISE_BEFORE_VAD = False  # run denoise before VAD/RMS decisions
 
 try:
     if USE_RNNOISE:
