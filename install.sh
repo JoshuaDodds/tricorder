@@ -59,7 +59,12 @@ if [[ ! -d "$VENV" ]]; then
   python3 -m venv "$VENV"
 fi
 say "Installing Python deps"
-"$VENV/bin/pip" install --quiet --upgrade pip webrtcvad
+# Check/install webrtcvad if missing
+if ! "$VENV/bin/python" -m pip show webrtcvad >/dev/null 2>&1; then
+    "$VENV/bin/pip" install --quiet webrtcvad
+else
+    say "Python deps already installed, skipping"
+fi
 
 # create app tree
 sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd}
