@@ -13,7 +13,7 @@ ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 
 # padding in ms
 PRE_PAD = 2000
-POST_PAD = 8000
+POST_PAD = 10000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
@@ -23,7 +23,7 @@ vad = webrtcvad.Vad(2)
 
 # Noise reduction settings
 USE_RNNOISE = False        # lightweight neural denoiser Note: No support for this yet! needs built from src. Do not use!
-USE_NOISEREDUCE = True     # spectral gating
+USE_NOISEREDUCE = False     # spectral gating
 DENOISE_BEFORE_VAD = False  # run denoise before VAD/RMS decisions
 
 try:
