@@ -53,10 +53,6 @@ else
   say "All required packages already installed"
 fi
 
-# app tree
-sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd}
-sudo chown -R "$USER":"$USER" "$BASE"
-
 # venv
 if [[ ! -d "$VENV" ]]; then
   say "Creating venv"
@@ -65,14 +61,24 @@ fi
 say "Installing Python deps"
 "$VENV/bin/pip" install --quiet --upgrade pip webrtcvad
 
+# create app tree
+sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd}
+sudo chown -R "$USER":"$USER" "$BASE"
+
 # copy project files (idempotent overwrite)
 say "Installing project files"
-# bin
-rsync -a --chmod=755 bin/ "$BASE/bin/"
-# lib
-rsync -a --chmod=755 lib/ "$BASE/lib/"
-# systemd units
-rsync -a --chmod=644 systemd/ "$SYSTEMD_DIR/"
+
+# bin (always overwrite, executable)
+sudo cp -f bin/* "$BASE/bin/"
+sudo chmod 755 "$BASE"/bin/*
+
+# lib (always overwrite, executable)
+sudo cp -f lib/* "$BASE/lib/"
+sudo chmod 755 "$BASE"/lib/*
+
+# systemd units (always overwrite, read-only)
+sudo cp -f systemd/*.service "$SYSTEMD_DIR/"
+sudo chmod 644 "$SYSTEMD_DIR"/*.service
 
 if command -v dos2unix >/dev/null 2>&1; then
     find "$APP_DIR" -type f -exec dos2unix {} \; >/dev/null 2>&1

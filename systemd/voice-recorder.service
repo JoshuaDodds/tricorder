@@ -5,12 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/apps/tricorder/venv/bin/python3 /apps/tricorder/lib/live_stream_daemon.py
+Environment=PYTHONUNBUFFERED=1
+Environment=AUDIO_DEV=plughw:CARD=Device,DEV=0
 WorkingDirectory=/apps/tricorder
+ExecStart=/apps/tricorder/venv/bin/python3 -u /apps/tricorder/lib/live_stream_daemon.py
 Restart=always
-RestartSec=2
-Nice=10
-IOSchedulingClass=idle
+RestartSec=3
+Nice=5
+StandardOutput=journal
+StandardError=journal
 NoNewPrivileges=true
 
 [Install]

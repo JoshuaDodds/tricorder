@@ -3,90 +3,124 @@ import os
 import time
 import subprocess
 import sys
-from segmenter import TimelineRecorder  # uses your current timeline aggregator
+from segmenter import TimelineRecorder, SAMPLE_RATE
 
-# 20 ms frame @ 16kHz mono 16-bit PCM
-BSIZE = 640
-
-# Export when we've been idle this long after a segment closes
-IDLE_EXPORT_SECONDS = 3.0
+# 20 ms @ 16kHz mono 16-bit PCM
 FRAME_MS = 20
+FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)  # 640
+CHUNK_BYTES = 4096  # read in bigger chunks; slice into frames
+
+# Export closed segments at most this often when we're idle
+IDLE_EXPORT_SECONDS = 3.0
 IDLE_EXPORT_FRAMES = int(IDLE_EXPORT_SECONDS * 1000 / FRAME_MS)
 
-AUDIO_DEV = "plughw:CARD=Device,DEV=0"
+# Prefer a stable device selector
+AUDIO_DEV = os.environ.get("AUDIO_DEV", "plughw:CARD=Device,DEV=0")
 
-def run_once():
-    rec = TimelineRecorder()
-    last_active_frame = None
-    frame_idx = 0
+ARECORD_CMD = [
+    "arecord",
+    "-D", AUDIO_DEV,
+    "-c", "1",
+    "-f", "S16_LE",
+    "-r", str(SAMPLE_RATE),
+    "-t", "raw",
+    "-"  # stdout
+]
 
-    cmd = [
-        "arecord",
-        "-D", AUDIO_DEV,
-        "-f", "S16_LE",
-        "-c1",
-        "-r", "16000",
-        "-q",
-        "-"  # write raw PCM to stdout
-    ]
-    print(f"[live] Launching: {' '.join(cmd)}", flush=True)
-
-    with subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0) as proc:
-        buffer = b""
-        while True:
-            data = proc.stdout.read(4096)  # read in larger blocks
-            if not data:
-                break
-            buffer += data
-            while len(buffer) >= BSIZE:
-                frame = buffer[:BSIZE]
-                buffer = buffer[BSIZE:]
-                rec.ingest(frame, "live")
-
-                # track activity
-                if getattr(rec, "active", False):
-                    last_active_frame = frame_idx
-
-                # idle export check
-                if last_active_frame is not None and not getattr(rec, "active", False):
-                    idle_frames = frame_idx - last_active_frame
-                    if idle_frames >= IDLE_EXPORT_FRAMES and rec.events:
-                        print(f"[live] Idle {idle_frames} frames → exporting timeline", flush=True)
-                        rec.write_output()
-                        rec = TimelineRecorder()
-                        last_active_frame = None
-
-                frame_idx += 1
-
-    # Process ended (device unplug or stop). Flush any trailing event and export if there’s content.
-    try:
-        rec.flush("live")
-    except TypeError:
-        # older version of TimelineRecorder.flush expects an idx; you already updated it
-        rec.flush()
-    if rec.events:
-        print("[live] arecord ended → exporting trailing timeline", flush=True)
-        rec.write_output()
+def spawn_arecord():
+    env = os.environ.copy()
+    return subprocess.Popen(
+        ARECORD_CMD,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        bufsize=0,
+        start_new_session=True,
+        env=env
+    )
 
 def main():
-    print("[live] Starting voice recorder daemon", flush=True)
+    print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     while True:
         try:
-            run_once()
-        except FileNotFoundError:
-            print("[live] ERROR: 'arecord' not found. Install alsa-utils.", flush=True)
-            time.sleep(10)
+            p = spawn_arecord()
         except Exception as e:
-            print(f"[live] arecord failed: {e}", flush=True)
+            print(f"[live] failed to launch arecord: {e!r}", flush=True)
             time.sleep(5)
-        # Small delay before retrying the device (in case of unplug)
-        print("[live] No audio device or stream ended. Retrying in 5s...", flush=True)
+            continue
+
+        rec = TimelineRecorder()
+        buf = bytearray()
+        frame_idx = 0
+        last_export_idx = 0
+        last_stat = time.monotonic()
+
+        try:
+            assert p.stdout is not None
+            stderr_fd = p.stderr.fileno() if p.stderr is not None else None
+            os.set_blocking(p.stdout.fileno(), True)
+            if stderr_fd is not None:
+                try:
+                    os.set_blocking(stderr_fd, False)
+                except Exception:
+                    pass
+
+            while True:
+                chunk = p.stdout.read(CHUNK_BYTES)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+
+                while len(buf) >= FRAME_BYTES:
+                    frame = memoryview(buf)[:FRAME_BYTES]
+                    rec.ingest(frame.tobytes(), frame_idx)
+                    del buf[:FRAME_BYTES]
+                    frame_idx += 1
+
+                    if (frame_idx - last_export_idx) >= IDLE_EXPORT_FRAMES:
+                        rec.write_output()
+                        last_export_idx = frame_idx
+
+                now = time.monotonic()
+                if now - last_stat >= 5:
+                    print(f"[live] frames={frame_idx} buf={len(buf)}B", flush=True)
+                    last_stat = now
+
+                if stderr_fd is not None:
+                    try:
+                        while True:
+                            data = os.read(stderr_fd, 4096)
+                            if not data:
+                                break
+                    except BlockingIOError:
+                        pass
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            print(f"[live] loop error: {e!r}", flush=True)
+
+        try:
+            rec.flush(frame_idx)
+            rec.write_output()
+        except Exception as e:
+            print(f"[live] flush/write_output failed: {e!r}", flush=True)
+
+        try:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+        except Exception:
+            pass
+
+        print("[live] arecord ended or device unavailable; retrying in 5s...", flush=True)
         time.sleep(5)
 
 if __name__ == "__main__":
-    # Unbuffer stdout just in case
     try:
-        import sys
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
