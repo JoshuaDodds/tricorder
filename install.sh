@@ -64,7 +64,7 @@ say "Installing Python deps"
 "$VENV/bin/python" -m pip install --quiet --upgrade pip setuptools wheel
 
 # List of required packages
-PY_DEPS=(webrtcvad rnnoise noisereduce numpy)
+PY_DEPS=(webrtcvad noisereduce numpy)
 
 for pkg in "${PY_DEPS[@]}"; do
     if ! "$VENV/bin/python" -m pip show "$pkg" >/dev/null 2>&1; then

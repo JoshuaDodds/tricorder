@@ -22,7 +22,7 @@ RMS_THRESH = 500  # adjust if needed last: 1200
 vad = webrtcvad.Vad(2)
 
 # Noise reduction settings
-USE_RNNOISE = False        # lightweight neural denoiser
+USE_RNNOISE = False        # lightweight neural denoiser Note: No support for this yet! needs built from src. Do not use!
 USE_NOISEREDUCE = True     # spectral gating
 DENOISE_BEFORE_VAD = True  # run denoise before VAD/RMS decisions
 
