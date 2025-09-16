@@ -77,6 +77,11 @@ class TimelineRecorder:
             self.active = False
             self.start_index = None
 
+            # export whatever was active when shutting down
+            self.write_output()
+            self.frames.clear()
+            self.events.clear()
+
     def write_output(self):
         if not self.events:
             print("[segmenter] No events detected")
