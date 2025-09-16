@@ -13,7 +13,7 @@ ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 
 # padding in ms
 PRE_PAD = 1000
-POST_PAD = 5000
+POST_PAD = 2000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
