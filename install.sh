@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="/apps/tricorder"
+VENV="$BASE/venv"
+SYSTEMD_DIR="/etc/systemd/system"
+
+UNITS=(voice-recorder.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer)
+
+say(){ echo "[Tricorder] $*"; }
+
+# ---------- uninstall ----------
+if [[ "${1:-}" == "--remove" ]]; then
+  echo "[Tricorder] Uninstall requested"
+
+  # Stop and disable services/paths/timers if they exist
+  for unit in voice-recorder.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer; do
+    if systemctl list-unit-files | grep -q "^$unit"; then
+      echo "[Tricorder] Disabling and stopping $unit"
+      systemctl disable --now "$unit" || true
+    fi
+  done
+
+  # Reset failed states so systemctl doesn’t keep them around
+  systemctl reset-failed
+
+  # Only remove if base is correct
+  BASE="/apps/tricorder"
+  if [[ -d "$BASE" && "$BASE" == "/apps/tricorder" ]]; then
+    rm -rf "$BASE"
+    echo "[Tricorder] Removed $BASE"
+  else
+    echo "[Tricorder] Skip removal: BASE not recognized or missing"
+  fi
+
+  echo "[Tricorder] Uninstall complete"
+  exit 0
+fi
+
+
+# ---------- install / update ----------
+say "Install/Update into $BASE"
+
+# system packages (only if missing)
+PKGS=(ffmpeg alsa-utils python3-venv python3-pip)
+MISSING=()
+for p in "${PKGS[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || MISSING+=("$p"); done
+if ((${#MISSING[@]})); then
+  say "Installing packages: ${MISSING[*]}"
+  sudo apt-get update -qq
+  sudo apt-get install -y "${MISSING[@]}"
+else
+  say "All required packages already installed"
+fi
+
+# app tree
+sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd}
+sudo chown -R "$USER":"$USER" "$BASE"
+
+# venv
+if [[ ! -d "$VENV" ]]; then
+  say "Creating venv"
+  python3 -m venv "$VENV"
+fi
+say "Installing Python deps"
+"$VENV/bin/pip" install --quiet --upgrade pip webrtcvad
+
+# copy project files (idempotent overwrite)
+say "Installing project files"
+# bin
+rsync -a --chmod=755 bin/ "$BASE/bin/"
+# lib
+rsync -a --chmod=755 lib/ "$BASE/lib/"
+# systemd units
+rsync -a --chmod=644 systemd/ "$SYSTEMD_DIR/"
+
+if command -v dos2unix >/dev/null 2>&1; then
+    find "$APP_DIR" -type f -exec dos2unix {} \; >/dev/null 2>&1
+fi
+
+# reload + enable + restart
+sudo systemctl daemon-reload
+for unit in voice-recorder.service dropbox.path tmpfs-guard.timer; do
+    sudo systemctl enable --now "$unit" || true
+    sudo systemctl restart "$unit" || true
+done
+
+
+
+say "Install complete"

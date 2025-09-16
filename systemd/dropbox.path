@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch Tricorder dropbox for new audio files
+
+[Path]
+PathModified=/apps/tricorder/dropbox
+
+[Install]
+WantedBy=multi-user.target

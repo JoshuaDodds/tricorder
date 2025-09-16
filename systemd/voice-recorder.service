@@ -1,0 +1,17 @@
+[Unit]
+Description=Tricorder Live Recorder (WebRTC VAD + RMS)
+After=sound.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/apps/tricorder/venv/bin/python3 /apps/tricorder/lib/live_stream_daemon.py
+WorkingDirectory=/apps/tricorder
+Restart=always
+RestartSec=2
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

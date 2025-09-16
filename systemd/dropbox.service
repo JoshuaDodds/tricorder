@@ -1,0 +1,7 @@
+[Unit]
+Description=Process files dropped into Tricorder dropbox
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for f in /apps/tricorder/dropbox/*; do [ -f "$f" ] && /apps/tricorder/venv/bin/python3 /apps/tricorder/lib/process_dropped_file.py "$f"; done; true'
+

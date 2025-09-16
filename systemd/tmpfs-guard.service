@@ -1,0 +1,8 @@
+[Unit]
+Description=Trim Tricorder recordings if filesystem is near full
+
+[Service]
+Type=oneshot
+ExecStart=/apps/tricorder/bin/tmpfs_guard.sh
+WorkingDirectory=/apps/tricorder
+NoNewPrivileges=true
