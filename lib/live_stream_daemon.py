@@ -3,16 +3,13 @@ import os
 import time
 import subprocess
 import sys
+import signal
 from segmenter import TimelineRecorder, SAMPLE_RATE
 
 # 20 ms @ 16kHz mono 16-bit PCM
 FRAME_MS = 20
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)  # 640
 CHUNK_BYTES = 4096  # read in bigger chunks; slice into frames
-
-# Export closed segments at most this often when we're idle
-IDLE_EXPORT_SECONDS = 3.0
-IDLE_EXPORT_FRAMES = int(IDLE_EXPORT_SECONDS * 1000 / FRAME_MS)
 
 # Prefer a stable device selector (stick with plughw to get 16kHz)
 AUDIO_DEV = os.environ.get("AUDIO_DEV", "plughw:CARD=Device,DEV=0")
@@ -28,6 +25,17 @@ ARECORD_CMD = [
     "-t", "raw",
     "-"  # stdout
 ]
+
+stop_requested = False
+
+def handle_signal(signum, frame):
+    global stop_requested
+    print(f"[live] received signal {signum}, shutting down...", flush=True)
+    stop_requested = True
+
+# Register signal handlers
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
 
 
 def spawn_arecord():
@@ -45,7 +53,7 @@ def spawn_arecord():
 
 def main():
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
-    while True:
+    while not stop_requested:
         p = None
         try:
             try:
@@ -58,37 +66,29 @@ def main():
             rec = TimelineRecorder()
             buf = bytearray()
             frame_idx = 0
-            last_export_idx = 0
             last_stat = time.monotonic()
 
             assert p.stdout is not None
             stderr_fd = p.stderr.fileno() if p.stderr is not None else None
 
-            # block on stdout
             os.set_blocking(p.stdout.fileno(), True)
-            # non-blocking stderr if possible
             if stderr_fd is not None:
                 try:
                     os.set_blocking(stderr_fd, False)
                 except Exception:
                     pass
 
-            while True:
+            while not stop_requested:
                 chunk = p.stdout.read(CHUNK_BYTES)
                 if not chunk:
                     break
                 buf.extend(chunk)
 
                 while len(buf) >= FRAME_BYTES:
-                    # FIX: copy slice instead of memoryview to avoid BufferError
                     frame = bytes(buf[:FRAME_BYTES])
                     rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
-
-                    # if (frame_idx - last_export_idx) >= IDLE_EXPORT_FRAMES:
-                    #     rec.write_output()
-                    #     last_export_idx = frame_idx
 
                 now = time.monotonic()
                 if now - last_stat >= 5:
@@ -109,7 +109,6 @@ def main():
         except Exception as e:
             print(f"[live] loop error: {e!r}", flush=True)
         finally:
-            # Final flush before exit/restart
             try:
                 if 'rec' in locals():
                     rec.flush(frame_idx)
@@ -117,7 +116,6 @@ def main():
             except Exception as e:
                 print(f"[live] flush/write_output failed: {e!r}", flush=True)
 
-            # Ensure arecord is cleaned up
             if p is not None:
                 try:
                     if p.poll() is None:
@@ -133,8 +131,11 @@ def main():
                 except Exception as e:
                     print(f"[live] cleanup error: {e!r}", flush=True)
 
-            print("[live] arecord ended or device unavailable; retrying in 5s...", flush=True)
-            time.sleep(5)
+            if not stop_requested:
+                print("[live] arecord ended or device unavailable; retrying in 5s...", flush=True)
+                time.sleep(5)
+
+    print("[live] clean shutdown complete", flush=True)
 
 
 if __name__ == "__main__":
