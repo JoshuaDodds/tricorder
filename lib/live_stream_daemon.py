@@ -121,10 +121,9 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
-                    rec.flush(frame_idx)
-                    rec.write_output()
+                    rec.flush(frame_idx)  # flush is now responsible for finalizing
             except Exception as e:
-                print(f"[live] flush/write_output failed: {e!r}", flush=True)
+                print(f"[live] flush failed: {e!r}", flush=True)
 
             if p is not None:
                 try:
