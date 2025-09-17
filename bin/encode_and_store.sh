@@ -16,7 +16,7 @@ mkdir -p "$outdir"
 outfile="$outdir/${base}.opus"
 
 nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1\
-  -i "$in_wav" -c:a libopus -b:a 32k -vbr on -application voip \
+  -i "$in_wav" -c:a libopus -b:a 48k -vbr on -application voip \
   "$outfile"
 
 rm -f "$in_wav"
