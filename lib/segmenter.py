@@ -40,7 +40,7 @@ GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
 
 # Noise reduction settings
 USE_RNNOISE = False         # do not use
-USE_NOISEREDUCE = True      # needs tested... may interfere with VAD
+USE_NOISEREDUCE = False     # needs tested... may interfere with VAD
 DENOISE_BEFORE_VAD = False  # Will interfere with VAD!
 
 # buffered writes
