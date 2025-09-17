@@ -23,10 +23,12 @@ RMS_THRESH = 380
 vad = webrtcvad.Vad(2)
 
 # DE-BOUNCE tunables
-START_CONSECUTIVE = 10   # ~60ms - number of consecutive frames over RMS to start an event
-KEEP_CONSECUTIVE = 5    # N consec. frames over RMS to ignore (avoids resetting the POST_PAD for short RMS blips/spikes)
+START_CONSECUTIVE = 10   # ~200ms - number of consecutive active frames (voiced or loud) to start an event
+KEEP_CONSECUTIVE  = 5    # in the recent window, at least this many frames must be active to reset POST_PAD
+# END_CONSECUTIVE = 10    # UNUSED (was an extra end-debounce; POST_PAD handles end behavior)
+
 # window sizes
-KEEP_WINDOW = 10         # frames (~100ms) sliding window for keep-alive
+KEEP_WINDOW = 10         # frames (~200ms) sliding window for keep-alive
 
 # Mic Digital Gain
 # Typical safe range: 0.5 → 4.0
@@ -40,6 +42,9 @@ GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
 USE_RNNOISE = False         # do not use
 USE_NOISEREDUCE = True      # needs tested... may interfere with VAD
 DENOISE_BEFORE_VAD = False  # Will interfere with VAD!
+
+# buffered writes
+FLUSH_THRESHOLD = 128 * 1024  # 128 KB chunks before flushing to disk (~4s audio at 16k/mono/16-bit)
 
 try:
     if USE_RNNOISE:
@@ -62,20 +67,34 @@ def rms(buf):
 
 
 class TimelineRecorder:
-    event_counters = collections.defaultdict(int)  # timestamp → counter
+    # timestamp (“HH-MM-SS”) → counter
+    event_counters = collections.defaultdict(int)
 
     def __init__(self):
-        self.frames = []
-        self.events = []
+        # NOTE: we no longer keep the whole event in RAM; we stream frames to a wav file as we go.
+        self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.active = False
         self.post_count = 0
-        self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
-        self.start_index = None
-        self.last_log = time.monotonic()
-        # new state trackers
+
+        # debounce trackers
         self.recent_active = collections.deque(maxlen=KEEP_WINDOW)
         self.consec_active = 0
         self.consec_inactive = 0
+
+        # logging throttle
+        self.last_log = time.monotonic()
+
+        # streaming state
+        self.wav_handle: wave.Wave_write | None = None
+        self.tmp_wav_path: str | None = None
+        self.base_name: str | None = None
+        self._io_buffer = bytearray()  # buffered write accumulator
+
+        # stats across current event (for classification + avg RMS)
+        self.frames_written = 0
+        self.sum_rms = 0
+        self.saw_voiced = False
+        self.saw_loud = False
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
@@ -95,32 +114,73 @@ class TimelineRecorder:
                     out.extend(denoiser.filter(chunk))
             return bytes(out)
         elif USE_NOISEREDUCE:
+            # noisereduce expects NumPy arrays
             arr = np.frombuffer(samples, dtype=np.int16)
             arr_denoised = nr.reduce_noise(y=arr, sr=SAMPLE_RATE)
             return arr_denoised.astype(np.int16).tobytes()
         return samples
 
-    def ingest(self, buf, idx):
+    # ---------- streaming helpers ----------
+    def _open_event_file(self, etype_hint: str):
+        """
+        Create base name and open tmp wav. We use an etype hint only for name stability;
+        final classification is computed from stats at close time and only affects logs (name is already fixed).
+        """
+        os.makedirs(TMP_DIR, exist_ok=True)
+        start_time = datetime.now().strftime("%H-%M-%S")
+        TimelineRecorder.event_counters[start_time] += 1
+        count = TimelineRecorder.event_counters[start_time]
+        self.base_name = f"{start_time}_{etype_hint}_{count}"
+
+        self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
+        self.wav_handle = wave.open(self.tmp_wav_path, "wb")
+        self.wav_handle.setnchannels(1)
+        self.wav_handle.setsampwidth(SAMPLE_WIDTH)
+        self.wav_handle.setframerate(SAMPLE_RATE)
+        self._io_buffer.clear()
+
+    def _buffered_write(self, frame: bytes):
+        """Append a frame to the in-memory buffer and flush to disk in 128 KB chunks."""
+        self._io_buffer.extend(frame)
+        if len(self._io_buffer) >= FLUSH_THRESHOLD:
+            # one big write is much cheaper than many tiny writes
+            self.wav_handle.writeframes(self._io_buffer)
+            self._io_buffer.clear()
+
+    def _flush_close_event_file(self) -> tuple[str, str] | None:
+        """Flush any remaining buffer, close WAV, move to encoder. Returns (tmp_wav_path, base_name)."""
+        if not self.wav_handle:
+            return None
+        if self._io_buffer:
+            self.wav_handle.writeframes(self._io_buffer)
+            self._io_buffer.clear()
+        self.wav_handle.close()
+        path, base = self.tmp_wav_path, self.base_name
+        self.wav_handle = None
+        self.tmp_wav_path = None
+        self.base_name = None
+        return (path, base)
+
+    # ---------- ingest / segmentation ----------
+    def ingest(self, buf: bytes, idx: int):
+        # apply gain
         buf = self._apply_gain(buf)
+        # optional denoise before analysis (note: may hurt VAD; disabled by default)
+        proc_for_analysis = self._denoise(buf) if DENOISE_BEFORE_VAD else buf
 
-        if DENOISE_BEFORE_VAD:
-            buf = self._denoise(buf)
-
-        rms_val = rms(buf)
-        voiced = is_voice(buf)
+        # per-frame analysis
+        rms_val = rms(proc_for_analysis)
+        voiced = is_voice(proc_for_analysis)
         loud = rms_val > RMS_THRESH
         frame_active = voiced or loud  # either condition = "interesting"
 
-        # logging
+        # periodic debug
         now = time.monotonic()
         if now - self.last_log >= 5:
             print(f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} loud={loud} active={frame_active}", flush=True)
             self.last_log = now
 
-        self.frames.append(buf)
-        self.prebuf.append(buf)
-
-        # update counters
+        # maintain debounce counters
         if frame_active:
             self.consec_active += 1
             self.consec_inactive = 0
@@ -129,102 +189,82 @@ class TimelineRecorder:
             self.consec_active = 0
         self.recent_active.append(frame_active)
 
+        # always capture pre-pad rolling buffer while idle
+        self.prebuf.append(buf)
+
         if not self.active:
-            # start only if sustained
+            # start only if sustained activity
             if self.consec_active >= START_CONSECUTIVE:
-                self.start_index = max(0, idx - len(self.prebuf))
+                # decide a provisional name ("Both" is neutral); final type isn't needed for filename correctness,
+                # but we keep "Both" to align with previous naming scheme.
+                self._open_event_file(etype_hint="Both")
+                # dump pre-pad into the event file
+                if self.prebuf:
+                    # if we denoise before VAD, the frames in prebuf were not denoised; write as-is or denoise on write
+                    for f in self.prebuf:
+                        f2 = f if DENOISE_BEFORE_VAD else self._denoise(f)
+                        self._buffered_write(f2)
+                        # update stats for classification
+                        self.frames_written += 1
+                        self.sum_rms += rms(f2 if DENOISE_BEFORE_VAD else proc_for_analysis)  # conservative
+                self.prebuf.clear()
+
+                # include current frame (already appended to prebuf), but since we dumped prebuf including the current
+                # frame, do not double-write it here. Just initialize runtime state.
                 self.active = True
                 self.post_count = POST_PAD_FRAMES
-                print(f"[segmenter] Event started at frame {self.start_index}", flush=True)
-        else:
-            # active event
-            if sum(self.recent_active) >= KEEP_CONSECUTIVE:
-                self.post_count = POST_PAD_FRAMES
-            else:
-                self.post_count -= 1
-
-            if self.post_count <= 0:
-                end_index = idx
-                self.events.append((self.start_index, end_index))
-                self.active = False
-                self.start_index = None
-                print(f"[segmenter] Event ended at frame {end_index}", flush=True)
-                self.write_output()
-                self.frames.clear()
-                self.events.clear()
-
-    def flush(self, idx):
-        if self.active:
-            end_index = idx
-            self.events.append((self.start_index, end_index))
-            self.active = False
-            self.start_index = None
-            min_frames = int(0.5 * 1000 / FRAME_MS)
-            if (end_index - self.events[-1][0]) >= min_frames:
-                print(f"[segmenter] Flushing active event ending at {end_index} (reason: shutdown)", flush=True)
-                self.write_output()
-            else:
-                print("[segmenter] Skipping tiny flush event (<0.5s) (reason: shutdown)", flush=True)
-            self.frames.clear()
-            self.events.clear()
-
-    def write_output(self):
-        if not self.events:
-            print("[segmenter] No events detected")
+                self.saw_voiced = voiced or self.saw_voiced
+                self.saw_loud = loud or self.saw_loud
+                # NOTE: frames_written/sum_rms already updated via prebuf loop
+                print(f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)}", flush=True)
+            # else still idle, do nothing further
             return
 
-        os.makedirs(TMP_DIR, exist_ok=True)
-        day = time.strftime("%Y%m%d")
-        outdir = os.path.join(REC_DIR, day)
-        os.makedirs(outdir, exist_ok=True)
+        # if we are here and active, write THIS frame (it wasn't part of prebuf anymore)
+        f_out = buf if DENOISE_BEFORE_VAD else self._denoise(buf)
+        self._buffered_write(f_out)
+        self.frames_written += 1
+        self.sum_rms += rms(proc_for_analysis)
+        self.saw_voiced = voiced or self.saw_voiced
+        self.saw_loud = loud or self.saw_loud
 
-        # classify event type
-        any_voiced = any(is_voice(f) for f in self.frames)
-        any_loud = any(rms(f) > RMS_THRESH for f in self.frames)
-        if any_voiced and any_loud:
-            etype = "Both"
-        elif any_voiced:
-            etype = "Human"
+        # keep-alive vs closing countdown
+        if sum(self.recent_active) >= KEEP_CONSECUTIVE:
+            self.post_count = POST_PAD_FRAMES
         else:
-            etype = "Other"
+            self.post_count -= 1
 
-        rms_vals = [rms(f) for f in self.frames]
-        avg_rms = sum(rms_vals) / len(rms_vals) if rms_vals else 0
-        print(f"[segmenter] Exporting event: type={etype}, avg_rms={avg_rms:.1f}, frames={len(self.frames)}", flush=True)
+        if self.post_count <= 0:
+            self._finalize_event(reason=f"no active input for {POST_PAD}ms")
 
-        # filename
-        start_time = datetime.now().strftime("%H-%M-%S")
-        TimelineRecorder.event_counters[start_time] += 1
-        count = TimelineRecorder.event_counters[start_time]
-        base = f"{start_time}_{etype}_{count}"
+    def _finalize_event(self, reason: str):
+        # compute classification and avg RMS from stats (no need to re-scan audio)
+        if self.frames_written <= 0:
+            # nothing meaningful recorded; just reset state
+            print("[segmenter] No frames recorded; skipping event finalize", flush=True)
+            self._reset_event_state()
+            return
 
-        tmp_wav = os.path.join(TMP_DIR, f"{base}.wav")
-        out_opus = os.path.join(outdir, f"{base}.opus")
+        etype = "Both" if (self.saw_voiced and self.saw_loud) else ("Human" if self.saw_voiced else "Other")
+        avg_rms = (self.sum_rms / self.frames_written) if self.frames_written else 0.0
 
-        #  buffered writes
-        FLUSH_THRESHOLD = 128 * 1024  # 128 KB chunks before flushing to disk
+        # We opened the file with a neutral hint. The file basename is already fixed (start time).
+        # We will pass the "base name" to the encoder so the final OPUS keeps the same basename.
+        out = self._flush_close_event_file()
+        if not out:
+            print("[segmenter] WARN: finalize called but no wav handle/path", flush=True)
+            self._reset_event_state()
+            return
+        tmp_wav_path, base = out
 
-        with wave.open(tmp_wav, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(SAMPLE_WIDTH)
-            wf.setframerate(SAMPLE_RATE)
+        print(f"[segmenter] Event ended ({reason}). type={etype}, avg_rms={avg_rms:.1f}, frames={self.frames_written}", flush=True)
 
-            buf_accum = bytearray()
-            for start, end in self.events:
-                segment = b''.join(self.frames[start:end])
-                if not DENOISE_BEFORE_VAD:
-                    segment = self._denoise(segment)
-                buf_accum.extend(segment)
+        # Ensure date dir exists (encode script handles it too, but safe)
+        day = time.strftime("%Y%m%d")
+        os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
 
-                if len(buf_accum) >= FLUSH_THRESHOLD:
-                    wf.writeframes(buf_accum)
-                    buf_accum.clear()
-
-            # final flush
-            if buf_accum:
-                wf.writeframes(buf_accum)
-
-        cmd = [ENCODER, tmp_wav, base]
+        # encode + cleanup (preserve base name)
+        cmd = [ENCODER, tmp_wav_path, base]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print("[encoder] SUCCESS")
@@ -232,6 +272,28 @@ class TimelineRecorder:
         except subprocess.CalledProcessError as e:
             print("[encoder] FAIL", e.returncode)
             print(e.stdout, e.stderr)
+
+        self._reset_event_state()
+
+    def _reset_event_state(self):
+        self.active = False
+        self.post_count = 0
+        self.recent_active.clear()
+        self.consec_active = 0
+        self.consec_inactive = 0
+        self._io_buffer.clear()
+        self.frames_written = 0
+        self.sum_rms = 0
+        self.saw_voiced = False
+        self.saw_loud = False
+
+    def flush(self, idx: int):
+        # On shutdown, if an event is open, just finalize it.
+        if self.active:
+            print(f"[segmenter] Flushing active event at frame {idx} (reason: shutdown)", flush=True)
+            self._finalize_event(reason="shutdown")
+
+    # NOTE: write_output() no longer used; streaming happens during ingest.
 
 
 def main():
@@ -244,7 +306,6 @@ def main():
         rec.ingest(buf, idx)
         idx += 1
     rec.flush(idx)
-    rec.write_output()
 
 
 if __name__ == "__main__":
