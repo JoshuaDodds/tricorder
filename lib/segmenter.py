@@ -17,7 +17,7 @@ ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 
 # padding in ms
 PRE_PAD = 1000
-POST_PAD = 1000
+POST_PAD = 3000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
@@ -247,7 +247,7 @@ class TimelineRecorder:
         rms_val = rms(proc_for_analysis)
         voiced = is_voice(proc_for_analysis)
         loud = rms_val > RMS_THRESH
-        frame_active = loud  # either condition = "interesting"
+        frame_active = loud  # can be 'voiced or loud' if you find either condition = "interesting"
 
         # periodic debug
         now = time.monotonic()
@@ -296,7 +296,19 @@ class TimelineRecorder:
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
-                print(f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)}", flush=True)
+
+                trigger = []
+                if loud:
+                    trigger.append(f"RMS>{RMS_THRESH} (rms={rms_val})")
+                if voiced:
+                    trigger.append("VAD=1")
+                trigger_info = " & ".join(trigger) if trigger else "unknown"
+
+                print(
+                    f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
+                    f"(trigger={trigger_info})",
+                    flush=True
+                )
             return  # idle until event opens
 
         # active event: enqueue current frame
