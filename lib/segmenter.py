@@ -27,11 +27,11 @@ RMS_THRESH = 400    # was 450
 vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
-START_CONSECUTIVE = 10   # ~200ms - number of consecutive active frames (voiced or loud) to start an event
-KEEP_CONSECUTIVE  = 5    # in the recent window, at least this many frames must be active to reset POST_PAD
+START_CONSECUTIVE = 20   # ~200ms - number of consecutive active frames (voiced or loud) to start an event
+KEEP_CONSECUTIVE  = 10    # in the recent window, at least this many frames must be active to reset POST_PAD
 
 # window sizes
-KEEP_WINDOW = 10         # frames (~200ms) sliding window for keep-alive
+KEEP_WINDOW = 20         # frames (~200ms) sliding window for keep-alive
 
 # Mic Digital Gain
 # Typical safe range: 0.5 → 4.0
