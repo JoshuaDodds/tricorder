@@ -247,7 +247,7 @@ class TimelineRecorder:
         rms_val = rms(proc_for_analysis)
         voiced = is_voice(proc_for_analysis)
         loud = rms_val > RMS_THRESH
-        frame_active = voiced or loud  # either condition = "interesting"
+        frame_active = loud  # either condition = "interesting"
 
         # periodic debug
         now = time.monotonic()
