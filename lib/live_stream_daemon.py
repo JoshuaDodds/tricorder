@@ -6,12 +6,10 @@ import sys
 import signal
 from segmenter import TimelineRecorder, SAMPLE_RATE
 
-# 20 ms @ 16kHz mono 16-bit PCM
 FRAME_MS = 20
-FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)  # 640
-CHUNK_BYTES = 4096  # read in bigger chunks; slice into frames
+FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
+CHUNK_BYTES = 4096
 
-# Prefer a stable device selector (stick with plughw to get 16kHz)
 AUDIO_DEV = os.environ.get("AUDIO_DEV", "plughw:CARD=Device,DEV=0")
 
 ARECORD_CMD = [
@@ -23,15 +21,14 @@ ARECORD_CMD = [
     "--buffer-size", "192000",
     "--period-size", "9600",
     "-t", "raw",
-    "-"  # stdout
+    "-"
 ]
 
 stop_requested = False
-p = None  # global handle to arecord process
+p = None
 
 
 def handle_signal(signum, frame):
-    """Handle SIGINT/SIGTERM by stopping main loop and killing arecord."""
     global stop_requested, p
     print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
@@ -42,7 +39,6 @@ def handle_signal(signum, frame):
             pass
 
 
-# Register signal handlers
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
 
@@ -76,11 +72,10 @@ def main():
             rec = TimelineRecorder()
             buf = bytearray()
             frame_idx = 0
-            last_stat = time.monotonic()
+            last_frame_time = time.monotonic()
 
             assert p.stdout is not None
             stderr_fd = p.stderr.fileno() if p.stderr is not None else None
-
             os.set_blocking(p.stdout.fileno(), True)
             if stderr_fd is not None:
                 try:
@@ -99,11 +94,12 @@ def main():
                     rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
+                    last_frame_time = time.monotonic()
 
                 now = time.monotonic()
-                if now - last_stat >= 5:
-                    print(f"[live] frames={frame_idx} buf={len(buf)}B", flush=True)
-                    last_stat = now
+                if now - last_frame_time > 10:
+                    print("[live] stall detected (>10s no frames), restarting arecord", flush=True)
+                    break
 
                 if stderr_fd is not None:
                     try:
@@ -111,6 +107,7 @@ def main():
                             data = os.read(stderr_fd, 4096)
                             if not data:
                                 break
+                        # drop arecord stderr
                     except BlockingIOError:
                         pass
                     except Exception:
@@ -121,7 +118,7 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
-                    rec.flush(frame_idx)  # flush is now responsible for finalizing
+                    rec.flush(frame_idx)
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 
