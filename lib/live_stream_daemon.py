@@ -18,8 +18,8 @@ ARECORD_CMD = [
     "-c", "1",
     "-f", "S16_LE",
     "-r", str(SAMPLE_RATE),
-    "--buffer-size", "192000",
-    "--period-size", "9600",
+    "--buffer-size", "48000",
+    "--period-size", "2400",
     "-t", "raw",
     "-"
 ]
