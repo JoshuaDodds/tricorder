@@ -18,12 +18,12 @@ ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 # POST_PAD: how long (ms) to keep recording after activity stops,
 #           prevents chopping during short pauses or gaps in sound.
 PRE_PAD = 2000
-POST_PAD = 5 * 60000
+POST_PAD = 2000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 500    # was 450
+RMS_THRESH = 450    # was 450
 vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
