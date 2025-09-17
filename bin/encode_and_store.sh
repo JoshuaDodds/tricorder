@@ -22,8 +22,8 @@ outfile="$outdir/${base}.opus"
 #   This is far less artifact-prone on steady noises than 'voip' at 32 kbps.
 # - One thread to reduce CPU spikes on the Zero 2 W.
 nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
-  -ac 1 -ar 48000 -sample_fmt s16 \
   -i "$in_wav" \
+  -ac 1 -ar 48000 -sample_fmt s16 \
   -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
   "$outfile"
 
