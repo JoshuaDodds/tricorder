@@ -18,9 +18,15 @@ POST_PAD = 15000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
-VOICE_RATIO = 0.2
+# thresholds
 RMS_THRESH = 300
 vad = webrtcvad.Vad(2)
+
+# DE-BOUNCE tunables
+START_CONSECUTIVE = 10   # ~60ms - number of consecutive frames over RMS to start an event
+KEEP_CONSECUTIVE = 5    # N consec. frames over RMS to ignore (avoids resetting the POST_PAD for short RMS blips/spikes)
+# window sizes
+KEEP_WINDOW = 10         # frames (~100ms) sliding window for keep-alive
 
 # Mic Digital Gain
 # Typical safe range: 0.5 → 4.0
@@ -31,9 +37,9 @@ vad = webrtcvad.Vad(2)
 GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
 
 # Noise reduction settings
-USE_RNNOISE = False # do not use
-USE_NOISEREDUCE = False # needs tested... may interfere with VAD
-DENOISE_BEFORE_VAD = False # Will interfere with VAD!
+USE_RNNOISE = False         # do not use
+USE_NOISEREDUCE = False     # needs tested... may interfere with VAD
+DENOISE_BEFORE_VAD = False  # Will interfere with VAD!
 
 try:
     if USE_RNNOISE:
@@ -66,6 +72,10 @@ class TimelineRecorder:
         self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.start_index = None
         self.last_log = time.monotonic()
+        # new state trackers
+        self.recent_active = collections.deque(maxlen=KEEP_WINDOW)
+        self.consec_active = 0
+        self.consec_inactive = 0
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
@@ -99,38 +109,46 @@ class TimelineRecorder:
         rms_val = rms(buf)
         voiced = is_voice(buf)
         loud = rms_val > RMS_THRESH
-        active = voiced or loud  # <-- either condition keeps it alive
+        frame_active = voiced or loud  # either condition = "interesting"
 
+        # logging
         now = time.monotonic()
         if now - self.last_log >= 5:
-            print(f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} active={active}", flush=True)
+            print(f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} loud={loud} active={frame_active}", flush=True)
             self.last_log = now
 
         self.frames.append(buf)
         self.prebuf.append(buf)
 
-        if active:
-            if not self.active:
+        # update counters
+        if frame_active:
+            self.consec_active += 1
+            self.consec_inactive = 0
+        else:
+            self.consec_inactive += 1
+            self.consec_active = 0
+        self.recent_active.append(frame_active)
+
+        if not self.active:
+            # start only if sustained
+            if self.consec_active >= START_CONSECUTIVE:
                 self.start_index = max(0, idx - len(self.prebuf))
                 self.active = True
+                self.post_count = POST_PAD_FRAMES
                 print(f"[segmenter] Event started at frame {self.start_index}", flush=True)
-            self.post_count = POST_PAD_FRAMES
-        elif self.active:
-            # Speech just dropped this frame
-            reason = []
-            if not voiced:
-                reason.append("VAD=off")
-            if not loud:
-                reason.append(f"RMS={rms_val} <= {RMS_THRESH}")
-            print(f"[segmenter] Speech dropped at frame {idx} ({', '.join(reason)})", flush=True)
+        else:
+            # active event
+            if sum(self.recent_active) >= KEEP_CONSECUTIVE:
+                self.post_count = POST_PAD_FRAMES
+            else:
+                self.post_count -= 1
 
-            self.post_count -= 1
             if self.post_count <= 0:
                 end_index = idx
                 self.events.append((self.start_index, end_index))
                 self.active = False
                 self.start_index = None
-                print(f"[segmenter] Event ended at frame {end_index} (reason: no active input for {POST_PAD}ms)", flush=True)
+                print(f"[segmenter] Event ended at frame {end_index}", flush=True)
                 self.write_output()
                 self.frames.clear()
                 self.events.clear()
@@ -170,7 +188,6 @@ class TimelineRecorder:
         else:
             etype = "Other"
 
-        # compute avg RMS
         rms_vals = [rms(f) for f in self.frames]
         avg_rms = sum(rms_vals) / len(rms_vals) if rms_vals else 0
         print(f"[segmenter] Exporting event: type={etype}, avg_rms={avg_rms:.1f}, frames={len(self.frames)}", flush=True)
@@ -194,7 +211,7 @@ class TimelineRecorder:
                     segment = self._denoise(segment)
                 wf.writeframes(segment)
 
-        cmd = [ENCODER, tmp_wav, base_name]
+        cmd = [ENCODER, tmp_wav, base]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print("[encoder] SUCCESS")
