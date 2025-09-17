@@ -19,7 +19,7 @@ PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 300
+RMS_THRESH = 380
 vad = webrtcvad.Vad(2)
 
 # DE-BOUNCE tunables
@@ -201,16 +201,28 @@ class TimelineRecorder:
         tmp_wav = os.path.join(TMP_DIR, f"{base}.wav")
         out_opus = os.path.join(outdir, f"{base}.opus")
 
+        #  buffered writes
+        FLUSH_THRESHOLD = 128 * 1024  # 128 KB chunks before flushing to disk
+
         with wave.open(tmp_wav, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(SAMPLE_WIDTH)
             wf.setframerate(SAMPLE_RATE)
+
+            buf_accum = bytearray()
             for start, end in self.events:
-                for f in self.frames[start:end]:
-                    frame = f
-                    if not DENOISE_BEFORE_VAD:
-                        frame = self._denoise(frame)
-                    wf.writeframes(frame)
+                segment = b''.join(self.frames[start:end])
+                if not DENOISE_BEFORE_VAD:
+                    segment = self._denoise(segment)
+                buf_accum.extend(segment)
+
+                if len(buf_accum) >= FLUSH_THRESHOLD:
+                    wf.writeframes(buf_accum)
+                    buf_accum.clear()
+
+            # final flush
+            if buf_accum:
+                wf.writeframes(buf_accum)
 
         cmd = [ENCODER, tmp_wav, base]
         try:
