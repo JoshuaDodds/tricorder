@@ -28,6 +28,23 @@ stop_requested = False
 p = None
 
 
+def reset_usb():
+    try:
+        print("[live] attempting USB controller reset...", flush=True)
+        subprocess.run(
+            ["sh", "-c", "echo -n '3f980000.usb' > /sys/bus/platform/drivers/dwc2/unbind"],
+            check=True
+        )
+        time.sleep(1)
+        subprocess.run(
+            ["sh", "-c", "echo -n '3f980000.usb' > /sys/bus/platform/drivers/dwc2/bind"],
+            check=True
+        )
+        print("[live] USB reset complete", flush=True)
+    except Exception as e:
+        print(f"[live] USB reset failed: {e!r}", flush=True)
+
+
 def handle_signal(signum, frame):
     global stop_requested, p
     print(f"[live] received signal {signum}, shutting down...", flush=True)
@@ -139,6 +156,7 @@ def main():
 
             if not stop_requested:
                 print("[live] arecord ended or device unavailable; retrying in 5s...", flush=True)
+                reset_usb()
                 time.sleep(5)
 
     print("[live] clean shutdown complete", flush=True)
