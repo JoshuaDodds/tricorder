@@ -38,7 +38,7 @@ GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
 
 # Noise reduction settings
 USE_RNNOISE = False         # do not use
-USE_NOISEREDUCE = False     # needs tested... may interfere with VAD
+USE_NOISEREDUCE = True      # needs tested... may interfere with VAD
 DENOISE_BEFORE_VAD = False  # Will interfere with VAD!
 
 try:
@@ -206,10 +206,11 @@ class TimelineRecorder:
             wf.setsampwidth(SAMPLE_WIDTH)
             wf.setframerate(SAMPLE_RATE)
             for start, end in self.events:
-                segment = b''.join(self.frames[start:end])
-                if not DENOISE_BEFORE_VAD:
-                    segment = self._denoise(segment)
-                wf.writeframes(segment)
+                for f in self.frames[start:end]:
+                    frame = f
+                    if not DENOISE_BEFORE_VAD:
+                        frame = self._denoise(frame)
+                    wf.writeframes(frame)
 
         cmd = [ENCODER, tmp_wav, base]
         try:
