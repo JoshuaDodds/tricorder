@@ -31,9 +31,9 @@ vad = webrtcvad.Vad(2)
 GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
 
 # Noise reduction settings
-USE_RNNOISE = False
-USE_NOISEREDUCE = False
-DENOISE_BEFORE_VAD = False
+USE_RNNOISE = False # do not use
+USE_NOISEREDUCE = False # needs tested... may interfere with VAD
+DENOISE_BEFORE_VAD = False # Will interfere with VAD!
 
 try:
     if USE_RNNOISE:
@@ -194,7 +194,7 @@ class TimelineRecorder:
                     segment = self._denoise(segment)
                 wf.writeframes(segment)
 
-        cmd = [ENCODER, tmp_wav, etype]
+        cmd = [ENCODER, tmp_wav, base_name]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print("[encoder] SUCCESS")
