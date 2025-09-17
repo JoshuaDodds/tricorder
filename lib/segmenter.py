@@ -23,7 +23,7 @@ PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 450    # was 450
+RMS_THRESH = 300    # was 450
 vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
