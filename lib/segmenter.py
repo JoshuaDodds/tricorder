@@ -15,14 +15,17 @@ TMP_DIR = "/apps/tricorder/tmp"
 REC_DIR = "/apps/tricorder/recordings"
 ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 
-# padding in ms
-PRE_PAD = 1000
-POST_PAD = 3000
+# PRE_PAD: amount of audio (ms) saved *before* event trigger,
+#          ensures leading context isn’t lost (like the first spoken word).
+# POST_PAD: how long (ms) to keep recording after activity stops,
+#           prevents chopping during short pauses or gaps in sound.
+PRE_PAD = 2000
+POST_PAD = 5 * 60000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 450
+RMS_THRESH = 500    # was 450
 vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
