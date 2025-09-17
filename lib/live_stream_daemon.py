@@ -10,7 +10,7 @@ FRAME_MS = 20
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 
-AUDIO_DEV = os.environ.get("AUDIO_DEV", "plughw:CARD=Device,DEV=0")
+AUDIO_DEV = os.environ.get("AUDIO_DEV", "hw:CARD=Device,DEV=0")
 
 ARECORD_CMD = [
     "arecord",
