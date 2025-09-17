@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, time, collections, subprocess, wave
 import webrtcvad, audioop
+from datetime import datetime
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2   # 16-bit
@@ -55,6 +56,8 @@ def rms(buf):
 
 
 class TimelineRecorder:
+    event_counters = collections.defaultdict(int)  # timestamp → counter
+
     def __init__(self):
         self.frames = []
         self.events = []
@@ -96,9 +99,8 @@ class TimelineRecorder:
         rms_val = rms(buf)
         voiced = is_voice(buf)
         loud = rms_val > RMS_THRESH
-        active = voiced and loud
+        active = voiced or loud  # <-- either condition keeps it alive
 
-        # periodic debug logging
         now = time.monotonic()
         if now - self.last_log >= 5:
             print(f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} active={active}", flush=True)
@@ -118,23 +120,17 @@ class TimelineRecorder:
             reason = []
             if not voiced:
                 reason.append("VAD=off")
-            if rms_val <= RMS_THRESH:
+            if not loud:
                 reason.append(f"RMS={rms_val} <= {RMS_THRESH}")
-            if reason:
-                print(f"[segmenter] Speech dropped at frame {idx} ({', '.join(reason)})", flush=True)
+            print(f"[segmenter] Speech dropped at frame {idx} ({', '.join(reason)})", flush=True)
 
             self.post_count -= 1
             if self.post_count <= 0:
                 end_index = idx
-                etype = "HumanVoice" if voiced else "Other"
-                self.events.append((self.start_index, end_index, etype))
+                self.events.append((self.start_index, end_index))
                 self.active = False
                 self.start_index = None
-                print(
-                    f"[segmenter] Event ended at frame {end_index} "
-                    f"(reason: no active speech for {POST_PAD}ms)",
-                    flush=True
-                )
+                print(f"[segmenter] Event ended at frame {end_index} (reason: no active input for {POST_PAD}ms)", flush=True)
                 self.write_output()
                 self.frames.clear()
                 self.events.clear()
@@ -142,19 +138,17 @@ class TimelineRecorder:
     def flush(self, idx):
         if self.active:
             end_index = idx
-            etype = "HumanVoice"
-            self.events.append((self.start_index, end_index, etype))
+            self.events.append((self.start_index, end_index))
             self.active = False
             self.start_index = None
             min_frames = int(0.5 * 1000 / FRAME_MS)
             if (end_index - self.events[-1][0]) >= min_frames:
                 print(f"[segmenter] Flushing active event ending at {end_index} (reason: shutdown)", flush=True)
                 self.write_output()
-                self.frames.clear()
-                self.events.clear()
             else:
                 print("[segmenter] Skipping tiny flush event (<0.5s) (reason: shutdown)", flush=True)
-                self.events.clear()
+            self.frames.clear()
+            self.events.clear()
 
     def write_output(self):
         if not self.events:
@@ -166,28 +160,41 @@ class TimelineRecorder:
         outdir = os.path.join(REC_DIR, day)
         os.makedirs(outdir, exist_ok=True)
 
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        tmp_wav = os.path.join(TMP_DIR, f"timeline_{ts}.wav")
-        log_txt = os.path.join(outdir, f"timeline_{ts}.log")
-        out_opus = os.path.join(outdir, f"timeline_{ts}.opus")
+        # classify event type
+        any_voiced = any(is_voice(f) for f in self.frames)
+        any_loud = any(rms(f) > RMS_THRESH for f in self.frames)
+        if any_voiced and any_loud:
+            etype = "Both"
+        elif any_voiced:
+            etype = "Human"
+        else:
+            etype = "Other"
+
+        # compute avg RMS
+        rms_vals = [rms(f) for f in self.frames]
+        avg_rms = sum(rms_vals) / len(rms_vals) if rms_vals else 0
+        print(f"[segmenter] Exporting event: type={etype}, avg_rms={avg_rms:.1f}, frames={len(self.frames)}", flush=True)
+
+        # filename
+        start_time = datetime.now().strftime("%H-%M-%S")
+        TimelineRecorder.event_counters[start_time] += 1
+        count = TimelineRecorder.event_counters[start_time]
+        base = f"{start_time}_{etype}_{count}"
+
+        tmp_wav = os.path.join(TMP_DIR, f"{base}.wav")
+        out_opus = os.path.join(outdir, f"{base}.opus")
 
         with wave.open(tmp_wav, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(SAMPLE_WIDTH)
             wf.setframerate(SAMPLE_RATE)
-            for start, end, _ in self.events:
+            for start, end in self.events:
                 segment = b''.join(self.frames[start:end])
                 if not DENOISE_BEFORE_VAD:
                     segment = self._denoise(segment)
                 wf.writeframes(segment)
 
-        with open(log_txt, "w") as lf:
-            for start, end, etype in self.events:
-                t0 = start * FRAME_MS / 1000.0
-                t1 = end * FRAME_MS / 1000.0
-                lf.write(f"{t0:.2f}–{t1:.2f} : {etype}\n")
-
-        cmd = [ENCODER, tmp_wav, "Timeline"]
+        cmd = [ENCODER, tmp_wav, etype]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print("[encoder] SUCCESS")
