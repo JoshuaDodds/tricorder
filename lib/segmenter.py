@@ -28,7 +28,7 @@ vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
 START_CONSECUTIVE = 30   # ~800ms - number of consecutive active frames (voiced or loud) to start an event
-KEEP_CONSECUTIVE  = 15    # in the recent window, at least this many frames must be active to reset POST_PAD
+KEEP_CONSECUTIVE  = 10    # in the recent window, at least this many frames must be active to reset POST_PAD
 
 # window sizes
 KEEP_WINDOW = 30         # frames (~800ms) sliding window for keep-alive
