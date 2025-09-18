@@ -82,8 +82,26 @@ sudo chmod 755 "$BASE"/lib/*
 sudo cp -f systemd/*.service "$SYSTEMD_DIR/"
 sudo chmod 644 "$SYSTEMD_DIR"/*.service
 
+# normalize line endings only in our source trees
 if command -v dos2unix >/dev/null 2>&1; then
-    find "$BASE" -type f -exec dos2unix {} \; >/dev/null 2>&1
+  for d in bin lib systemd; do
+    if [[ -d "$BASE/$d" ]]; then
+      find "$BASE/$d" -type f -exec dos2unix {} \; >/dev/null 2>&1
+    fi
+  done
+fi
+
+# dev-only helpers (optional)
+if [[ "${DEV:-0}" == "1" ]]; then
+  say "Installing dev helpers (main.py, __init__.py)"
+  if [[ -f main.py ]]; then
+    sudo cp -f main.py "$BASE/"
+    sudo chmod 755 "$BASE/main.py"
+  fi
+  if [[ -f __init__.py ]]; then
+    sudo cp -f __init__.py "$BASE/"
+    sudo chmod 644 "$BASE/__init__.py"
+  fi
 fi
 
 # reload + enable + restart
@@ -93,7 +111,5 @@ sudo systemctl daemon-reload
 #    sudo systemctl enable --now "$unit" || true
 #    sudo systemctl restart "$unit" || true
 #done
-
-
 
 say "Install complete"
