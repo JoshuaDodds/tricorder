@@ -28,7 +28,7 @@ ARECORD_CMD = [
 stop_requested = False
 p = None
 
-def handle_signal(signum):
+def handle_signal(signum, frame):
     global stop_requested, p
     print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
