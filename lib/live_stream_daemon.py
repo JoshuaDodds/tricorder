@@ -28,7 +28,7 @@ ARECORD_CMD = [
 stop_requested = False
 p = None
 
-def handle_signal(signum, frame):
+def handle_signal(signum, frame):  # noqa
     global stop_requested, p
     print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
@@ -57,7 +57,8 @@ def spawn_arecord():
 
 
 def main():
-    global p
+    global p, stop_requested
+    stop_requested = False  # reset on each new run
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     while not stop_requested:
         p = None
