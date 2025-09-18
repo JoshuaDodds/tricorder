@@ -32,23 +32,27 @@ def _log(msg: str):
 
 def reset_usb() -> bool:
     """
-    Reset the DWC2 USB controller (Raspberry Pi Zero).
-    Returns True if both unbind/bind commands executed without raising.
+    Reset the DWC2 USB controller on Raspberry Pi Zero 2 W.
+    Equivalent to:
+        echo -n "3f980000.usb" > /sys/bus/platform/drivers/dwc2/unbind
+        sleep 1
+        echo -n "3f980000.usb" > /sys/bus/platform/drivers/dwc2/bind
     """
-    ctrl = "3f980000.usb"  # DWC2 controller on Pi Zero
+    ctrl = "3f980000.usb"
+    unbind = "/sys/bus/platform/drivers/dwc2/unbind"
+    bind = "/sys/bus/platform/drivers/dwc2/bind"
+
     try:
-        _log("[fault] attempting USB controller reset (dwc2)")
-        # Unbind
-        subprocess.run(
-            ["sh", "-c", f"echo -n '{ctrl}' > /sys/bus/platform/drivers/dwc2/unbind"],
-            check=True,
-        )
-        time.sleep(1)
-        # Bind
-        subprocess.run(
-            ["sh", "-c", f"echo -n '{ctrl}' > /sys/bus/platform/drivers/dwc2/bind"],
-            check=True,
-        )
+        _log("[fault] USB reset: unbinding controller")
+        with open(unbind, "wb", buffering=0) as f:
+            f.write(ctrl.encode("ascii"))  # no newline
+        time.sleep(1.0)
+
+        _log("[fault] USB reset: binding controller")
+        with open(bind, "wb", buffering=0) as f:
+            f.write(ctrl.encode("ascii"))  # no newline
+        time.sleep(2.0)
+
         _log("[fault] USB reset complete")
         return True
     except Exception as e:
