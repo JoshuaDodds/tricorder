@@ -21,6 +21,29 @@ This project is designed for **single-purpose deployment** on a dedicated device
 
 ---
 
+# Tricorder Architecture
+
+```mermaid
+graph TD
+    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py]
+    B -->|frames| C[segmenter.py]
+    C -->|tmp wav| D[encode_and_store.sh]
+    D -->|opus files| E[/apps/tricorder/recordings]
+
+    subgraph Dropbox Ingestion
+        F[Incoming File in /apps/tricorder/dropbox] --> G[process_dropped_file.py]
+        G --> C
+    end
+
+    subgraph System Management
+        H[voice-recorder.service] --> B
+        I[dropbox.path + dropbox.service] --> G
+        J[tmpfs-guard.timer + tmpfs-guard.service] --> E
+    end
+```
+
+---
+
 ## Project Structure
 
 ```text
