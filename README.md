@@ -28,10 +28,10 @@ graph TD
     A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py]
     B -->|frames| C[segmenter.py]
     C -->|tmp wav| D[encode_and_store.sh]
-    D -->|opus files| E[/apps/tricorder/recordings]
+    D -->|opus files| E["recordings dir (/apps/tricorder/recordings)"]
 
     subgraph Dropbox Ingestion
-        F[Incoming File in /apps/tricorder/dropbox] --> G[process_dropped_file.py]
+        F["Incoming File (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py]
         G --> C
     end
 
