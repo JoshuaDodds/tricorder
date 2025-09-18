@@ -21,6 +21,16 @@ Note: This project is pinned to Python ≥3.10 with requirements.txt to ensure c
 - Systemd-managed services for recording, encoding, storage, and syncing
 - Automatic tmpfs space guard and log rotation
 
+---
+
+## Why the name “Tricorder”?
+
+The name is both a nod to the *Star Trek* tricorder (a portable device that continuously scans and records signals)  
+and a literal description of this project’s **three core recording functions**:
+
+1. **Audio-triggered recording** – capture events only when the input exceeds a sound threshold.  
+2. **Voice Activity Detection (VAD)** – segment speech and other meaningful sounds from noise.  
+3. **External file ingestion** – process/ingest external recordings, trimming away uninteresting parts automatically.
 
 ---
 
