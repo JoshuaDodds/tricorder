@@ -15,10 +15,10 @@ if [[ "${1:-}" == "--remove" ]]; then
 
   # Stop and disable services/paths/timers if they exist
   for unit in voice-recorder.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer; do
-    if systemctl list-unit-files | grep -q "^$unit"; then
-      echo "[Tricorder] Disabling and stopping $unit"
-      systemctl disable --now "$unit" || true
-    fi
+    echo "[Tricorder] Disabling and stopping $unit"
+    systemctl disable --now "$unit" 2>/dev/null || true
+    systemctl reset-failed "$unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$unit"
   done
 
   # Reset failed states so systemctl doesn’t keep them around
@@ -30,7 +30,7 @@ if [[ "${1:-}" == "--remove" ]]; then
     rm -rf "$BASE"
     echo "[Tricorder] Removed $BASE"
   else
-    echo "[Tricorder] Skip removal: BASE not recognized or missing"
+    echo "[Tricorder] Skip install location removal: \"$BASE\" does not exist."
   fi
 
   echo "[Tricorder] Uninstall complete"
