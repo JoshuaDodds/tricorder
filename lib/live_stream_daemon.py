@@ -5,6 +5,7 @@ import subprocess
 import sys
 import signal
 from segmenter import TimelineRecorder, SAMPLE_RATE
+from tricorder.lib.fault_handler import reset_usb
 
 FRAME_MS = 20
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
@@ -26,24 +27,6 @@ ARECORD_CMD = [
 
 stop_requested = False
 p = None
-
-
-def reset_usb():
-    try:
-        print("[live] attempting USB controller reset...", flush=True)
-        subprocess.run(
-            ["sh", "-c", "echo -n '3f980000.usb' > /sys/bus/platform/drivers/dwc2/unbind"],
-            check=True
-        )
-        time.sleep(1)
-        subprocess.run(
-            ["sh", "-c", "echo -n '3f980000.usb' > /sys/bus/platform/drivers/dwc2/bind"],
-            check=True
-        )
-        print("[live] USB reset complete", flush=True)
-    except Exception as e:
-        print(f"[live] USB reset failed: {e!r}", flush=True)
-
 
 def handle_signal(signum, frame):
     global stop_requested, p
@@ -135,7 +118,7 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
-                    rec.flush(frame_idx)
+                    rec.flush(frame_idx) # noqa
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 
