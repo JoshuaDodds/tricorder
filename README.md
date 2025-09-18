@@ -7,6 +7,9 @@ for processing.
 
 This project is designed for **single-purpose deployment** on a dedicated device.
 
+Note: This project is pinned to Python ≥3.10 with requirements.txt to ensure consistent builds on Raspberry Pi Zero 2W 
+(armhf/arm64 wheels).
+
 ---
 
 ## Features
@@ -109,7 +112,7 @@ tricorder/
 
 ## TODO (next improvements)
 
-- [ ] Pin Python version (≥3.10) and dependencies; add `requirements.txt` with exact versions for Pi Zero 2 W (armhf/arm64 wheels).
+- [x] Pin Python version (≥3.10) and dependencies; add `requirements.txt` with exact versions for Pi Zero 2 W (armhf/arm64 wheels).
 - [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
 - [ ] Harden `dropbox.service` ingestion loop to avoid race with partial files.
 - [ ] Add cleanup on encoder failures to remove temp WAVs.

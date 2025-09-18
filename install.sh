@@ -60,23 +60,8 @@ if [[ ! -d "$VENV" ]]; then
 fi
 
 say "Installing Python deps"
- # Make sure pip/setuptools/wheel are installed & up-to-date
 "$VENV/bin/python" -m pip install --quiet --upgrade pip setuptools wheel
-
-# List of required packages
-PY_DEPS=(webrtcvad noisereduce numpy)
-
-for pkg in "${PY_DEPS[@]}"; do
-    if ! "$VENV/bin/python" -m pip show "$pkg" >/dev/null 2>&1; then
-        say "Installing missing dep: $pkg"
-        if ! "$VENV/bin/pip" install --quiet "$pkg"; then
-            echo "Failed to install required package: $pkg" >&2
-            exit 1
-        fi
-    else
-        say "Python dep '$pkg' already installed, skipping"
-    fi
-done
+"$VENV/bin/pip" install --quiet -r requirements.txt
 
 # create app tree
 sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
