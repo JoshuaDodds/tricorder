@@ -6,3 +6,6 @@ Type=oneshot
 ExecStart=/apps/tricorder/bin/tmpfs_guard.sh
 WorkingDirectory=/apps/tricorder
 NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

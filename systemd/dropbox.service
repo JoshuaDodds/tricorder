@@ -12,3 +12,5 @@ ExecStartPre=/usr/bin/mkdir -p /apps/tricorder/dropbox /apps/tricorder/tmp/inges
 ExecStart=/usr/bin/flock -n /run/tricorder/dropbox.lock /apps/tricorder/venv/bin/python3 -m lib.process_dropped_file --scan
 # ExecStart=/bin/bash -c 'for f in /apps/tricorder/dropbox/*; do [ -f "$f" ] && /apps/tricorder/venv/bin/python3 /apps/tricorder/lib/process_dropped_file.py "$f"; done; true'
 
+[Install]
+WantedBy=multi-user.target
