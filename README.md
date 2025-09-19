@@ -153,7 +153,7 @@ tricorder/
 
 - [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
 - [x] Harden `dropbox.service` ingestion loop to avoid race with partial files.
-- [ ] Gate debug logging behind environment variable to reduce journald volume.
+- [x] Gate debug logging behind environment variable to reduce journald volume.
 - [ ] Document audio device configuration (`arecord -l`) and how to override `AUDIO_DEV`.
 - [ ] Add self-test script/service to record, encode, and verify an event end-to-end.
 

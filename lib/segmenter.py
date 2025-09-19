@@ -63,6 +63,8 @@ DENOISE_BEFORE_VAD = False  # Will interfere with VAD!
 FLUSH_THRESHOLD = 128 * 1024  # 128 KB chunks before flushing to disk
 MAX_QUEUE_FRAMES = 512        # safety cap on queued frames (~327 KB)
 
+# Verbose debug controlled by DEV=1
+DEBUG_VERBOSE = os.getenv("DEV") == "1"
 
 try:
     if USE_RNNOISE:
@@ -237,9 +239,9 @@ class TimelineRecorder:
         loud = rms_val > RMS_THRESH
         frame_active = loud  # primary trigger
 
-        # once per second debug
+        # once per second debug (only in DEV=1)
         now = time.monotonic()
-        if now - self.last_log >= 1.0:
+        if DEBUG_VERBOSE and (now - self.last_log >= 1.0):
             print(
                 f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} loud={loud} "
                 f"active={frame_active} capturing={self.active}",
