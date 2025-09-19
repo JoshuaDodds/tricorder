@@ -1,4 +1,8 @@
 # requirements.txt
+pip==24.0
+setuptools==68.1.2
+wheel==0.42.0
 webrtcvad==2.0.10
 noisereduce==3.0.3
 numpy==1.26.4
+

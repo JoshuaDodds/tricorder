@@ -60,8 +60,7 @@ if [[ ! -d "$VENV" ]]; then
 fi
 
 say "Installing Python deps"
-"$VENV/bin/python" -m pip install --quiet --upgrade pip setuptools wheel
-"$VENV/bin/pip" install --quiet -r requirements.txt
+"$VENV/bin/pip" install --upgrade --no-cache-dir -r requirements.txt
 
 # create app tree
 sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
