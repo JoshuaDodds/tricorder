@@ -14,8 +14,8 @@ warnings.filterwarnings(
     category=UserWarning,
     message="pkg_resources is deprecated as an API.*"
 )
-import webrtcvad
-import audioop
+import webrtcvad    # noqa
+import audioop      # noqa
 
 SAMPLE_RATE = 48000
 SAMPLE_WIDTH = 2   # 16-bit
