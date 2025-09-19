@@ -111,7 +111,6 @@ def process_file(path):
 
     # Ensure finalization of last segment(s)
     rec.flush(idx)
-    rec.write_output()
     print(f"[dropbox] Finished processing {path}", flush=True)
 
 if __name__ == "__main__":
