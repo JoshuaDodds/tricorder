@@ -140,6 +140,7 @@ if [[ "${DEV:-0}" == "1" ]]; then
 fi
 
 # reload + enable + restart
+say "Enable, reload, and restart Systemd units"
 sudo systemctl daemon-reload
 # TODO: Re-enable before stable release -jdodds
 #for unit in voice-recorder.service dropbox.path tmpfs-guard.timer; do
