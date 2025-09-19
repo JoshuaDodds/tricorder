@@ -64,11 +64,13 @@ say "Installing Python deps"
 check_pkg() {
     local pkg="$1"
     local want="$2"
+    # shellcheck disable=SC2155
     local info=$(ls "$SITE" | grep -i "^${pkg}-.*\.dist-info$" | head -n1)
     if [ -z "$info" ]; then
         echo "[install] missing: $pkg ($want)"
         return 1
     fi
+    # shellcheck disable=SC2155
     local have=$(grep -m1 "^Version:" "$SITE/$info/METADATA" | awk '{print $2}')
     if [ "$have" != "$want" ]; then
         echo "[install] mismatch: $pkg (have $have, want $want)"
@@ -144,12 +146,18 @@ if [[ "${DEV:-0}" == "1" ]]; then
   fi
 fi
 
-# reload + enable + restart
 say "Enable, reload, and restart Systemd units"
 sudo systemctl daemon-reload
+
+# enable services (they have [Install] sections)
 for unit in voice-recorder.service dropbox.service tmpfs-guard.service; do
     sudo systemctl enable --now "$unit" || true
-    sudo systemctl restart "$unit" || true
 done
+
+# start path/timer units (don’t enable)
+for unit in dropbox.path tmpfs-guard.timer; do
+    sudo systemctl start "$unit" || true
+done
+
 
 say "Install complete"
