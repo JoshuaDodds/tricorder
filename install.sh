@@ -60,7 +60,29 @@ if [[ ! -d "$VENV" ]]; then
 fi
 
 say "Installing Python deps"
-"$VENV/bin/pip" install --upgrade --no-cache-dir -r requirements.txt
+check_reqs() {
+    local missing=0
+    while read -r pkg; do
+        # skip comments and blank lines
+        [[ "$pkg" =~ ^#.*$ || -z "$pkg" ]] && continue
+        name=$(echo "$pkg" | cut -d= -f1)
+        version=$(echo "$pkg" | cut -d= -f3)
+        inst=$("$VENV/bin/pip" show "$name" 2>/dev/null | awk '/^Version:/{print $2}')
+        if [ "$inst" != "$version" ]; then
+            echo "[install] mismatch: $name ($inst != $version)"
+            missing=1
+        fi
+    done < requirements.txt
+    return $missing
+}
+
+echo "[Tricorder] Checking Python deps..."
+if check_reqs; then
+    echo "[Tricorder] All requirements satisfied, skipping pip install."
+else
+    echo "[Tricorder] Installing/upgrading requirements..."
+    "$VENV/bin/pip" install --no-cache-dir --upgrade -r requirements.txt
+fi
 
 # create app tree
 sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
