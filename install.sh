@@ -98,14 +98,6 @@ else
     "$VENV/bin/pip" install --no-cache-dir --upgrade -r requirements.txt
 fi
 
-echo "[Tricorder] Checking Python deps..."
-if check_reqs; then
-    echo "[Tricorder] All requirements satisfied, skipping pip install."
-else
-    echo "[Tricorder] Installing/upgrading requirements..."
-    "$VENV/bin/pip" install --no-cache-dir --upgrade -r requirements.txt
-fi
-
 # create app tree
 sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
 sudo chown -R "$USER":"$USER" "$BASE"
