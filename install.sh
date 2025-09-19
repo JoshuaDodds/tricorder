@@ -4,6 +4,7 @@ set -euo pipefail
 BASE="/apps/tricorder"
 VENV="$BASE/venv"
 SYSTEMD_DIR="/etc/systemd/system"
+SITE=$VENV/lib/python3.12/site-packages
 
 UNITS=(voice-recorder.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer)
 
@@ -60,21 +61,42 @@ if [[ ! -d "$VENV" ]]; then
 fi
 
 say "Installing Python deps"
+check_pkg() {
+    local pkg="$1"
+    local want="$2"
+    local info=$(ls "$SITE" | grep -i "^${pkg}-.*\.dist-info$" | head -n1)
+    if [ -z "$info" ]; then
+        echo "[install] missing: $pkg ($want)"
+        return 1
+    fi
+    local have=$(grep -m1 "^Version:" "$SITE/$info/METADATA" | awk '{print $2}')
+    if [ "$have" != "$want" ]; then
+        echo "[install] mismatch: $pkg (have $have, want $want)"
+        return 1
+    fi
+    return 0
+}
+
 check_reqs() {
     local missing=0
-    while read -r pkg; do
-        # skip comments and blank lines
-        [[ "$pkg" =~ ^#.*$ || -z "$pkg" ]] && continue
-        name=$(echo "$pkg" | cut -d= -f1)
-        version=$(echo "$pkg" | cut -d= -f3)
-        inst=$("$VENV/bin/pip" show "$name" 2>/dev/null | awk '/^Version:/{print $2}')
-        if [ "$inst" != "$version" ]; then
-            echo "[install] mismatch: $name ($inst != $version)"
+    while read -r line; do
+        [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+        pkg=$(echo "$line" | cut -d= -f1)
+        ver=$(echo "$line" | cut -d= -f3)
+        if ! check_pkg "$pkg" "$ver"; then
             missing=1
         fi
     done < requirements.txt
     return $missing
 }
+
+echo "[Tricorder] Checking Python deps..."
+if check_reqs; then
+    echo "[Tricorder] All requirements satisfied, skipping pip install."
+else
+    echo "[Tricorder] Installing/upgrading requirements..."
+    "$VENV/bin/pip" install --no-cache-dir --upgrade -r requirements.txt
+fi
 
 echo "[Tricorder] Checking Python deps..."
 if check_reqs; then
