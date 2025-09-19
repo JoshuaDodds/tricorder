@@ -31,17 +31,17 @@ ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
 # POST_PAD: how long (ms) to keep recording after activity stops,
 #           prevents chopping during short pauses or gaps in sound.
 PRE_PAD = 2000
-POST_PAD = 5000
+POST_PAD = 3000
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 400    # was 450
+RMS_THRESH = 300    # was 450
 vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
-START_CONSECUTIVE = 30   # ~800ms - number of consecutive active frames (voiced or loud) to start an event
-KEEP_CONSECUTIVE = 10    # in the recent window, at least this many frames must be active to reset POST_PAD
+START_CONSECUTIVE = 25   # number of consecutive active frames (voiced or loud) to start an event
+KEEP_CONSECUTIVE = 25    # in the recent window, at least this many frames must be active to reset POST_PAD
 
 # window sizes
 KEEP_WINDOW = 30         # frames (~800ms) sliding window for keep-alive
@@ -52,7 +52,7 @@ KEEP_WINDOW = 30         # frames (~800ms) sliding window for keep-alive
 # 1.0 = no change
 # 2.0 = doubles amplitude (≈ +6 dB)
 # 4.0 = quadruples amplitude (≈ +12 dB)
-GAIN = 2.0  # <-- software gain multiplier (1.0 = no boost)
+GAIN = 2.5  # <-- software gain multiplier (1.0 = no boost)
 
 # Noise reduction settings
 USE_RNNOISE = False         # do not use
