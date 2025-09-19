@@ -60,13 +60,42 @@ graph TD
 ## Project Structure
 
 ```text
+Folders
+-------
 tricorder/
   bin/                # Shell utilities
   lib/                # Core Python modules
   systemd/            # Systemd unit files
-  install.sh          # Installation script
-  clear_logs.sh       # Manual log cleanup (deprecated, use journald limits)
-  README.md           # This file
+  
+Layout
+------
+tricorder/
+├── README.md
+├── requirements.txt
+├── install.sh
+├── clear_logs.sh
+├── main.py
+├── __init__.py
+├── .gitignore
+├── .gitattributes
+│
+├── bin/
+│ ├── encode_and_store.sh
+│ └── tmpfs_guard.sh
+│
+├── lib/
+│ ├── __init__.py
+│ ├── fault_handler.py
+│ ├── live_stream_daemon.py
+│ ├── process_dropped_file.py
+│ └── segmenter.py
+│
+└── systemd/
+├── voice-recorder.service
+├── dropbox.service
+├── dropbox.path
+├── tmpfs-guard.service
+└── tmpfs-guard.timer
 
 ```
 ---
@@ -122,15 +151,9 @@ tricorder/
 
 ## TODO (next improvements)
 
-- [x] Pin Python version (≥3.10) and dependencies; add `requirements.txt` with exact versions for Pi Zero 2 W (armhf/arm64 wheels).
 - [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
 - [ ] Harden `dropbox.service` ingestion loop to avoid race with partial files.
-- [ ] Add cleanup on encoder failures to remove temp WAVs.
 - [ ] Gate debug logging behind environment variable to reduce journald volume.
-- [ ] Improve `voice-recorder.service` unit: add restart policy, memory/cpu limits, and minimal security hardening.
-- [ ] Review and possibly refactor USB reset logic into separate privileged oneshot service (avoid running recorder as root).
-- [ ] Replace `clear_logs.sh` with journald config (`RuntimeMaxUse=50M`, `MaxFileSec=1day`).
-- [ ] Make tmpfs guard threshold configurable via environment variable and log deletions to journald.
 - [ ] Document audio device configuration (`arecord -l`) and how to override `AUDIO_DEV`.
 - [ ] Add self-test script/service to record, encode, and verify an event end-to-end.
 

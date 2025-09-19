@@ -114,8 +114,13 @@ sudo cp -f lib/* "$BASE/lib/"
 sudo chmod 755 "$BASE"/lib/*
 
 # systemd units (always overwrite, read-only)
-sudo cp -f systemd/*.service "$SYSTEMD_DIR/"
-sudo chmod 644 "$SYSTEMD_DIR"/*.service
+for unit in systemd/*; do
+  [ -f "$unit" ] || continue
+  fname=$(basename "$unit")
+  sudo cp -f "$unit" "$SYSTEMD_DIR/$fname"
+  sudo chmod 644 "$SYSTEMD_DIR/$fname"
+done
+
 
 # normalize line endings only in our source trees
 if command -v dos2unix >/dev/null 2>&1; then
