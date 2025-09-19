@@ -147,7 +147,7 @@ fi
 # reload + enable + restart
 say "Enable, reload, and restart Systemd units"
 sudo systemctl daemon-reload
-for unit in voice-recorder.service dropbox.path dropbox.service tmpfs-guard.service tmpfs-guard.timer; do
+for unit in voice-recorder.service dropbox.service tmpfs-guard.service; do
     sudo systemctl enable --now "$unit" || true
     sudo systemctl restart "$unit" || true
 done
