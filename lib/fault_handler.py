@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import sys
 import json
 import time
@@ -140,7 +139,7 @@ def _safe_requeue_to_dropbox(wav_path: Path, base_name: str) -> Path:
 
 def handle_encode_failure(in_wav: str, base_name: str) -> int:
     """
-    Main entrypoint for encode failure handling.
+    Main entrypoint for encoding failure handling.
     - If WAV decodes: move to /dropbox as '<base>-RETRY.wav' (one-time).
     - If WAV corrupt or already retried: write JSON placeholder, remove WAV.
     Returns shell-friendly exit code (0 success path / 1 handled-but-bad / 2 unexpected).

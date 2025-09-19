@@ -41,7 +41,7 @@ vad = webrtcvad.Vad(3)
 
 # DE-BOUNCE tunables
 START_CONSECUTIVE = 25   # number of consecutive active frames (voiced or loud) to start an event
-KEEP_CONSECUTIVE = 25    # in the recent window, at least this many frames must be active to reset POST_PAD
+KEEP_CONSECUTIVE = 25    # in the recent window, at least these many frames must be active to reset POST_PAD
 
 # window sizes
 KEEP_WINDOW = 30         # frames (~800ms) sliding window for keep-alive
@@ -74,6 +74,9 @@ except ImportError:
     print("[segmenter] Noise reduction library missing, continuing without NR")
     USE_RNNOISE = False
     USE_NOISEREDUCE = False
+    rnnoise = None  # ensure a symbol exists for type/checkers
+    nr = None       # ensure a symbol exists for type/checkers
+    np = None       # ensure a symbol exists for type/checkers
 
 
 def is_voice(buf):
@@ -90,7 +93,7 @@ class _WriterWorker(threading.Thread):
     Dedicated disk-writer thread.
     Protocol on self.q (audio_q):
       ('open', base_name, tmp_wav_path)
-      b'<frame-bytes>'  (raw mono 16-bit PCM @ 16k)
+      b'<frame-bytes>' (raw mono 16-bit PCM @ 16k)
       ('close', base_name)
     When a file is closed, we push (tmp_wav_path, base_name) to done_q.
     """

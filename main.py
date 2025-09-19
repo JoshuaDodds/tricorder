@@ -23,7 +23,7 @@ SERVICE = "voice-recorder.service"
 
 def stop_service():
     subprocess.run(["systemctl", "is-active", "--quiet", SERVICE])
-    if sys.exc_info()[0] is None:  # last command succeeded
+    if sys.exc_info()[0] is None:  # the last command succeeded
         print(f"[dev] Stopping {SERVICE} ...")
         subprocess.run(["systemctl", "stop", SERVICE], check=False)
 

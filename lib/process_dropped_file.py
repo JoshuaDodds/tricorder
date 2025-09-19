@@ -41,7 +41,7 @@ if __name__ == "__main__":
     target = sys.argv[1]
     process_file(target)
 
-    # cleanup original file after successful processing
+    # clean up original file after successful processing
     try:
         os.remove(target)
         print(f"[dropbox] Deleted original {target}", flush=True)
