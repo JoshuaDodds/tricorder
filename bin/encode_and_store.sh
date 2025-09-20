@@ -20,14 +20,16 @@ mkdir -p "$outdir"
 
 outfile="$outdir/${base}.opus"
 
-# Optional denoise filter
+# Optional denoise filter chain
 FILTERS=()
 if [[ "$DENOISE" == "1" ]]; then
-  FILTERS=(-af "afftdn")
-  echo "[encode] Using FFT-based denoise filter (afftdn)"
+  FILTERS=(-af "highpass=f=80,afftdn")
+  echo "[encode] Using high-pass (80Hz) + FFT-based denoise (afftdn)"
 elif [[ "$DENOISE" == "rnnoise" ]]; then
-  FILTERS=(-af "arnndn")
-  echo "[encode] Trying RNNoise denoise filter (arnndn)"
+  FILTERS=(-af "highpass=f=80,arnndn")
+  echo "[encode] Using high-pass (80Hz) + RNNoise denoise (arnndn)"
+else
+  echo "[encode] No denoise filter applied"
 fi
 
 # Notes:
