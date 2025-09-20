@@ -361,7 +361,7 @@ class TimelineRecorder:
         self.saw_voiced = False
         self.saw_loud = False
         self.base_name = None
-               self.tmp_wav_path = None
+        self.tmp_wav_path = None
         self.queue_drops = 0
 
     def flush(self, idx: int):
