@@ -26,9 +26,10 @@ if [[ "$DENOISE" == "1" ]]; then
   MODEL="/apps/tricorder/models/rnnoise_model.rnnn"
   if [[ -f "$MODEL" ]]; then
     FILTERS=(-af "arnndn=m=$MODEL")
-    echo "[encode] Using RNNoise denoise filter with model: $MODEL"
+    echo "[encode] Using RNNoise denoise filter with custom model: $MODEL"
   else
-    echo "[encode] Warning: DENOISE=1 but model not found at $MODEL, skipping denoise"
+    FILTERS=(-af "arnndn")
+    echo "[encode] Using RNNoise built-in model"
   fi
 fi
 

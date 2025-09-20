@@ -151,19 +151,6 @@ if [[ "${DEV:-0}" == "1" ]]; then
   fi
 fi
 
-# ensure models dir and rnnoise model
-say "Ensuring RNNoise model is installed"
-mkdir -p "$BASE/models"
-MODEL="$BASE/models/rnnoise_model.rnnn"
-if [[ ! -f "$MODEL" ]]; then
-  curl -L -o "$MODEL" \
-    https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/libavfilter/rnnoise/rnnoise-models/rnnoise-model.rnnn \
-    || echo "[install] Warning: failed to fetch RNNoise model"
-else
-  echo "[install] RNNoise model already present"
-fi
-
-
 if [[ "${DEV:-0}" != "1" ]]; then
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
