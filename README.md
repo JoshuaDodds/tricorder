@@ -2,7 +2,7 @@
 
 Tricorder is an embedded audio event recorder designed to run continuously on a Raspberry Pi Zero 2 W.  
 It listens to audio input, segments interesting activity using WebRTC VAD, encodes detected events to Opus,  
-and stores them locally. Also supports dropping externally recorded events into this projects processing pipeline
+and stores them locally. Also supports dropping externally recorded events into this project's processing pipeline
 for processing. 
 
 This project is designed for **single-purpose deployment** on a dedicated device.
@@ -17,7 +17,7 @@ Note: This project is pinned to Python ≥3.10 with requirements.txt to ensure c
 - Continuous low-power audio monitoring on RPi Zero 2 W
 - WebRTC-based voice activity detection at 48 kHz / 20 ms frames
 - Efficient encoding with `ffmpeg` (Opus @ ~48 kbps, mono)
-- Event-based segmentation with pre/post roll context
+- Event-based segmentation with pre- / post-roll context
 - Systemd-managed services for recording, encoding, storage, and syncing
 - Automatic tmpfs space guard and log rotation
 
@@ -103,7 +103,7 @@ tricorder/
 ## Installation
 
 1. Flash Ubuntu 24.04 LTS onto an SD card. Boot and connect to network.
-2. Copy/Clone this repo onto the Pi. (not the install directory)
+2. Copy/Clone this repo onto the Pi. (not the installation directory)
 3. Run the installer:
    ```bash
    ./install.sh
@@ -134,7 +134,7 @@ tricorder/
 - `voice-recorder.service` → runs the recorder daemon and segments audio into events
 - `dropbox.path` + `dropbox.service` → monitor Dropbox folder and ingest files from it
 - `tmpfs-guard.timer` + `tmpfs-guard.service` → ensure tmpfs doesn’t fill beyond threshold
-- `clear_logs.sh` → legacy; prefer journald size limits (utility script not a service)
+- `clear_logs.sh` → legacy; prefers journald size limits (utility script not a service)
 
 ---
 
@@ -159,7 +159,7 @@ tricorder/
 - [x] RMS room measurement helper tool for audio volume.
 - [ ] auto denoising while transcoding to opus... test trimming out silence as well. 
 - [ ] auto-gain control?
-- [ ] Move all tunables params and config options to a unified config file.
+- [ ] Move all tunables, params, and config options to a unified config file.
 ---
 
 ## Contributing
