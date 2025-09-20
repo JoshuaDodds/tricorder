@@ -204,16 +204,15 @@ def main() -> int:
             noise_p95 = int(percentile_p95(noise_vals)) if noise_vals else 0
             suggested_thresh = int(noise_p95 * args.margin)
 
-            # ASCII bar for quick glance (scaled)
-            def bar(val, scale=4000, width=40):
+            # ASCII bar for quick glance (narrower and inline)
+            def bar(val, scale=4000, width=20):
                 lvl = min(width, int((val / float(scale)) * width)) if scale > 0 else 0
                 return "#" * lvl + "-" * (width - lvl)
 
             print(
                 f"[{ts}] RMS cur={current_rms:4d} avg={avg_rms:4d} peak={peak_rms:4d}  "
                 f"VAD voiced={voiced_ratio*100:5.1f}%  "
-                f"noise_p95={noise_p95:4d}  suggest_RMS_THRESH={suggested_thresh:4d}\n"
-                f"      {bar(current_rms)}",
+                f"noise_p95={noise_p95:4d}  suggest_RMS_THRESH={suggested_thresh:4d}  |  {bar(current_rms)}",
                 flush=True
             )
 
