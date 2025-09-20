@@ -18,19 +18,24 @@ import webrtcvad    # noqa
 import audioop      # noqa
 from lib.config import get_cfg
 
+cfg = get_cfg()
+
 # ANSI colors for booleans (can be disabled via NO_COLOR env)
 ANSI_GREEN = "\033[32m"
 ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
 USE_COLOR = os.getenv("NO_COLOR") is None
 
+# Debug output formatting defaults (prevents NameError when DEV mode is enabled)
+BAR_SCALE = int(cfg["segmenter"].get("rms_bar_scale", 4000))  # scale for RMS bar visualization
+BAR_WIDTH = int(cfg["segmenter"].get("rms_bar_width", 30))    # character width of the bar
+RIGHT_TEXT_WIDTH = int(cfg["segmenter"].get("right_text_width", 54))  # fixed-width right block
+
 def color_tf(val: bool) -> str:
     # Single-character stable width 'T'/'F' with color
     if not USE_COLOR:
         return "T" if val else "F"
     return f"{ANSI_GREEN}T{ANSI_RESET}" if val else f"{ANSI_RED}F{ANSI_RESET}"
-
-cfg = get_cfg()
 
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
