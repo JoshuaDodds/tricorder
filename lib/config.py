@@ -128,9 +128,18 @@ def get_cfg() -> Dict[str, Any]:
         return _cfg_cache
 
     cfg = dict(_DEFAULTS)
+
+    # Derive project root relative to this file (lib/ -> project root)
+    try:
+        this_dir = Path(__file__).resolve().parent
+        project_root = this_dir.parent  # <root>/lib -> <root>
+    except Exception:
+        project_root = Path.cwd()
+
     search = [
         Path("/etc/tricorder/config.yaml"),
         Path("/apps/tricorder/config.yaml"),
+        project_root / "config.yaml",
         Path.cwd() / "config.yaml",
     ]
     for p in search:
@@ -139,3 +148,4 @@ def get_cfg() -> Dict[str, Any]:
     _apply_env_overrides(cfg)
     _cfg_cache = cfg
     return cfg
+

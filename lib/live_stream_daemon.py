@@ -10,10 +10,10 @@ from lib.fault_handler import reset_usb
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
-
-FRAME_MS = 20
+FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
+
 
 # ENV AUDIO_DEV overrides config
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])

@@ -18,9 +18,11 @@ audio:
   # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
   gain: 2.5
 
-  # WebRTC VAD aggressiveness. 0=least aggressive (fewest false positives), 3=most aggressive (fewest misses).
-  # Suggested: 2–3 for noisy rooms; 1 for quiet controlled spaces.
-  vad_aggressiveness: 1
+  # WebRTC VAD aggressiveness. # WebRTC VAD aggressiveness (0..3).
+  # 0 = least aggressive (most permissive, more false positives, fewer misses).
+  # 3 = most aggressive (strictest, fewer false positives, more misses).
+  # Suggested: 1–2 for quiet/controlled spaces; 2–3 for noisy rooms if false positives are a problem.
+  vad_aggressiveness: 3
 
 paths:
   # Scratch space for temporary WAVs and working files. Prefer tmpfs if available.
