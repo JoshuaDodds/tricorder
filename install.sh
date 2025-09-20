@@ -137,7 +137,7 @@ fi
 if [[ "${DEV:-0}" == "1" ]]; then
   say "Installing dev helpers (main.py, __init__.py)"
   if [[ -f main.py ]]; then
-    sudo cp -f main.py "$BASE/"
+    sudo cp -f main.py room_tuner.py "$BASE/"
     sudo chmod 755 "$BASE/main.py"
   fi
   if [[ -f __init__.py ]]; then
