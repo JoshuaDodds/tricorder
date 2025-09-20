@@ -30,6 +30,7 @@ from collections import deque
 import audioop
 import webrtcvad
 from lib.config import get_cfg
+from lib.fault_handler import reset_usb   # 🔧 added
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -38,6 +39,7 @@ FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
 
 DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
+
 
 def spawn_arecord(audio_dev: str):
     cmd = [
@@ -62,12 +64,14 @@ def spawn_arecord(audio_dev: str):
         env=env
     )
 
+
 def percentile_p95(values):
     if not values:
         return 0.0
     vals = sorted(values)
     k = max(0, min(len(vals) - 1, int(round(0.95 * (len(vals) - 1)))))
     return float(vals[k])
+
 
 def print_banner(args):
     print("== Tricorder Room Tuner ==", flush=True)
@@ -112,11 +116,19 @@ def main() -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, on_signal)
 
+    # Start arecord (with USB reset retry)
     try:
         proc = spawn_arecord(args.device)
     except Exception as e:
         print(f"[room_tuner] failed to start arecord: {e!r}", file=sys.stderr, flush=True)
-        return 2
+        print("[room_tuner] attempting USB reset...", flush=True)
+        reset_usb()
+        time.sleep(2)
+        try:
+            proc = spawn_arecord(args.device)
+        except Exception as e2:
+            print(f"[room_tuner] retry failed: {e2!r}", file=sys.stderr, flush=True)
+            return 2
 
     assert proc.stdout is not None
     stderr_fd = proc.stderr.fileno() if proc.stderr is not None else None
@@ -150,8 +162,16 @@ def main() -> int:
         # Read raw bytes
         chunk = proc.stdout.read(4096)
         if not chunk:
-            # arecord ended or device issue
-            break
+            print("[room_tuner] arecord ended or device unavailable; attempting USB reset", flush=True)
+            reset_usb()
+            time.sleep(2)
+            try:
+                proc = spawn_arecord(args.device)
+                buf.clear()
+                continue
+            except Exception as e:
+                print(f"[room_tuner] failed to restart arecord after USB reset: {e!r}", file=sys.stderr, flush=True)
+                break
         buf.extend(chunk)
 
         # Drain arecord stderr (ignore content)
@@ -206,7 +226,7 @@ def main() -> int:
             noise_p95 = int(percentile_p95(noise_vals)) if noise_vals else 0
             suggested_thresh = int(noise_p95 * args.margin)
 
-            # ASCII bar for quick glance (narrower and inline)
+            # ASCII bar for quick glance
             def bar(val, scale=4000, width=20):
                 lvl = min(width, int((val / float(scale)) * width)) if scale > 0 else 0
                 return "#" * lvl + "-" * (width - lvl)
@@ -252,6 +272,7 @@ def main() -> int:
         csv_file.close()
 
     return 0
+
 
 if __name__ == "__main__":
     try:
