@@ -3,14 +3,18 @@
 Unified configuration loader for Tricorder.
 
 Load order (first found wins):
-  1) /etc/tricorder/config.yaml
-  2) /apps/tricorder/config.yaml
-  3) ./config.yaml (project root)
+  1) TRICORDER_CONFIG (env, absolute or relative to CWD)
+  2) /etc/tricorder/config.yaml
+  3) /apps/tricorder/config.yaml
+  4) <project_root>/config.yaml (derived from this file's location)
+  5) <script_dir>/config.yaml (directory of the running script)
+  6) ./config.yaml (current working directory)
 
 Environment variables override file values when present.
 """
 from __future__ import annotations
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -18,7 +22,6 @@ try:
     import yaml
 except Exception:
     yaml = None  # pyyaml should be installed; if not, only defaults will be used.
-
 
 _DEFAULTS: Dict[str, Any] = {
     "audio": {
@@ -59,12 +62,17 @@ _DEFAULTS: Dict[str, Any] = {
     },
 }
 
-
 _cfg_cache: Dict[str, Any] | None = None
-
+_warned_yaml_missing = False
 
 def _load_yaml_if_exists(path: Path) -> Dict[str, Any]:
-    if not path.exists() or not yaml:
+    global _warned_yaml_missing
+    if not path.exists():
+        return {}
+    if not yaml:
+        if not _warned_yaml_missing:
+            _warned_yaml_missing = True
+            print("[config] WARNING: PyYAML not available; using defaults only (no file parsing).", flush=True)
         return {}
     try:
         with path.open("r") as f:
@@ -72,9 +80,9 @@ def _load_yaml_if_exists(path: Path) -> Dict[str, Any]:
             if isinstance(data, dict):
                 return data
     except Exception:
+        # Ignore parse errors and continue with other locations/defaults
         pass
     return {}
-
 
 def _deep_merge(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base)
@@ -85,12 +93,10 @@ def _deep_merge(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
             out[k] = v
     return out
 
-
 def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
     # DEV mode
     if os.getenv("DEV") == "1":
         cfg.setdefault("logging", {})["dev_mode"] = True
-
     # Audio device and sample rate/gain
     if "AUDIO_DEV" in os.environ:
         cfg.setdefault("audio", {})["device"] = os.environ["AUDIO_DEV"]
@@ -99,7 +105,6 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
             cfg.setdefault("audio", {})["gain"] = float(os.environ["GAIN"])
         except ValueError:
             pass
-
     # Paths
     if "REC_DIR" in os.environ:
         cfg.setdefault("paths", {})["recordings_dir"] = os.environ["REC_DIR"]
@@ -107,7 +112,6 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         cfg.setdefault("paths", {})["tmp_dir"] = os.environ["TMP_DIR"]
     if "DROPBOX_DIR" in os.environ:
         cfg.setdefault("paths", {})["dropbox_dir"] = os.environ["DROPBOX_DIR"]
-
     # Ingest tuning
     env_map = {
         "INGEST_STABLE_CHECKS": ("ingest", "stable_checks", int),
@@ -120,7 +124,6 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
                 cfg.setdefault(section, {})[key] = cast(os.environ[env_key])
             except Exception:
                 pass
-
 
 def get_cfg() -> Dict[str, Any]:
     global _cfg_cache
@@ -136,16 +139,28 @@ def get_cfg() -> Dict[str, Any]:
     except Exception:
         project_root = Path.cwd()
 
-    search = [
+    # Derive script directory (useful for tools run as ./tool.py)
+    try:
+        script_dir = Path(sys.argv[0]).resolve().parent
+    except Exception:
+        script_dir = Path.cwd()
+
+    # Build search list in priority order
+    search: list[Path] = []
+    env_cfg = os.getenv("TRICORDER_CONFIG")
+    if env_cfg:
+        search.append(Path(env_cfg).expanduser().resolve())
+    search.extend([
         Path("/etc/tricorder/config.yaml"),
         Path("/apps/tricorder/config.yaml"),
         project_root / "config.yaml",
+        script_dir / "config.yaml",
         Path.cwd() / "config.yaml",
-    ]
+    ])
+
     for p in search:
         cfg = _deep_merge(cfg, _load_yaml_if_exists(p))
 
     _apply_env_overrides(cfg)
     _cfg_cache = cfg
     return cfg
-
