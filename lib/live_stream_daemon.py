@@ -4,14 +4,18 @@ import time
 import subprocess
 import sys
 import signal
-from lib.segmenter import TimelineRecorder, SAMPLE_RATE
-from lib.fault_handler import reset_usb
+from lib.segmenter import TimelineRecorder
+from lib.config import get_cfg
+
+cfg = get_cfg()
+SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 
 FRAME_MS = 20
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 
-AUDIO_DEV = os.environ.get("AUDIO_DEV", "hw:CARD=Device,DEV=0")
+# ENV AUDIO_DEV overrides config
+AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
 ARECORD_CMD = [
     "arecord",

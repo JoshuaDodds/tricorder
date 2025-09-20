@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 import os, sys, subprocess, time
 from pathlib import Path
-from lib.segmenter import TimelineRecorder, SAMPLE_RATE, FRAME_BYTES
+from segmenter import TimelineRecorder, SAMPLE_RATE, FRAME_BYTES
+from lib.config import get_cfg
 
-# Safe-ingestion configuration (tunable via env)
-STABLE_CHECKS = int(os.getenv("INGEST_STABLE_CHECKS", "2"))
-STABLE_INTERVAL_SEC = float(os.getenv("INGEST_STABLE_INTERVAL_SEC", "1.0"))
-DROPBOX_DIR = Path(os.getenv("DROPBOX_DIR", "/apps/tricorder/dropbox"))
-WORK_DIR = Path(os.getenv("INGEST_WORK_DIR", "/apps/tricorder/tmp/ingest"))
-ALLOWED_EXT = set(ext.strip().lower() for ext in os.getenv(
-    "INGEST_ALLOWED_EXT",
-    ".wav,.opus,.flac,.mp3"
-).split(","))  # extensions including leading dot
-IGNORE_SUFFIXES = {".part", ".partial", ".tmp", ".incomplete", ".opdownload", ".crdownload"}
+cfg = get_cfg()
+
+STABLE_CHECKS = int(cfg["ingest"]["stable_checks"])
+STABLE_INTERVAL_SEC = float(cfg["ingest"]["stable_interval_sec"])
+DROPBOX_DIR = Path(cfg["paths"]["dropbox_dir"])
+WORK_DIR = Path(cfg["paths"]["ingest_work_dir"])
+ALLOWED_EXT = set(x.lower() for x in cfg["ingest"]["allowed_ext"])
+IGNORE_SUFFIXES = set(cfg["ingest"]["ignore_suffixes"])
 
 def _is_candidate(p: Path) -> bool:
     if not p.is_file():

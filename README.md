@@ -114,18 +114,19 @@ tricorder/
 
 ## Configuration
 
-- **Audio device**: Default ALSA device can be overridden via env var or specified in segmenter.py and the voice-recorder unit file:
-  ```bash
-  export AUDIO_DEV=hw:1,0
-  ```
-- **Recording parameters** (defaults are tuned for Pi Zero 2 W):
-  - Sample rate: 48000 Hz, mono
-  - Frame size: 20 ms (960 samples)
-  - Opus bitrate: 48 kbps
-- **Directories**:
-  - `/apps/tricorder/recordings` → stores encoded `.opus` files
-  - `/apps/tricorder/dropbox` → watched for incoming files
-  - `/apps/tricorder/tmp` → transient scratch space
+This project now uses a unified YAML file for configuration. Load order:
+1. /etc/tricorder/config.yaml
+2. /apps/tricorder/config.yaml
+3. ./config.yaml (project root)
+
+Environment variables override the file when set (e.g., DEV=1, AUDIO_DEV, GAIN, REC_DIR, TMP_DIR, DROPBOX_DIR, INGEST_*).
+
+Key sections in config.yaml:
+- audio: device, sample_rate, frame_ms, gain, vad_aggressiveness
+- paths: tmp_dir, recordings_dir, dropbox_dir, ingest_work_dir, encoder_script
+- segmenter: pre- / post-pads, RMS threshold, debounce, and buffer settings
+- ingest: stability checks and file filters
+- logging: dev_mode toggle (equivalent to DEV=1)
 
 ---
 
@@ -152,8 +153,9 @@ tricorder/
 ## TODO (next improvements)
 
 - [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
-- [x] Harden `dropbox.service` ingestion loop to avoid race with partial files.
+- [ ] Harden `dropbox.service` ingestion loop to avoid race with partial files.
 - [x] Gate debug logging behind environment variable to reduce journald volume.
+- [x] Move all tunables, params, and config options to a unified config file.
 - [ ] Document audio device configuration (`arecord -l`) and how to override `AUDIO_DEV`.
 - [ ] Add self-test script/service to record, encode, and verify an event end-to-end.
 - [x] RMS room measurement helper tool for audio volume.

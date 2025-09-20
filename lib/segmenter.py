@@ -16,55 +16,50 @@ warnings.filterwarnings(
 )
 import webrtcvad    # noqa
 import audioop      # noqa
+from lib.config import get_cfg
 
-SAMPLE_RATE = 48000
+cfg = get_cfg()
+
+SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
-FRAME_MS = 20
+FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
 
-TMP_DIR = "/apps/tricorder/tmp"
-REC_DIR = "/apps/tricorder/recordings"
-ENCODER = "/apps/tricorder/bin/encode_and_store.sh"
+TMP_DIR = cfg["paths"]["tmp_dir"]
+REC_DIR = cfg["paths"]["recordings_dir"]
+ENCODER = cfg["paths"]["encoder_script"]
 
-# PRE_PAD: amount of audio (ms) saved *before* event trigger,
-#          ensures leading context isn’t lost (like the first spoken word).
-# POST_PAD: how long (ms) to keep recording after activity stops,
-#           prevents chopping during short pauses or gaps in sound.
-PRE_PAD = 2000
-POST_PAD = 3000
+# PRE_PAD / POST_PAD
+PRE_PAD = int(cfg["segmenter"]["pre_pad_ms"])
+POST_PAD = int(cfg["segmenter"]["post_pad_ms"])
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 375        # was 450
-vad = webrtcvad.Vad(1)  # 0-3 (higer more agressive, higher false-positives
+RMS_THRESH = int(cfg["segmenter"]["rms_threshold"])
+vad = webrtcvad.Vad(int(cfg["audio"]["vad_aggressiveness"]))
 
 # DE-BOUNCE tunables
-START_CONSECUTIVE = 25   # number of consecutive active frames (voiced or loud) to start an event
-KEEP_CONSECUTIVE = 25    # in the recent window, at least these many frames must be active to reset POST_PAD
+START_CONSECUTIVE = int(cfg["segmenter"]["start_consecutive"])
+KEEP_CONSECUTIVE = int(cfg["segmenter"]["keep_consecutive"])
 
 # window sizes
-KEEP_WINDOW = 30         # frames (~800ms) sliding window for keep-alive
+KEEP_WINDOW = int(cfg["segmenter"]["keep_window_frames"])
 
 # Mic Digital Gain
-# Typical safe range: 0.5 → 4.0
-# 0.5 = halves the volume (attenuation)
-# 1.0 = no change
-# 2.0 = doubles amplitude (≈ +6 dB)
-# 4.0 = quadruples amplitude (≈ +12 dB)
-GAIN = 2.5  # <-- software gain multiplier (1.0 = no boost)
+GAIN = float(cfg["audio"]["gain"])
 
 # Noise reduction settings
-USE_RNNOISE = False         # do not use
-USE_NOISEREDUCE = False     # needs tested... may interfere with VAD
-DENOISE_BEFORE_VAD = False  # Will interfere with VAD!
+USE_RNNOISE = bool(cfg["segmenter"]["use_rnnoise"])
+USE_NOISEREDUCE = bool(cfg["segmenter"]["use_noisereduce"])
+DENOISE_BEFORE_VAD = bool(cfg["segmenter"]["denoise_before_vad"])
 
 # buffered writes
-FLUSH_THRESHOLD = 128 * 1024  # 128 KB chunks before flushing to disk
-MAX_QUEUE_FRAMES = 512        # safety cap on queued frames (~327 KB)
+FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
+MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
 
-# Verbose debug controlled by DEV=1
-DEBUG_VERBOSE = os.getenv("DEV") == "1"
+# Debug logging gate (DEV=1 or logging.dev_mode)
+DEBUG_VERBOSE = (os.getenv("DEV") == "1") or bool(cfg["logging"]["dev_mode"])
 
 try:
     if USE_RNNOISE:
@@ -239,7 +234,7 @@ class TimelineRecorder:
         loud = rms_val > RMS_THRESH
         frame_active = loud  # primary trigger
 
-        # once per-second debug (only in DEV=1)
+        # once per second debug (only if DEV enabled)
         now = time.monotonic()
         if DEBUG_VERBOSE and (now - self.last_log >= 1.0):
             print(

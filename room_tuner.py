@@ -29,13 +29,15 @@ import statistics
 from collections import deque
 import audioop
 import webrtcvad
+from lib.config import get_cfg
 
-SAMPLE_RATE = 48000
+cfg = get_cfg()
+SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2
-FRAME_MS = 20
+FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
 
-DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", "hw:CARD=Device,DEV=0")
+DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
 def spawn_arecord(audio_dev: str):
     cmd = [
@@ -80,9 +82,9 @@ def print_banner(args):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Live RMS/VAD monitor to help choose RMS_THRESH.")
     parser.add_argument("--device", default=DEFAULT_AUDIO_DEV, help="ALSA device (e.g., hw:CARD=Device,DEV=0)")
-    parser.add_argument("--aggr", type=int, default=3, choices=[0,1,2,3], help="VAD aggressiveness (0..3, higher = more aggressive)")
+    parser.add_argument("--aggr", type=int, default=int(cfg["audio"]["vad_aggressiveness"]), choices=[0,1,2,3], help="VAD aggressiveness (0..3, higher = more aggressive)")
     parser.add_argument("--interval", type=float, default=1.0, help="Report interval seconds")
-    parser.add_argument("--gain", type=float, default=float(os.environ.get("GAIN", 1.0)), help="Software gain multiplier")
+    parser.add_argument("--gain", type=float, default=float(os.environ.get("GAIN", cfg["audio"]["gain"])), help="Software gain multiplier")
     parser.add_argument("--margin", type=float, default=1.2, help="Multiplier on noise-floor p95 to suggest RMS_THRESH")
     parser.add_argument("--noise-window", type=int, default=60, help="Seconds of unvoiced frames to keep for noise-floor estimation")
     parser.add_argument("--duration", type=int, default=0, help="Optional run duration seconds (0 = indefinite)")

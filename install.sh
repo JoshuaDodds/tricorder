@@ -115,6 +115,10 @@ sudo chmod 755 "$BASE"/bin/*
 sudo cp -f lib/* "$BASE/lib/"
 sudo chmod 755 "$BASE"/lib/*
 
+# other
+sudo cp -f *.py *.yaml "$BASE"
+chmod 755 "$BASE"/*.py
+
 # systemd units (always overwrite, read-only)
 for unit in systemd/*; do
   [ -f "$unit" ] || continue

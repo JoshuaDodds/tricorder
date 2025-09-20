@@ -1,0 +1,101 @@
+# Tricorder configuration
+# Guidelines:
+# - This file is the single source of truth for tunables.
+# - Units are noted per field. Values outside suggested ranges may degrade performance on low-power devices.
+
+audio:
+  # ALSA device identifier. Use `arecord -l` to list devices.
+  # Examples: "hw:1,0", "hw:CARD=Device,DEV=0"
+  device: "hw:CARD=Device,DEV=0"
+
+  # Sample rate in Hz. Valid: 16000, 32000, 48000. Default is 48000 for best VAD and Opus quality.
+  sample_rate: 48000
+
+  # Frame size in milliseconds. Valid: 10, 20, 30. Default 20ms (WebRTC VAD friendly).
+  frame_ms: 20
+
+  # Software gain multiplier (linear). Typical safe range: 0.5 → 4.0
+  # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
+  gain: 2.5
+
+  # WebRTC VAD aggressiveness. 0=least aggressive (fewest false positives), 3=most aggressive (fewest misses).
+  # Suggested: 2–3 for noisy rooms; 1 for quiet controlled spaces.
+  vad_aggressiveness: 1
+
+paths:
+  # Scratch space for temporary WAVs and working files. Prefer tmpfs if available.
+  tmp_dir: "/apps/tricorder/tmp"
+
+  # Destination for encoded .opus recordings. Ensure adequate storage and rotation.
+  recordings_dir: "/apps/tricorder/recordings"
+
+  # Folder watched for externally dropped files to ingest.
+  dropbox_dir: "/apps/tricorder/dropbox"
+
+  # Per-run ingestion work area (files are atomically moved here before processing).
+  ingest_work_dir: "/apps/tricorder/tmp/ingest"
+
+  # Script used to encode and store finalized events. Must accept: <tmp_wav_path> <base_name>
+  encoder_script: "/apps/tricorder/bin/encode_and_store.sh"
+
+segmenter:
+  # Pre-roll saved before trigger (milliseconds). Captures leading context (e.g., first spoken word).
+  # Typical: 500–3000 ms. Higher uses more RAM/IO.
+  pre_pad_ms: 2000
+
+  # Post-roll after activity stops (milliseconds). Prevents cutting off during short pauses.
+  # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
+  post_pad_ms: 3000
+
+  # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
+  # Typical: 200–1200 depending on mic and environment.
+  rms_threshold: 300
+
+  # Sliding window length for “keep alive” logic (frames). With 20ms frames, 30 ≈ 600ms.
+  # Typical: 20–60 frames.
+  keep_window_frames: 30
+
+  # Number of consecutive active frames required to start an event.
+  # With 20ms frames: 25 ≈ 500ms of sustained activity. Increase to debounce short noises.
+  start_consecutive: 25
+
+  # Minimum active frames within the recent window to refresh post-roll (prevents premature end).
+  keep_consecutive: 25
+
+  # Optional noise reduction toggles.
+  # USE_RNNOISE: High-quality but CPU-heavy; generally not recommended on Pi Zero 2 W.
+  # USE_NOISEREDUCE: Experimental; may interfere with VAD; test before enabling.
+  use_rnnoise: false
+  use_noisereduce: false
+
+  # If true, denoise audio before VAD. Can degrade VAD accuracy; keep false unless validated.
+  denoise_before_vad: false
+
+  # Writer flush threshold for WAV buffering (bytes). Larger = fewer writes, more memory.
+  # Typical: 65536–262144 (64–256 KB).
+  flush_threshold_bytes: 131072
+
+  # Max queued frames before backpressure/drop (safety). With 20ms @ 48k mono: 512 ≈ 10.24s of audio.
+  # Keep modest to avoid memory spikes. Typical: 256–1024.
+  max_queue_frames: 512
+
+ingest:
+  # Number of consecutive size-stability checks required before accepting a file.
+  # Prevents racing with partial/incomplete files.
+  # Typical: 2–5.
+  stable_checks: 2
+
+  # Seconds between stability checks. Increase if sources write slowly.
+  # Typical: 0.5–2.0 s.
+  stable_interval_sec: 1.0
+
+  # Allowed filename extensions (lowercase, include leading dot).
+  allowed_ext: [".wav", ".opus", ".flac", ".mp3"]
+
+  # Common suffixes indicating partial/incomplete downloads or temp files to ignore.
+  ignore_suffixes: [".part", ".partial", ".tmp", ".incomplete", ".opdownload", ".crdownload"]
+
+logging:
+  # Developer-mode verbose logging (equivalent to setting DEV=1 in the environment).
+  # When true, emits per-second debug lines from the segmenter.
+  dev_mode: true
