@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="/apps/tricorder"
+# Allow override for test mode
+BASE="${BASE:-/apps/tricorder}"
 VENV="$BASE/venv"
 SYSTEMD_DIR="/etc/systemd/system"
-SITE=$VENV/lib/python3.12/site-packages
+PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+SITE=$VENV/lib/python$PY_VER/site-packages
 
 UNITS=(voice-recorder.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer)
 
@@ -14,19 +16,20 @@ say(){ echo "[Tricorder] $*"; }
 if [[ "${1:-}" == "--remove" ]]; then
   echo "[Tricorder] Uninstall requested"
 
-  # Stop and disable services/paths/timers if they exist
-  for unit in voice-recorder.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer; do
+  if [[ "${DEV:-0}" == "1" ]]; then
+    say "DEV=1: skipping systemctl and rm -rf $BASE"
+    exit 0
+  fi
+
+  for unit in "${UNITS[@]}"; do
     echo "[Tricorder] Disabling and stopping $unit"
     systemctl disable --now "$unit" 2>/dev/null || true
     systemctl reset-failed "$unit" 2>/dev/null || true
-    rm -f "/etc/systemd/system/$unit"
+    rm -f "$SYSTEMD_DIR/$unit"
   done
 
-  # Reset failed states so systemctl doesn’t keep them around
   systemctl reset-failed
 
-  # Only remove if base is correct
-  BASE="/apps/tricorder"
   if [[ -d "$BASE" && "$BASE" == "/apps/tricorder" ]]; then
     rm -rf "$BASE"
     echo "[Tricorder] Removed $BASE"
@@ -42,16 +45,20 @@ fi
 # ---------- install / update ----------
 say "Install/Update into $BASE"
 
-# system packages (only if missing)
-PKGS=(ffmpeg alsa-utils python3-venv python3-pip)
-MISSING=()
-for p in "${PKGS[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || MISSING+=("$p"); done
-if ((${#MISSING[@]})); then
-  say "Installing packages: ${MISSING[*]}"
-  sudo apt-get update -qq
-  sudo apt-get install -y "${MISSING[@]}"
+if [[ "${DEV:-0}" != "1" ]]; then
+  # system packages (only if missing)
+  PKGS=(ffmpeg alsa-utils python3-venv python3-pip)
+  MISSING=()
+  for p in "${PKGS[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || MISSING+=("$p"); done
+  if ((${#MISSING[@]})); then
+    say "Installing packages: ${MISSING[*]}"
+    sudo apt-get update -qq
+    sudo apt-get install -y "${MISSING[@]}"
+  else
+    say "All required packages already installed"
+  fi
 else
-  say "All required packages already installed"
+  say "DEV=1: skipping apt-get installation"
 fi
 
 # venv
@@ -64,13 +71,11 @@ say "Installing Python deps"
 check_pkg() {
     local pkg="$1"
     local want="$2"
-    # shellcheck disable=SC2155
-    local info=$(ls "$SITE" | grep -i "^${pkg}-.*\.dist-info$" | head -n1)
+    local info=$(ls "$SITE" | grep -i "^${pkg}-.*\\.dist-info$" | head -n1 || true)
     if [ -z "$info" ]; then
         echo "[install] missing: $pkg ($want)"
         return 1
     fi
-    # shellcheck disable=SC2155
     local have=$(grep -m1 "^Version:" "$SITE/$info/METADATA" | awk '{print $2}')
     if [ "$have" != "$want" ]; then
         echo "[install] mismatch: $pkg (have $have, want $want)"
@@ -101,34 +106,28 @@ else
 fi
 
 # create app tree
-sudo mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
-sudo chown -R "$USER":"$USER" "$BASE"
+mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
+chown -R "$USER":"$USER" "$BASE" 2>/dev/null || true
 
 # copy project files (idempotent overwrite)
 say "Installing project files"
 
-# bin (always overwrite, executable)
-sudo cp -f bin/* "$BASE/bin/"
-sudo chmod 755 "$BASE"/bin/*
+cp -f bin/* "$BASE/bin/" 2>/dev/null || true
+chmod 755 "$BASE"/bin/* 2>/dev/null || true
 
-# lib (always overwrite, executable)
-sudo cp -f lib/* "$BASE/lib/"
-sudo chmod 755 "$BASE"/lib/*
+cp -f lib/* "$BASE/lib/" 2>/dev/null || true
+chmod 755 "$BASE"/lib/* 2>/dev/null || true
 
-# other
-sudo cp -f *.py *.yaml "$BASE"
-chmod 755 "$BASE"/*.py
+cp -f *.py *.yaml "$BASE" 2>/dev/null || true
+chmod 755 "$BASE"/*.py 2>/dev/null || true
 
-# systemd units (always overwrite, read-only)
 for unit in systemd/*; do
   [ -f "$unit" ] || continue
   fname=$(basename "$unit")
-  sudo cp -f "$unit" "$SYSTEMD_DIR/$fname"
-  sudo chmod 644 "$SYSTEMD_DIR/$fname"
+  cp -f "$unit" "$SYSTEMD_DIR/$fname" 2>/dev/null || true
+  chmod 644 "$SYSTEMD_DIR/$fname" 2>/dev/null || true
 done
 
-
-# normalize line endings only in our source trees
 if command -v dos2unix >/dev/null 2>&1; then
   for d in bin lib systemd; do
     if [[ -d "$BASE/$d" ]]; then
@@ -137,31 +136,29 @@ if command -v dos2unix >/dev/null 2>&1; then
   done
 fi
 
-# dev-only helpers (optional)
 if [[ "${DEV:-0}" == "1" ]]; then
   say "Installing dev helpers (main.py, __init__.py)"
   if [[ -f main.py ]]; then
-    sudo cp -f main.py room_tuner.py "$BASE/"
-    sudo chmod 755 "$BASE/main.py"
+    cp -f main.py room_tuner.py "$BASE/" 2>/dev/null || true
+    chmod 755 "$BASE/main.py" 2>/dev/null || true
   fi
   if [[ -f __init__.py ]]; then
-    sudo cp -f __init__.py "$BASE/"
-    sudo chmod 644 "$BASE/__init__.py"
+    cp -f __init__.py "$BASE/" 2>/dev/null || true
+    chmod 644 "$BASE/__init__.py" 2>/dev/null || true
   fi
 fi
 
-say "Enable, reload, and restart Systemd units"
-sudo systemctl daemon-reload
-
-# enable services (they have [Install] sections)
-for unit in voice-recorder.service dropbox.service tmpfs-guard.service; do
-    sudo systemctl enable --now "$unit" || true
-done
-
-# start path/timer units (don’t enable)
-for unit in dropbox.path tmpfs-guard.timer; do
-    sudo systemctl start "$unit" || true
-done
-
+if [[ "${DEV:-0}" != "1" ]]; then
+  say "Enable, reload, and restart Systemd units"
+  sudo systemctl daemon-reload
+  for unit in voice-recorder.service dropbox.service tmpfs-guard.service; do
+      sudo systemctl enable --now "$unit" || true
+  done
+  for unit in dropbox.path tmpfs-guard.timer; do
+      sudo systemctl start "$unit" || true
+  done
+else
+  say "DEV=1: skipping systemctl enable/start"
+fi
 
 say "Install complete"
