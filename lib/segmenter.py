@@ -90,7 +90,7 @@ class _WriterWorker(threading.Thread):
     Dedicated disk-writer thread.
     Protocol on self.q (audio_q):
       ('open', base_name, tmp_wav_path)
-      b'<frame-bytes>' (raw mono 16-bit PCM @ 16k)
+      b'<frame-bytes>' (raw mono 16-bit PCM @ 48k)
       ('close', base_name)
     When a file is closed, we push (tmp_wav_path, base_name) to done_q.
     """
@@ -182,6 +182,11 @@ class TimelineRecorder:
 
         self.last_log = time.monotonic()
 
+        # Rolling debug stats (approx. last 1s worth of frames)
+        self._dbg_win = max(1, 1000 // FRAME_MS)
+        self._dbg_rms = collections.deque(maxlen=self._dbg_win)
+        self._dbg_voiced = collections.deque(maxlen=self._dbg_win)
+
         self.audio_q: queue.Queue = queue.Queue(maxsize=MAX_QUEUE_FRAMES)
         self.done_q: queue.Queue = queue.Queue(maxsize=2)
         self.writer = _WriterWorker(self.audio_q, self.done_q, FLUSH_THRESHOLD)
@@ -234,12 +239,28 @@ class TimelineRecorder:
         loud = rms_val > RMS_THRESH
         frame_active = loud  # primary trigger
 
+        # collect rolling window for debug stats
+        self._dbg_rms.append(rms_val)
+        self._dbg_voiced.append(bool(voiced))
+
         # once per second debug (only if DEV enabled)
         now = time.monotonic()
         if DEBUG_VERBOSE and (now - self.last_log >= 1.0):
+            # Inline, narrow VU bar
+            def _bar(val: int, scale: int = 4000, width: int = 20) -> str:
+                lvl = min(width, int((val / float(scale)) * width)) if scale > 0 else 0
+                return "#" * lvl + "-" * (width - lvl)
+
+            win_len = max(1, len(self._dbg_rms))
+            win_avg = int(sum(self._dbg_rms) / win_len) if win_len else 0
+            win_peak = max(self._dbg_rms) if win_len else 0
+            voiced_ratio = (sum(1 for v in self._dbg_voiced if v) / win_len) if win_len else 0.0
+
             print(
                 f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} loud={loud} "
-                f"active={frame_active} capturing={self.active}",
+                f"active={frame_active} capturing={self.active}  |  "
+                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d}  "
+                f"VAD voiced={voiced_ratio*100:5.1f}%  |  {_bar(rms_val)}",
                 flush=True
             )
             self.last_log = now
@@ -340,7 +361,7 @@ class TimelineRecorder:
         self.saw_voiced = False
         self.saw_loud = False
         self.base_name = None
-        self.tmp_wav_path = None
+               self.tmp_wav_path = None
         self.queue_drops = 0
 
     def flush(self, idx: int):
