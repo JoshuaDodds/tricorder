@@ -51,7 +51,7 @@ segmenter:
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
-  rms_threshold: 300
+  rms_threshold: 275 # was 300
 
   # Sliding window length for “keep alive” logic (frames). With 20ms frames, 30 ≈ 600ms.
   # Typical: 20–60 frames.

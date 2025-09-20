@@ -178,15 +178,13 @@ Key sections in config.yaml:
 ## TODO (next improvements)
 
 - [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
-- [ ] Harden `dropbox.service` ingestion loop to avoid race with partial files.
+- [x] Harden `dropbox.service` ingestion loop to avoid race with partial files.
 - [x] Gate debug logging behind environment variable to reduce journald volume.
 - [x] Move all tunables, params, and config options to a unified config file.
-- [ ] Document audio device configuration (`arecord -l`) and how to override `AUDIO_DEV`.
 - [x] Add unit and e2e tests self-test script/service to generate a wav file, encode it, and verify an event end-to-end when any code changes.
 - [x] RMS room measurement helper tool for audio volume.
-- [x] auto denoising while transcoding to opus... test trimming out silence as well. 
-- [ ] auto-gain control?
-- [ ] Move all tunables, params, and config options to a unified config file.
+- [x] auto denoising while transcoding to opus... test trimming out silence as well.
+- [x] Move all tunables, params, and config options to a unified config file.
 ---
 
 ## Contributing
