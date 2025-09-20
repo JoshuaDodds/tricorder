@@ -36,8 +36,8 @@ PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = 300    # was 450
-vad = webrtcvad.Vad(3)
+RMS_THRESH = 375        # was 450
+vad = webrtcvad.Vad(1)  # 0-3 (higer more agressive, higher false-positives
 
 # DE-BOUNCE tunables
 START_CONSECUTIVE = 25   # number of consecutive active frames (voiced or loud) to start an event
@@ -239,7 +239,7 @@ class TimelineRecorder:
         loud = rms_val > RMS_THRESH
         frame_active = loud  # primary trigger
 
-        # once per second debug (only in DEV=1)
+        # once per-second debug (only in DEV=1)
         now = time.monotonic()
         if DEBUG_VERBOSE and (now - self.last_log >= 1.0):
             print(
