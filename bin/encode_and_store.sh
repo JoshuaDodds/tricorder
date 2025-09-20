@@ -21,11 +21,11 @@ mkdir -p "$outdir"
 outfile="$outdir/${base}.opus"
 
 # Optional denoise filter (FFmpeg arnndn)
-FILTERS=""
+FILTERS=()
 if [[ "$DENOISE" == "1" ]]; then
   MODEL="/apps/tricorder/models/rnnoise_model.rnnn"
   if [[ -f "$MODEL" ]]; then
-    FILTERS="-af arnndn=m=$MODEL"
+    FILTERS=(-af "arnndn=m=$MODEL")
     echo "[encode] Using RNNoise denoise filter with model: $MODEL"
   else
     echo "[encode] Warning: DENOISE=1 but model not found at $MODEL, skipping denoise"
@@ -39,7 +39,7 @@ fi
 # - One thread to reduce CPU spikes on the Zero 2 W.
 if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
   -i "$in_wav" \
-  "$FILTERS" \
+  "${FILTERS[@]}" \
   -ac 1 -ar 48000 -sample_fmt s16 \
   -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
   "$outfile"; then
