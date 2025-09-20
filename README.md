@@ -156,7 +156,10 @@ tricorder/
 - [x] Gate debug logging behind environment variable to reduce journald volume.
 - [ ] Document audio device configuration (`arecord -l`) and how to override `AUDIO_DEV`.
 - [ ] Add self-test script/service to record, encode, and verify an event end-to-end.
-
+- [x] RMS room measurement helper tool for audio volume.
+- [ ] auto denoising while transcoding to opus... test trimming out silence as well. 
+- [ ] auto-gain control?
+- [ ] Move all tunables params and config options to a unified config file.
 ---
 
 ## Contributing
