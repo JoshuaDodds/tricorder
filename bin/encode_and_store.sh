@@ -23,11 +23,13 @@ outfile="$outdir/${base}.opus"
 # Optional denoise filter chain
 FILTERS=()
 if [[ "$DENOISE" == "1" ]]; then
-  FILTERS=(-af "highpass=f=80,afftdn")
-  echo "[encode] Using high-pass (80Hz) + FFT-based denoise (afftdn)"
+  # Chain: high-pass at 80 Hz + notch around 3 kHz + FFT denoise
+  FILTERS=(-af "highpass=f=80,equalizer=f=3000:t=q:w=1:g=-25,afftdn")
+  echo "[encode] Using high-pass (80Hz) + notch (3kHz) + FFT denoise (afftdn)"
 elif [[ "$DENOISE" == "rnnoise" ]]; then
-  FILTERS=(-af "highpass=f=80,arnndn")
-  echo "[encode] Using high-pass (80Hz) + RNNoise denoise (arnndn)"
+  # Future option if ffmpeg is rebuilt with librnnoise
+  FILTERS=(-af "highpass=f=80,equalizer=f=3000:t=q:w=1:g=-25,arnndn")
+  echo "[encode] Using high-pass (80Hz) + notch (3kHz) + RNNoise denoise"
 else
   echo "[encode] No denoise filter applied"
 fi
