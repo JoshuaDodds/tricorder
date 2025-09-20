@@ -18,6 +18,18 @@ import webrtcvad    # noqa
 import audioop      # noqa
 from lib.config import get_cfg
 
+# ANSI colors for booleans (can be disabled via NO_COLOR env)
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
+USE_COLOR = os.getenv("NO_COLOR") is None
+
+def color_tf(val: bool) -> str:
+    # Single-character stable width 'T'/'F' with color
+    if not USE_COLOR:
+        return "T" if val else "F"
+    return f"{ANSI_GREEN}T{ANSI_RESET}" if val else f"{ANSI_RED}F{ANSI_RESET}"
+
 cfg = get_cfg()
 
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -243,10 +255,10 @@ class TimelineRecorder:
         self._dbg_rms.append(rms_val)
         self._dbg_voiced.append(bool(voiced))
 
-        # once per second debug (only if DEV enabled)
+        # once per-second debug (only if DEV enabled)
         now = time.monotonic()
         if DEBUG_VERBOSE and (now - self.last_log >= 1.0):
-            # Inline, narrow VU bar
+            # Inline, narrow VU bar; numeric fields fixed width to prevent jitter
             def _bar(val: int, scale: int = 4000, width: int = 20) -> str:
                 lvl = min(width, int((val / float(scale)) * width)) if scale > 0 else 0
                 return "#" * lvl + "-" * (width - lvl)
@@ -257,8 +269,11 @@ class TimelineRecorder:
             voiced_ratio = (sum(1 for v in self._dbg_voiced if v) / win_len) if win_len else 0.0
 
             print(
-                f"[segmenter] frame={idx} rms={rms_val} voiced={voiced} loud={loud} "
-                f"active={frame_active} capturing={self.active}  |  "
+                # Left block: fixed widths and colored booleans (single-char)
+                f"[segmenter] frame={idx:6d} rms={rms_val:4d} "
+                f"voiced={color_tf(voiced)} loud={color_tf(loud)} "
+                f"active={color_tf(frame_active)} capturing={color_tf(self.active)}  |  "
+                # Right block: stable-width RMS/VAD summary and fixed-width VU bar
                 f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d}  "
                 f"VAD voiced={voiced_ratio*100:5.1f}%  |  {_bar(rms_val)}",
                 flush=True
