@@ -6,6 +6,7 @@ import sys
 import signal
 from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
+from lib.fault_handler import reset_usb
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
