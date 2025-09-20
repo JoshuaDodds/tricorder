@@ -100,6 +100,31 @@ tricorder/
 ```
 ---
 
+## Testing
+
+This project uses **pytest** for unit and end-to-end testing.
+
+### Run all tests
+```bash
+pytest -v
+```
+
+### Test categories
+- **Unit tests**: `tests/test_segmenter.py`, `tests/test_fault_handler.py`
+- **Dropbox ingestion**: `tests/test_dropbox.py` (verifies processing of external files)
+- **End-to-end**: `tests/test_end_to_end.py` (generates WAV → pipeline → validates Opus output)
+
+### CI/CD
+In CI pipelines, add:
+```yaml
+- name: Run tests
+  run: pytest -v --maxfail=1 --disable-warnings
+```
+
+Tests write to `/apps/tricorder/recordings` and temporary paths under `/tmp`. Ensure these are writable in your CI environment.
+
+---
+
 ## Installation
 
 1. Flash Ubuntu 24.04 LTS onto an SD card. Boot and connect to network.
@@ -157,7 +182,7 @@ Key sections in config.yaml:
 - [x] Gate debug logging behind environment variable to reduce journald volume.
 - [x] Move all tunables, params, and config options to a unified config file.
 - [ ] Document audio device configuration (`arecord -l`) and how to override `AUDIO_DEV`.
-- [ ] Add self-test script/service to record, encode, and verify an event end-to-end.
+- [x] Add unit and e2e tests self-test script/service to generate a wav file, encode it, and verify an event end-to-end when any code changes.
 - [x] RMS room measurement helper tool for audio volume.
 - [ ] auto denoising while transcoding to opus... test trimming out silence as well. 
 - [ ] auto-gain control?
