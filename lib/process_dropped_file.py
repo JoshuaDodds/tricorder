@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, subprocess, time
 from pathlib import Path
-from segmenter import TimelineRecorder, SAMPLE_RATE, FRAME_BYTES
+from lib.segmenter import TimelineRecorder, SAMPLE_RATE, FRAME_BYTES
 from lib.config import get_cfg
 
 cfg = get_cfg()
