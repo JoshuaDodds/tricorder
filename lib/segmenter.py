@@ -259,7 +259,7 @@ class TimelineRecorder:
         now = time.monotonic()
         if DEBUG_VERBOSE and (now - self.last_log >= 1.0):
             # Inline, narrow VU bar; numeric fields fixed width to prevent jitter
-            def _bar(val: int, scale: int = 4000, width: int = 20) -> str:
+            def _bar(val: int, scale: int = BAR_SCALE, width: int = BAR_WIDTH) -> str:
                 lvl = min(width, int((val / float(scale)) * width)) if scale > 0 else 0
                 return "#" * lvl + "-" * (width - lvl)
 
@@ -268,16 +268,22 @@ class TimelineRecorder:
             win_peak = max(self._dbg_rms) if win_len else 0
             voiced_ratio = (sum(1 for v in self._dbg_voiced if v) / win_len) if win_len else 0.0
 
-            print(
-                # Left block: fixed widths and colored booleans (single-char)
+            # Left block: keep widths stable
+            left_block = (
                 f"[segmenter] frame={idx:6d} rms={rms_val:4d} "
                 f"voiced={color_tf(voiced)} loud={color_tf(loud)} "
                 f"active={color_tf(frame_active)} capturing={color_tf(self.active)}  |  "
-                # Right block: stable-width RMS/VAD summary and fixed-width VU bar
-                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d}  "
-                f"VAD voiced={voiced_ratio*100:5.1f}%  |  {_bar(rms_val)}",
-                flush=True
             )
+
+            # Right text block with fixed width, including a percent that can reach 100.0
+            # Use 6.1f so '100.0%' fits without pushing columns
+            right_text = (
+                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d}  "
+                f"VAD voiced={voiced_ratio * 100:6.1f}%  |  "
+            )
+            right_block = right_text.ljust(RIGHT_TEXT_WIDTH)
+
+            print(f"{left_block}{right_block}{_bar(rms_val)}", flush=True)
             self.last_log = now
 
         if frame_active:
