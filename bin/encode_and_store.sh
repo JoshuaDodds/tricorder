@@ -20,17 +20,14 @@ mkdir -p "$outdir"
 
 outfile="$outdir/${base}.opus"
 
-# Optional denoise filter (FFmpeg arnndn)
+# Optional denoise filter
 FILTERS=()
 if [[ "$DENOISE" == "1" ]]; then
-  MODEL="/apps/tricorder/models/rnnoise_model.rnnn"
-  if [[ -f "$MODEL" ]]; then
-    FILTERS=(-af "arnndn=m=$MODEL")
-    echo "[encode] Using RNNoise denoise filter with custom model: $MODEL"
-  else
-    FILTERS=(-af "arnndn")
-    echo "[encode] Using RNNoise built-in model"
-  fi
+  FILTERS=(-af "afftdn")
+  echo "[encode] Using FFT-based denoise filter (afftdn)"
+elif [[ "$DENOISE" == "rnnoise" ]]; then
+  FILTERS=(-af "arnndn")
+  echo "[encode] Trying RNNoise denoise filter (arnndn)"
 fi
 
 # Notes:
