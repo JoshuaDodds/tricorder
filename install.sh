@@ -71,11 +71,13 @@ say "Installing Python deps"
 check_pkg() {
     local pkg="$1"
     local want="$2"
+    # shellcheck disable=SC2155
     local info=$(ls "$SITE" | grep -i "^${pkg}-.*\\.dist-info$" | head -n1 || true)
     if [ -z "$info" ]; then
         echo "[install] missing: $pkg ($want)"
         return 1
     fi
+    # shellcheck disable=SC2155
     local have=$(grep -m1 "^Version:" "$SITE/$info/METADATA" | awk '{print $2}')
     if [ "$have" != "$want" ]; then
         echo "[install] mismatch: $pkg (have $have, want $want)"
@@ -118,6 +120,7 @@ chmod 755 "$BASE"/bin/* 2>/dev/null || true
 cp -f lib/* "$BASE/lib/" 2>/dev/null || true
 chmod 755 "$BASE"/lib/* 2>/dev/null || true
 
+# shellcheck disable=SC2035
 cp -f *.py *.yaml "$BASE" 2>/dev/null || true
 chmod 755 "$BASE"/*.py 2>/dev/null || true
 
@@ -147,6 +150,19 @@ if [[ "${DEV:-0}" == "1" ]]; then
     chmod 644 "$BASE/__init__.py" 2>/dev/null || true
   fi
 fi
+
+# ensure models dir and rnnoise model
+say "Ensuring RNNoise model is installed"
+mkdir -p "$BASE/models"
+MODEL="$BASE/models/rnnoise_model.rnnn"
+if [[ ! -f "$MODEL" ]]; then
+  curl -L -o "$MODEL" \
+    https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/libavfilter/rnnoise/rnnoise-models/rnnoise-model.rnnn \
+    || echo "[install] Warning: failed to fetch RNNoise model"
+else
+  echo "[install] RNNoise model already present"
+fi
+
 
 if [[ "${DEV:-0}" != "1" ]]; then
   say "Enable, reload, and restart Systemd units"
