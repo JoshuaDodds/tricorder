@@ -2,8 +2,6 @@
 import os
 import time
 import subprocess
-import sys
-import signal
 from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
@@ -34,19 +32,16 @@ p = None
 ffmpeg_proc = None
 
 
-def handle_signal(signum, frame):  # noqa
-    """Handle SIGINT/SIGTERM for graceful shutdown."""
+def request_stop():
+    """Ask the daemon to stop gracefully."""
     global stop_requested, p, ffmpeg_proc
-    print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
-
-    if p is not None and p.poll() is None:
+    if p and p.poll() is None:
         try:
             p.terminate()
         except Exception:
             pass
-
-    if ffmpeg_proc is not None and ffmpeg_proc.poll() is None:
+    if ffmpeg_proc and ffmpeg_proc.poll() is None:
         try:
             if ffmpeg_proc.stdin:
                 ffmpeg_proc.stdin.close()
@@ -56,10 +51,6 @@ def handle_signal(signum, frame):  # noqa
             ffmpeg_proc.terminate()
         except Exception:
             pass
-
-
-signal.signal(signal.SIGINT, handle_signal)
-signal.signal(signal.SIGTERM, handle_signal)
 
 
 def spawn_arecord():
@@ -223,11 +214,3 @@ def main():
         pass
 
     print("[live] clean shutdown complete", flush=True)
-
-
-if __name__ == "__main__":
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass
-    main()

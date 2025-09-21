@@ -10,7 +10,6 @@ Development launcher for Tricorder.
 """
 
 import os
-import signal
 import subprocess
 import sys
 import termios
@@ -38,6 +37,7 @@ class KeyWatcher(threading.Thread):
         self.old_settings = termios.tcgetattr(self.fd)
         tty.setcbreak(self.fd)
         self.restart_requested = False
+        self.stop_requested = False
 
     def run(self):
         try:
@@ -46,10 +46,11 @@ class KeyWatcher(threading.Thread):
                 if not ch:
                     continue
                 if ch == b"\x03":  # Ctrl-C
-                    os.kill(os.getpid(), signal.SIGINT)
+                    self.stop_requested = True
+                    break
                 elif ch == b"\x12":  # Ctrl-R
                     self.restart_requested = True
-                    os.kill(os.getpid(), signal.SIGTERM)
+                    break
         finally:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
 
@@ -98,12 +99,19 @@ def main():
                 access_log=False,
                 log_level="INFO",
             )
+
+            # Block here until watcher signals stop or restart
+            while not (watcher.stop_requested or watcher.restart_requested):
+                time.sleep(0.2)
+
         finally:
             print("[dev] Stopping web_streamer ...")
             try:
                 web_streamer.stop()
             except Exception:
                 pass
+            # Tell daemon to exit
+            live_stream_daemon.request_stop()
             termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
 
         if watcher.restart_requested:
