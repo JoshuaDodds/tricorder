@@ -127,8 +127,8 @@ def make_infinite_wav_header(num_channels: int, sample_rate: int, bits_per_sampl
     """
     block_align = (num_channels * bits_per_sample) // 8
     byte_rate = sample_rate * block_align
-    riff_size = 0xFFFFFFFF
-    data_size = 0xFFFFFFFF
+    riff_size = 0
+    data_size = 0
 
     return b"".join([
         b"RIFF",
@@ -373,7 +373,7 @@ def build_app(pattern: str, chunk_bytes: int) -> web.Application:
             text="""<!doctype html>
 <html>
 <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>WAV Live Stream</title>
+<title>Tricorder Live Stream</title>
 <style>
 body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 1rem; }
 .hint { color: #555; font-size: 0.9rem; }
@@ -381,7 +381,7 @@ audio { width: 100%; margin-top: 1rem; }
 </style>
 </head>
 <body>
-  <h1>WAV Live Stream</h1>
+  <h1>Tricorder Live Stream</h1>
   <div class="hint">Tap Play on iPhone (autoplay with sound is blocked by Safari).</div>
   <audio controls preload="none">
     <source src="/stream.wav" type="audio/wav">
