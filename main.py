@@ -3,7 +3,7 @@
 Development launcher for Tricorder.
 
 - Stops voice-recorder.service on startup if running
-- Runs live_stream_daemon in foreground
+- Runs live_stream_daemon in its own thread
 - Starts web_streamer hooked to ffmpeg stdout (after ffmpeg is ready)
 - Ctrl-C exits cleanly
 - Ctrl-R restarts cleanly
@@ -66,7 +66,8 @@ def wait_for_ffmpeg_stdout(timeout=5.0, poll=0.1):
     return None
 
 
-def run_once():
+def run_daemon_thread():
+    """Run the live stream daemon in its own thread."""
     try:
         live_stream_daemon.main()
     except KeyboardInterrupt:
@@ -75,43 +76,49 @@ def run_once():
 
 def main():
     stop_service()
-    print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
+    print("[dev] Running live_stream_daemon + web_streamer (Ctrl-C to exit, Ctrl-R to restart)")
 
     while True:
         watcher = KeyWatcher()
         watcher.start()
+
+        # Launch live_stream_daemon in a separate thread
+        daemon_thread = threading.Thread(target=run_daemon_thread, name="live_stream_daemon", daemon=True)
+        daemon_thread.start()
+
+        # Wait for ffmpeg stdout to become available
+        stdout = wait_for_ffmpeg_stdout(timeout=10.0)
+        if not stdout:
+            print("[dev] ERROR: ffmpeg stdout not available, cannot start web_streamer")
+            live_stream_daemon.request_stop()
+            daemon_thread.join(timeout=2)
+            return 1
+
+        # Start web streamer once ffmpeg is ready
+        web_streamer = start_web_streamer_in_thread(
+            ffmpeg_stdout=stdout,
+            host="0.0.0.0",
+            port=8080,
+            chunk_bytes=4096,
+            access_log=False,
+            log_level="INFO",
+        )
+
+        # Wait until watcher signals stop or restart
         try:
-            # Launch the live stream daemon (spawns ffmpeg inside)
-            run_once()
-
-            # Wait for ffmpeg stdout to become available
-            stdout = wait_for_ffmpeg_stdout()
-            if not stdout:
-                print("[dev] ERROR: ffmpeg stdout not available, cannot start web_streamer")
-                return 1
-
-            # Start web streamer once ffmpeg is ready
-            web_streamer = start_web_streamer_in_thread(
-                ffmpeg_stdout=stdout,
-                host="0.0.0.0",
-                port=8080,
-                chunk_bytes=4096,
-                access_log=False,
-                log_level="INFO",
-            )
-
-            # Block here until watcher signals stop or restart
             while not (watcher.stop_requested or watcher.restart_requested):
                 time.sleep(0.2)
-
         finally:
             print("[dev] Stopping web_streamer ...")
             try:
                 web_streamer.stop()
             except Exception:
                 pass
-            # Tell daemon to exit
+
+            print("[dev] Stopping live_stream_daemon ...")
             live_stream_daemon.request_stop()
+            daemon_thread.join(timeout=5)
+
             termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
 
         if watcher.restart_requested:
