@@ -86,13 +86,24 @@ def spawn_ffmpeg_opus(out_path: str):
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "warning",
+
+        # Input: raw PCM from stdin
         "-f", "s16le",
         "-ar", str(SAMPLE_RATE),
         "-ac", "1",
         "-i", "pipe:0",
+
+        # Encoder
         "-c:a", "libopus",
         "-b:a", "32k",
+
+        # Ogg container, tuned for streaming
         "-f", "ogg",
+        "-flush_packets", "1",   # flush each packet
+        "-fflags", "+genpts",    # generate pts
+        "-max_delay", "0",       # no muxer buffering
+        "-rtbufsize", "0",       # no internal buffering
+
         out_path,
     ]
     env = os.environ.copy()
