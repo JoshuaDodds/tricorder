@@ -185,6 +185,7 @@ Key sections in config.yaml:
 - [x] RMS room measurement helper tool for audio volume.
 - [x] auto denoising while transcoding to opus... test trimming out silence as well.
 - [x] Move all tunables, params, and config options to a unified config file.
+- [ ] Add RMS level that triggers a recording event as meta data in filename with postfix eg. *_Both_RMS-<int>_1.opus
 ---
 
 ## Contributing
