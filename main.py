@@ -67,11 +67,10 @@ def wait_for_ffmpeg_stdout(timeout=5.0, poll=0.1):
 
 
 def run_daemon_thread():
-    """Run the live stream daemon in its own thread."""
     try:
         live_stream_daemon.main()
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        print(f"[dev] live_stream_daemon thread exited: {e!r}")
 
 
 def main():
@@ -82,11 +81,11 @@ def main():
         watcher = KeyWatcher()
         watcher.start()
 
-        # Launch live_stream_daemon in a separate thread
+        # Start daemon in a background thread
         daemon_thread = threading.Thread(target=run_daemon_thread, name="live_stream_daemon", daemon=True)
         daemon_thread.start()
 
-        # Wait for ffmpeg stdout to become available
+        # Wait for ffmpeg stdout
         stdout = wait_for_ffmpeg_stdout(timeout=10.0)
         if not stdout:
             print("[dev] ERROR: ffmpeg stdout not available, cannot start web_streamer")
@@ -94,7 +93,7 @@ def main():
             daemon_thread.join(timeout=2)
             return 1
 
-        # Start web streamer once ffmpeg is ready
+        # Start web streamer
         web_streamer = start_web_streamer_in_thread(
             ffmpeg_stdout=stdout,
             host="0.0.0.0",
@@ -104,7 +103,7 @@ def main():
             log_level="INFO",
         )
 
-        # Wait until watcher signals stop or restart
+        # Keep looping until Ctrl-C or Ctrl-R
         try:
             while not (watcher.stop_requested or watcher.restart_requested):
                 time.sleep(0.2)
