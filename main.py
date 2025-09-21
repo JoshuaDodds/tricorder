@@ -4,7 +4,7 @@ Development launcher for Tricorder.
 
 - Stops voice-recorder.service on startup if running
 - Runs live_stream_daemon in foreground
-- Starts web_streamer hooked to ffmpeg stdout
+- Starts web_streamer hooked to ffmpeg stdout (after ffmpeg is ready)
 - Ctrl-C exits cleanly
 - Ctrl-R restarts cleanly
 """
@@ -16,6 +16,7 @@ import sys
 import termios
 import tty
 import threading
+import time
 
 from lib import live_stream_daemon
 from lib.web_streamer import start_web_streamer_in_thread
@@ -53,6 +54,17 @@ class KeyWatcher(threading.Thread):
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
 
 
+def wait_for_ffmpeg_stdout(timeout=5.0, poll=0.1):
+    """Wait until live_stream_daemon.ffmpeg_proc is spawned and stdout available."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        stdout = live_stream_daemon.get_ffmpeg_stdout()
+        if stdout is not None:
+            return stdout
+        time.sleep(poll)
+    return None
+
+
 def run_once():
     try:
         live_stream_daemon.main()
@@ -64,36 +76,38 @@ def main():
     stop_service()
     print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
 
-    # Attach streamer to ffmpeg stdout (spawned in live_stream_daemon)
-    web_streamer = start_web_streamer_in_thread(
-        ffmpeg_stdout=live_stream_daemon.get_ffmpeg_stdout(),
-        host="0.0.0.0",
-        port=8080,
-        chunk_bytes=4096,
-        access_log=False,
-        log_level="INFO",
-    )
-
     while True:
         watcher = KeyWatcher()
         watcher.start()
         try:
+            # Launch the live stream daemon (spawns ffmpeg inside)
             run_once()
-        finally:
-            print("[dev] Stopping web_streamer ...")
-            web_streamer.stop()
-            termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
 
-        if watcher.restart_requested:
-            print("[dev] Restart requested via Ctrl-R")
+            # Wait for ffmpeg stdout to become available
+            stdout = wait_for_ffmpeg_stdout()
+            if not stdout:
+                print("[dev] ERROR: ffmpeg stdout not available, cannot start web_streamer")
+                return 1
+
+            # Start web streamer once ffmpeg is ready
             web_streamer = start_web_streamer_in_thread(
-                ffmpeg_stdout=live_stream_daemon.get_ffmpeg_stdout(),
+                ffmpeg_stdout=stdout,
                 host="0.0.0.0",
                 port=8080,
                 chunk_bytes=4096,
                 access_log=False,
                 log_level="INFO",
             )
+        finally:
+            print("[dev] Stopping web_streamer ...")
+            try:
+                web_streamer.stop()
+            except Exception:
+                pass
+            termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
+
+        if watcher.restart_requested:
+            print("[dev] Restart requested via Ctrl-R")
             continue
         else:
             print("[dev] Exiting dev mode")
