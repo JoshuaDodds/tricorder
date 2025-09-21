@@ -17,6 +17,7 @@ import tty
 import threading
 
 from lib import live_stream_daemon
+from lib.web_streamer import start_web_streamer_in_thread
 
 SERVICE = "voice-recorder.service"
 
@@ -62,17 +63,37 @@ def main():
     stop_service()
     print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
 
+    web_streamer = start_web_streamer_in_thread(
+        pattern="/apps/tricorder/tmp/*.wav",
+        host="0.0.0.0",
+        port=8080,
+        chunk_bytes=8192,
+        access_log=False,
+        log_level="INFO",
+    )
+
     while True:
         watcher = KeyWatcher()
         watcher.start()
         try:
             run_once()
         finally:
-            # Always restore terminal mode
+            # IMPORTANT: stop the web streamer FIRST to avoid race/TTY side effects
+            print("[dev] Stopping web_streamer ...")
+            web_streamer.stop()
+            # Always restore terminal mode after services are down
             termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
 
         if watcher.restart_requested:
             print("[dev] Restart requested via Ctrl-R")
+            web_streamer = start_web_streamer_in_thread(
+                pattern="/apps/tricorder/tmp/*.wav",
+                host="0.0.0.0",
+                port=8080,
+                chunk_bytes=8192,
+                access_log=False,
+                log_level="INFO",
+            )
             continue
         else:
             print("[dev] Exiting dev mode")
