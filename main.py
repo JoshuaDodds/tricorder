@@ -4,6 +4,7 @@ Development launcher for Tricorder.
 
 - Stops voice-recorder.service on startup if running
 - Runs live_stream_daemon in foreground
+- Starts web_streamer thread hooked to ffmpeg stdout
 - Ctrl-C exits cleanly
 - Ctrl-R restarts the foreground daemon
 """
@@ -63,11 +64,13 @@ def main():
     stop_service()
     print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
 
+    # Start ffmpeg encoder once, get its stdout
+    live_stream_daemon.ffmpeg_proc = live_stream_daemon.spawn_ffmpeg_encoder()
     web_streamer = start_web_streamer_in_thread(
-        pattern="/apps/tricorder/tmp/web_stream.wav",
+        ffmpeg_stdout=live_stream_daemon.ffmpeg_proc.stdout,
         host="0.0.0.0",
         port=8080,
-        chunk_bytes=8192,
+        chunk_bytes=4096,
         access_log=False,
         log_level="INFO",
     )
@@ -86,11 +89,13 @@ def main():
 
         if watcher.restart_requested:
             print("[dev] Restart requested via Ctrl-R")
+            # restart ffmpeg encoder
+            live_stream_daemon.ffmpeg_proc = live_stream_daemon.spawn_ffmpeg_encoder()
             web_streamer = start_web_streamer_in_thread(
-                pattern="/apps/tricorder/tmp/web_stream.wav",
+                ffmpeg_stdout=live_stream_daemon.ffmpeg_proc.stdout,
                 host="0.0.0.0",
                 port=8080,
-                chunk_bytes=8192,
+                chunk_bytes=4096,
                 access_log=False,
                 log_level="INFO",
             )
