@@ -2,27 +2,30 @@
 """
 Lightweight WAV live streamer over HTTP for desktop/mobile (iOS Safari compatible).
 
+Overview:
+- Audio is captured continuously by live_stream_daemon (arecord).
+- Frames are "tapped" in live_stream_daemon and written to a dedicated rolling file
+  (web_stream.wav) in $BASE/tmp via web_stream_tap.py.
+- This rolling file always contains the last N seconds of audio (default: 60s).
+- web_streamer serves this file over HTTP as a continuous stream.
+
 Key features:
-- Zero transcoding (pass-through PCM from a growing WAV).
+- Zero transcoding (pass-through PCM from the rolling WAV).
 - No file locks; per-client read-only tailing with tiny buffers.
 - Async, low-overhead HTTP server (aiohttp) with chunked transfer.
 - Sends an "infinite" WAV header per-connection so browsers start playback immediately.
 - Multiple clients supported; each holds its own file descriptor.
-- Supports rotating WAV inputs via a glob pattern (e.g., /apps/tricorder/tmp/*.wav).
-- Client controls: ?from_start=1 and ?prebuffer_ms=NNN (up to 60s).
-- Detects truncation and inode changes (log rotation), auto-recovers.
-- Periodic rescan to switch to the latest WAV mid-stream when it appears.
+- Client controls:
+    ?from_start=1        start at the data chunk start
+    ?prebuffer_ms=NNN    include up to N ms history before live tail (clamped to 60s)
+- Detects truncation and inode changes (rolling/truncate behavior), auto-recovers.
 - Runnable standalone (CLI) or embedded via start_web_streamer_in_thread() with clean stop().
 
 Endpoints:
   GET /                 -> Minimal test page with <audio> tag.
-  GET /stream.wav       -> Live WAV stream (starts at tail by default).
-                           Query params:
-                             from_start=1    start at data chunk start
-                             prebuffer_ms=0  include up to N ms history before live tail (clamped)
-  GET /healthz          -> JSON with currently selected file (best effort)
+  GET /stream.wav       -> Live WAV stream of the rolling file.
+  GET /healthz          -> JSON with info about the current active file
 """
-
 import argparse
 import asyncio
 import glob
@@ -513,8 +516,8 @@ def start_web_streamer_in_thread(
 
 def cli_main():
     parser = argparse.ArgumentParser(description="Live WAV HTTP streamer (asyncio, low-overhead).")
-    parser.add_argument("--pattern", default="/apps/tricorder/tmp/*.wav",
-                        help="Glob for WAV files (default: /apps/tricorder/tmp/*.wav).")
+    parser.add_argument("--pattern", default="/apps/tricorder/tmp/web_stream.wav",
+                        help="Glob for WAV files (default: /apps/tricorder/tmp/web_stream.wav).")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0).")
     parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080).")
     parser.add_argument("--chunk-bytes", type=int, default=8192, help="Per-write chunk size (default: 8192).")

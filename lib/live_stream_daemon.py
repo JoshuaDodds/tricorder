@@ -7,6 +7,7 @@ import signal
 from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
+from lib.web_stream_tap import WebStreamTee
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -65,6 +66,16 @@ def main():
     global p, stop_requested
     stop_requested = False  # reset on each new run
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
+
+    tap = WebStreamTee(
+        path=os.path.join(cfg["paths"]["tmp_dir"], "web_stream.wav"),
+        sample_rate=SAMPLE_RATE,
+        channels=1,
+        bits_per_sample=16,
+        history_seconds=60,
+    )
+    tap.start()
+
     while not stop_requested:
         p = None
         try:
@@ -97,6 +108,7 @@ def main():
 
                 while len(buf) >= FRAME_BYTES:
                     frame = bytes(buf[:FRAME_BYTES])
+                    tap.feed(frame)  # new: continuous tee for web streamer
                     rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
@@ -124,6 +136,7 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
+                    tap.stop() # stop tapping frames for the web streamer
                     rec.flush(frame_idx) # noqa
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
