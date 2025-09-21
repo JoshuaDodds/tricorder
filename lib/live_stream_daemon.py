@@ -106,6 +106,12 @@ def spawn_ffmpeg_encoder():
     )
 
 
+def get_ffmpeg_stdout():
+    """Expose the shared ffmpeg stdout for web_streamer."""
+    global ffmpeg_proc
+    return ffmpeg_proc.stdout if ffmpeg_proc else None
+
+
 def main():
     global p, stop_requested, ffmpeg_proc
     stop_requested = False
@@ -154,7 +160,9 @@ def main():
                     except Exception as e:
                         print(f"[live] ffmpeg write error: {e!r}", flush=True)
 
+                    # Existing segmenter path
                     rec.ingest(frame, frame_idx)
+
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
                     last_frame_time = time.monotonic()

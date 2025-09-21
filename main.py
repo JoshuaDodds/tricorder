@@ -4,9 +4,9 @@ Development launcher for Tricorder.
 
 - Stops voice-recorder.service on startup if running
 - Runs live_stream_daemon in foreground
-- Starts web_streamer thread hooked to ffmpeg stdout
+- Starts web_streamer hooked to ffmpeg stdout
 - Ctrl-C exits cleanly
-- Ctrl-R restarts the foreground daemon
+- Ctrl-R restarts cleanly
 """
 
 import os
@@ -25,7 +25,7 @@ SERVICE = "voice-recorder.service"
 
 def stop_service():
     subprocess.run(["systemctl", "is-active", "--quiet", SERVICE])
-    if sys.exc_info()[0] is None:  # the last command succeeded
+    if sys.exc_info()[0] is None:
         print(f"[dev] Stopping {SERVICE} ...")
         subprocess.run(["systemctl", "stop", SERVICE], check=False)
 
@@ -64,10 +64,9 @@ def main():
     stop_service()
     print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
 
-    # Start ffmpeg encoder once, get its stdout
-    live_stream_daemon.ffmpeg_proc = live_stream_daemon.spawn_ffmpeg_encoder()
+    # Attach streamer to ffmpeg stdout (spawned in live_stream_daemon)
     web_streamer = start_web_streamer_in_thread(
-        ffmpeg_stdout=live_stream_daemon.ffmpeg_proc.stdout,
+        ffmpeg_stdout=live_stream_daemon.get_ffmpeg_stdout(),
         host="0.0.0.0",
         port=8080,
         chunk_bytes=4096,
@@ -81,18 +80,14 @@ def main():
         try:
             run_once()
         finally:
-            # IMPORTANT: stop the web streamer FIRST to avoid race/TTY side effects
             print("[dev] Stopping web_streamer ...")
             web_streamer.stop()
-            # Always restore terminal mode after services are down
             termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
 
         if watcher.restart_requested:
             print("[dev] Restart requested via Ctrl-R")
-            # restart ffmpeg encoder
-            live_stream_daemon.ffmpeg_proc = live_stream_daemon.spawn_ffmpeg_encoder()
             web_streamer = start_web_streamer_in_thread(
-                ffmpeg_stdout=live_stream_daemon.ffmpeg_proc.stdout,
+                ffmpeg_stdout=live_stream_daemon.get_ffmpeg_stdout(),
                 host="0.0.0.0",
                 port=8080,
                 chunk_bytes=4096,
