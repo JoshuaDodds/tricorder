@@ -19,6 +19,8 @@ Note: This project is pinned to Python ≥3.10 with requirements.txt to ensure c
 - Efficient encoding with `ffmpeg` (Opus @ ~48 kbps, mono)
 - Event-based segmentation with pre- / post-roll context
 - Systemd-managed services for recording, encoding, storage, and syncing
+- On-demand HLS web streaming of the live microphone feed with automatic
+  start/stop when listeners connect or disconnect
 - Automatic tmpfs space guard and log rotation
 
 ---
@@ -43,6 +45,13 @@ graph TD
     C -->|tmp wav| D[encode_and_store.sh]
     D -->|opus files| E["recordings dir (/apps/tricorder/recordings)"]
 
+    B -->|frames| H[HLSTee (HLS encoder)]
+    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"]
+    I -->|static files| J[web_streamer.py (aiohttp)]
+    J -->|HTTP HLS| K[Browsers / Clients]
+    J -->|client events| L[HLS controller]
+    L -->|start/stop| H
+
     subgraph Dropbox Ingestion
         F["Incoming File (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py]
         G --> C
@@ -54,6 +63,33 @@ graph TD
         J[tmpfs-guard.timer + tmpfs-guard.service] --> E
     end
 ```
+
+## Live HLS Web Streaming
+
+Real-time listening is handled by a lightweight HLS pipeline that only runs
+while someone is tuned in:
+
+- `live_stream_daemon.py` instantiates `HLSTee` but leaves it idle until
+  requested. Audio frames are always fed so a warm encoder can spin up quickly.
+- `web_streamer.py` is an `aiohttp` server that serves `/hls/live.m3u8` and the
+  generated segments, plus a simple dashboard that shows listener counts.
+- `hls_controller` tracks active clients and starts the encoder on the first
+  listener, then schedules a cooldown stop once the audience drops to zero.
+
+HLS artifacts (playlist + `.ts` segments) live under `<tmp_dir>/hls`
+(defaults to `/apps/tricorder/tmp/hls`). `ffmpeg`'s `-hls_flags delete_segments`
+keeps this directory self-pruning.
+
+### Running the streamer locally
+
+```bash
+python -m lib.web_streamer --host 0.0.0.0 --port 8080
+```
+
+Visit `http://<device>:8080/hls` to listen. The page automatically calls
+`/hls/start` and `/hls/stop` so the encoder powers up only when needed. During
+local development `python main.py` launches both the recorder loop and the web
+streamer in tandem.
 
 ---
 
@@ -85,10 +121,14 @@ tricorder/
 │
 ├── lib/
 │ ├── __init__.py
+│ ├── config.py
 │ ├── fault_handler.py
+│ ├── hls_controller.py
+│ ├── hls_mux.py
 │ ├── live_stream_daemon.py
 │ ├── process_dropped_file.py
-│ └── segmenter.py
+│ ├── segmenter.py
+│ └── web_streamer.py
 │
 └── systemd/
 ├── voice-recorder.service
@@ -110,9 +150,11 @@ pytest -v
 ```
 
 ### Test categories
-- **Unit tests**: `tests/test_segmenter.py`, `tests/test_fault_handler.py`
-- **Dropbox ingestion**: `tests/test_dropbox.py` (verifies processing of external files)
-- **End-to-end**: `tests/test_end_to_end.py` (generates WAV → pipeline → validates Opus output)
+- **Unit tests**: `tests/test_10_segmenter.py`, `tests/test_20__fault_handler.py`
+- **Dropbox ingestion**: `tests/test_30_dropbox.py` (verifies processing of external files)
+- **End-to-end**: `tests/test_40_end_to_end.py` (generates WAV → pipeline → validates Opus output)
+- **Installer / cleanup**: `tests/test_00_install.py`, `tests/test_50_uninstall.py`
+- **HLS streaming controls**: `tests/test_60_hls.py` (on-demand encoder + client lifecycle)
 
 ### CI/CD
 In CI pipelines, add:
@@ -186,7 +228,7 @@ Key sections in config.yaml:
 - [x] auto denoising while transcoding to opus... test trimming out silence as well.
 - [x] Move all tunables, params, and config options to a unified config file.
 - [ ] Add RMS level that triggers a recording event as meta data in filename with postfix eg. *_Both_RMS-<int>_1.opus
-- [ ] Update README with new web streaming details. 
+- [x] Update README with new web streaming details.
 ---
 
 ## Contributing
