@@ -28,10 +28,15 @@ Endpoints:
 
 import argparse
 import asyncio
+import contextlib
+import functools
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -42,6 +47,66 @@ from aiohttp.web import AppKey
 from lib.hls_controller import controller
 from lib import webui
 from lib.config import get_cfg
+
+
+@functools.lru_cache(maxsize=1024)
+def _probe_duration_cached(path_str: str, mtime_ns: int, size_bytes: int) -> float | None:
+    _ = size_bytes  # participates in cache key to invalidate when file size changes
+    path = Path(path_str)
+    suffix = path.suffix.lower()
+
+    if suffix == ".wav":
+        try:
+            with contextlib.closing(wave.open(path_str, "rb")) as wav_file:
+                frames = wav_file.getnframes()
+                rate = wav_file.getframerate() or 0
+                if frames > 0 and rate > 0:
+                    return frames / float(rate)
+        except FileNotFoundError:
+            return None
+        except (OSError, wave.Error):
+            pass
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path_str,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, PermissionError):
+        return None
+
+    duration_text = (result.stdout or "").strip()
+    try:
+        duration = float(duration_text)
+    except (TypeError, ValueError):
+        return None
+
+    if duration <= 0:
+        return None
+
+    return duration
+
+
+def _probe_duration(path: Path, stat: os.stat_result) -> float | None:
+    mtime_ns = getattr(stat, "st_mtime_ns", None)
+    if mtime_ns is None:
+        mtime_ns = int(stat.st_mtime * 1_000_000_000)
+    size_bytes = int(getattr(stat, "st_size", 0) or 0)
+    return _probe_duration_cached(str(path), int(mtime_ns), size_bytes)
 
 
 SHUTDOWN_EVENT_KEY: AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
@@ -94,12 +159,13 @@ def build_app() -> web.Application:
         html = webui.render_template("hls_index.html", **template_defaults)
         return web.Response(text=html, content_type="text/html")
 
-    def _scan_recordings() -> tuple[list[dict[str, object]], list[str], list[str]]:
+    def _scan_recordings() -> tuple[list[dict[str, object]], list[str], list[str], int]:
         entries: list[dict[str, object]] = []
         day_set: set[str] = set()
         ext_set: set[str] = set()
+        total_bytes = 0
         if not recordings_root.exists():
-            return entries, [], []
+            return entries, [], [], 0
 
         for path in recordings_root.rglob("*"):
             if not path.is_file():
@@ -124,22 +190,26 @@ def build_app() -> web.Application:
             if suffix:
                 ext_set.add(suffix)
 
+            duration = _probe_duration(path, stat)
+            size_bytes = stat.st_size
+            total_bytes += size_bytes
             entries.append(
                 {
                     "name": path.stem,
                     "path": rel_posix,
                     "day": day,
                     "extension": suffix.lstrip("."),
-                    "size_bytes": stat.st_size,
+                    "size_bytes": size_bytes,
                     "modified": stat.st_mtime,
                     "modified_iso": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    "duration": duration,
                 }
             )
 
         entries.sort(key=lambda item: item["modified"], reverse=True)
         days_sorted = sorted(day_set, reverse=True)
         exts_sorted = sorted(ext.lstrip(".") for ext in ext_set)
-        return entries, days_sorted, exts_sorted
+        return entries, days_sorted, exts_sorted, total_bytes
 
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
         query = request.rel_url.query
@@ -203,6 +273,11 @@ def build_app() -> web.Application:
                 "size_bytes": int(entry.get("size_bytes", 0) or 0),
                 "modified": float(entry.get("modified", 0.0) or 0.0),
                 "modified_iso": str(entry.get("modified_iso", "")),
+                "duration_seconds": (
+                    float(entry.get("duration"))
+                    if isinstance(entry.get("duration"), (int, float))
+                    else None
+                ),
             }
             for entry in window
         ]
@@ -216,10 +291,19 @@ def build_app() -> web.Application:
         }
 
     async def recordings_api(request: web.Request) -> web.Response:
-        entries, available_days, available_exts = _scan_recordings()
+        entries, available_days, available_exts, total_bytes = _scan_recordings()
         payload = _filter_recordings(entries, request)
         payload["available_days"] = available_days
         payload["available_extensions"] = available_exts
+        payload["recordings_total_bytes"] = total_bytes
+        try:
+            usage = shutil.disk_usage(recordings_root)
+        except (FileNotFoundError, PermissionError, OSError):
+            usage = None
+        if usage is not None:
+            payload["storage_total_bytes"] = int(usage.total)
+            payload["storage_used_bytes"] = int(usage.used)
+            payload["storage_free_bytes"] = int(usage.free)
         return web.json_response(payload)
 
     async def recordings_delete(request: web.Request) -> web.Response:
