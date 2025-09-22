@@ -28,6 +28,7 @@ import time
 from aiohttp import web
 
 from lib.hls_controller import controller
+from lib import webui
 
 
 def build_app() -> web.Application:
@@ -39,164 +40,22 @@ def build_app() -> web.Application:
     hls_dir = os.path.join(tmp_root, "hls")
     os.makedirs(hls_dir, exist_ok=True)
 
-    # --- HTML pages (displays live client count / encoder status) ---
-    def _index_html() -> str:
-        return """<!doctype html>
-<html>
-<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Tricorder HLS Stream</title>
-<style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:1rem}
-.stats{color:#555;margin:.5rem 0}
-audio{width:100%;margin-top:1rem}
-.badge{display:inline-block;padding:.2rem .5rem;border-radius:.5rem;border:1px solid #ccc;min-width:3ch;text-align:center}
-</style>
-</head>
-<body>
-  <h1>HLS Audio Stream</h1>
-  <div class="stats">
-    Active listeners: <span id="clients" class="badge">0</span>
-    &nbsp;|&nbsp; Encoder: <span id="enc" class="badge">stopped</span>
-  </div>
-  <audio id="player" controls autoplay></audio>
-  <script>
-  (function() {
-    var url = '/hls/live.m3u8';
-    var audio = document.getElementById('player');
-    var clients = document.getElementById('clients');
-    var enc = document.getElementById('enc');
-    var sessionKey = 'tricorder.session';
-    var sessionId = null;
-
-    function generateSessionId() {
-      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-        return window.crypto.randomUUID();
-      }
-      if (window.crypto && window.crypto.getRandomValues) {
-        var arr = new Uint8Array(16);
-        window.crypto.getRandomValues(arr);
-        return Array.from(arr, function(x) { return x.toString(16).padStart(2, '0'); }).join('');
-      }
-      return 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    template_defaults = {
+        "page_title": "Tricorder HLS Stream",
+        "heading": "HLS Audio Stream",
     }
-
-    function ensureSessionId() {
-      if (sessionId) {
-        return sessionId;
-      }
-      try {
-        sessionId = sessionStorage.getItem(sessionKey);
-      } catch (err) {
-        sessionId = null;
-      }
-      if (!sessionId) {
-        sessionId = generateSessionId();
-        try {
-          sessionStorage.setItem(sessionKey, sessionId);
-        } catch (err) {
-          /* ignore */
-        }
-      }
-      return sessionId;
-    }
-
-    function buildSessionUrl(path) {
-      var id = ensureSessionId();
-      if (!id) {
-        return path;
-      }
-      var sep = path.indexOf('?') === -1 ? '?' : '&';
-      return path + sep + 'session=' + encodeURIComponent(id);
-    }
-
-    function sendStart() {
-      fetch(buildSessionUrl('/hls/start'), {cache: 'no-store'}).catch(function(){});
-    }
-
-    function sendStop(useBeacon) {
-      var urlWithSession = buildSessionUrl('/hls/stop');
-      if (useBeacon && navigator.sendBeacon) {
-        try {
-          navigator.sendBeacon(urlWithSession, '');
-          return;
-        } catch (err) {
-          /* ignore and fall back */
-        }
-      }
-      fetch(urlWithSession, {cache: 'no-store', keepalive: true}).catch(function(){});
-    }
-
-    function updateStats() {
-      fetch('/hls/stats',{cache:'no-store'}).then(r => r.json()).then(function(j) {
-        clients.textContent = j.active_clients;
-        enc.textContent = j.encoder_running ? 'running' : 'stopped';
-      }).catch(function(){});
-    }
-
-    function nativeHlsOk() {
-      return audio.canPlayType('application/vnd.apple.mpegurl') || audio.canPlayType('application/x-mpegURL');
-    }
-
-    function startPlay() {
-      sendStart();
-      if (nativeHlsOk()) {
-        audio.src = url;
-      } else {
-        var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
-        s.onload = function() {
-          if (window.Hls && window.Hls.isSupported()) {
-            var hls = new Hls({ lowLatencyMode: true });
-            hls.loadSource(url);
-            hls.attachMedia(audio);
-          } else {
-            audio.src = url;
-          }
-        };
-        document.body.appendChild(s);
-      }
-    }
-
-    ensureSessionId();
-
-    window.addEventListener('load', function(){
-      startPlay();
-      updateStats();
-      setInterval(updateStats, 2000);
-    });
-
-    // Try to decrement on tab close / backgrounding
-    window.addEventListener('beforeunload', function(){
-      sendStop(true);
-    });
-    window.addEventListener('pagehide', function(){
-      sendStop(true);
-    });
-    document.addEventListener('visibilitychange', function(){
-      if (document.visibilityState === 'hidden') {
-        sendStop(false);
-      } else if (document.visibilityState === 'visible') {
-        sendStart();
-      }
-    });
-  })();
-  </script>
-  <p><a href="/healthz">healthz</a></p>
-</body>
-</html>"""
 
     async def index(_: web.Request) -> web.Response:
-        return web.Response(text=_index_html(), content_type="text/html")
+        html = webui.render_template("hls_index.html", **template_defaults)
+        return web.Response(text=html, content_type="text/html")
 
     # --- Control/Stats API ---
-    async def hls_start(request: web.Request) -> web.Response:
-        session_id = request.rel_url.query.get("session")
-        n = controller.client_connected(session_id=session_id)
+    async def hls_start(_: web.Request) -> web.Response:
+        n = controller.client_connected()
         return web.json_response({"ok": True, "active_clients": n})
 
-    async def hls_stop(request: web.Request) -> web.Response:
-        session_id = request.rel_url.query.get("session")
-        n = controller.client_disconnected(session_id=session_id)
+    async def hls_stop(_: web.Request) -> web.Response:
+        n = controller.client_disconnected()
         return web.json_response({"ok": True, "active_clients": n})
 
     async def hls_stats(_: web.Request) -> web.Response:
@@ -222,9 +81,7 @@ audio{width:100%;margin-top:1rem}
 
     # Control + stats
     app.router.add_get("/hls/start", hls_start)
-    app.router.add_post("/hls/start", hls_start)
     app.router.add_get("/hls/stop", hls_stop)
-    app.router.add_post("/hls/stop", hls_stop)
     app.router.add_get("/hls/stats", hls_stats)
 
     # Playlist handler BEFORE static, so we can ensure start on direct access
@@ -232,6 +89,7 @@ audio{width:100%;margin-top:1rem}
 
     # Static segments/playlist directory (segments like seg00001.ts)
     app.router.add_static("/hls/", hls_dir, show_index=True)
+    app.router.add_static("/static/", webui.static_directory(), show_index=False)
 
     app.router.add_get("/healthz", healthz)
     return app

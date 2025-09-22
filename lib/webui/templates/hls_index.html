@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="{{ static_url('css/main.css') }}" />
+    <script src="{{ static_url('js/hls.js') }}" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>{{ heading }}</h1>
+    </header>
+    <div class="stats" id="status-bar">
+      Active listeners: <span id="clients" class="badge">0</span>
+      &nbsp;|&nbsp; Encoder: <span id="enc" class="badge">stopped</span>
+    </div>
+    <main>
+      <audio id="player" controls autoplay></audio>
+    </main>
+    <footer>
+      <p><a href="/healthz">healthz</a></p>
+    </footer>
+  </body>
+</html>
