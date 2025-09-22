@@ -2,9 +2,13 @@
 import os
 import time
 import subprocess
+import sys
+import signal
 from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
+from lib.hls_mux import HLSTee
+from lib.hls_controller import controller  # NEW
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -12,7 +16,6 @@ FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 
-# ENV AUDIO_DEV overrides config
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
 ARECORD_CMD = [
@@ -29,29 +32,19 @@ ARECORD_CMD = [
 
 stop_requested = False
 p = None
-ffmpeg_proc = None
 
-
-def request_stop():
-    """Ask the daemon to stop gracefully."""
-    global stop_requested, p, ffmpeg_proc
+def handle_signal(signum, frame):  # noqa
+    global stop_requested, p
+    print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
-    if p and p.poll() is None:
+    if p is not None and p.poll() is None:
         try:
             p.terminate()
         except Exception:
             pass
-    if ffmpeg_proc and ffmpeg_proc.poll() is None:
-        try:
-            if ffmpeg_proc.stdin:
-                ffmpeg_proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            ffmpeg_proc.terminate()
-        except Exception:
-            pass
 
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
 
 def spawn_arecord():
     env = os.environ.copy()
@@ -62,54 +55,27 @@ def spawn_arecord():
         stdin=subprocess.DEVNULL,
         bufsize=0,
         start_new_session=True,
-        env=env,
+        env=env
     )
-
-
-def spawn_ffmpeg_encoder():
-    """
-    Spawn ffmpeg sidecar:
-    stdin: raw PCM (s16le mono 48k)
-    stdout: Ogg/Opus stream for web_streamer to fan out
-    """
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-f", "s16le",
-        "-ar", str(SAMPLE_RATE),
-        "-ac", "1",
-        "-i", "pipe:0",
-        "-c:a", "libopus",
-        "-b:a", "32k",
-        "-f", "ogg",
-        "-flush_packets", "1",
-        "pipe:1",
-    ]
-    print("[live] starting ffmpeg encoder (Opus/Ogg to stdout)", flush=True)
-    return subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=0,
-        start_new_session=True,
-    )
-
-
-def get_ffmpeg_stdout():
-    """Expose the shared ffmpeg stdout for web_streamer."""
-    global ffmpeg_proc
-    return ffmpeg_proc.stdout if ffmpeg_proc else None
-
 
 def main():
-    global p, stop_requested, ffmpeg_proc
+    global p, stop_requested
     stop_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
 
-    # Start shared ffmpeg encoder
-    ffmpeg_proc = spawn_ffmpeg_encoder()
+    # Construct HLS encoder but do NOT start it; the web server starts/stops on demand.
+    hls_dir = os.path.join(cfg["paths"]["tmp_dir"], "hls")
+    os.makedirs(hls_dir, exist_ok=True)
+    hls = HLSTee(
+        out_dir=hls_dir,
+        sample_rate=SAMPLE_RATE,
+        channels=1,
+        bits_per_sample=16,
+        segment_time=2.0,
+        history_seconds=60,
+        bitrate="64k",
+    )
+    controller.attach(hls)
 
     while not stop_requested:
         p = None
@@ -143,17 +109,9 @@ def main():
 
                 while len(buf) >= FRAME_BYTES:
                     frame = bytes(buf[:FRAME_BYTES])
-
-                    # Feed ffmpeg encoder
-                    try:
-                        if ffmpeg_proc and ffmpeg_proc.poll() is None and ffmpeg_proc.stdin:
-                            ffmpeg_proc.stdin.write(frame)
-                    except Exception as e:
-                        print(f"[live] ffmpeg write error: {e!r}", flush=True)
-
-                    # Existing segmenter path
+                    # Always feed frames; HLSTee drops if not started.
+                    hls.feed(frame)
                     rec.ingest(frame, frame_idx)
-
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
                     last_frame_time = time.monotonic()
@@ -179,7 +137,9 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
-                    rec.flush(frame_idx)  # noqa
+                    # Ensure encoder is stopped when daemon exits/restarts.
+                    controller.stop_now()
+                    rec.flush(frame_idx)
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 
@@ -203,14 +163,11 @@ def main():
                 reset_usb()
                 time.sleep(5)
 
-    # Cleanup ffmpeg
+    print("[live] clean shutdown complete", flush=True)
+
+if __name__ == "__main__":
     try:
-        if ffmpeg_proc and ffmpeg_proc.poll() is None:
-            if ffmpeg_proc.stdin:
-                ffmpeg_proc.stdin.close()
-            ffmpeg_proc.terminate()
-            print("[live] ffmpeg encoder terminated", flush=True)
+        sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
-
-    print("[live] clean shutdown complete", flush=True)
+    main()
