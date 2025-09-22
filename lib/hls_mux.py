@@ -57,6 +57,10 @@ class HLSTee:
         if not shutil.which("ffmpeg"):
             self._log.error("ffmpeg not found in PATH")
             return
+        # Ensure the stop event from any prior run doesn't immediately halt the
+        # new thread. `stop()` leaves `_stop` set; clear it before spawning
+        # another worker so `_run()` can proceed normally.
+        self._stop.clear()
         # clean stale files
         for fn in os.listdir(self.out_dir):
             if fn.endswith((".m3u8", ".ts")):
