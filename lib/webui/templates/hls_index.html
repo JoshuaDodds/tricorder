@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="{{ static_url('css/main.css') }}" />
+    <script src="{{ static_url('js/hls.js') }}" defer></script>
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="title-block">
+        <h1>{{ heading }}</h1>
+        <div class="stats" id="status-bar">
+          <span>Active listeners:</span>
+          <span id="clients" class="badge">0</span>
+          <span class="divider" aria-hidden="true">|</span>
+          <span>Encoder:</span>
+          <span id="enc" class="badge">stopped</span>
+        </div>
+      </div>
+      <nav class="header-links">
+        <a href="/healthz">healthz</a>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="panel" id="live-panel" aria-labelledby="live-heading">
+        <div class="panel-header">
+          <h2 id="live-heading">Live Stream</h2>
+        </div>
+        <div class="panel-body">
+          <p class="muted">Streaming over HTTP Live Streaming (HLS).</p>
+          <audio id="player" controls autoplay></audio>
+        </div>
+      </section>
+
+      <section class="panel" id="recordings-section" aria-labelledby="recordings-heading">
+        <div class="panel-header">
+          <h2 id="recordings-heading">{{ recordings_heading }}</h2>
+          <div class="panel-actions">
+            <button id="refresh-recordings" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="filters">
+            <label class="filter">
+              <span class="label">Day</span>
+              <select id="filter-day">
+                <option value="all">All days</option>
+              </select>
+            </label>
+            <label class="filter">
+              <span class="label">Type</span>
+              <select id="filter-type">
+                <option value="all">All types</option>
+                <option value="Both">Both</option>
+                <option value="Human">Human</option>
+                <option value="Other">Other</option>
+              </select>
+            </label>
+            <label class="filter search">
+              <span class="label">Search</span>
+              <input type="search" id="filter-search" placeholder="Search name, time, or details" />
+            </label>
+          </div>
+
+          <div id="recordings-status" class="status-message" role="status" aria-live="polite"></div>
+
+          <div class="table-wrapper">
+            <table id="recordings-table">
+              <thead>
+                <tr>
+                  <th scope="col" class="select-col">
+                    <input type="checkbox" id="select-all-recordings" aria-label="Select all recordings" />
+                  </th>
+                  <th scope="col">Day</th>
+                  <th scope="col">Time</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Size</th>
+                  <th scope="col" class="actions-col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="recordings-body"></tbody>
+            </table>
+          </div>
+
+          <div class="table-actions">
+            <button id="delete-selected" class="danger" type="button" disabled>Delete selected</button>
+          </div>
+
+          <div class="recording-player">
+            <h3>Playback</h3>
+            <audio id="recording-player" controls></audio>
+            <p id="recording-info" class="muted">Select a recording to begin playback.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="config-panel" aria-labelledby="config-heading">
+        <div class="panel-header">
+          <h2 id="config-heading">{{ config_heading }}</h2>
+          <div class="panel-actions">
+            <button id="toggle-config" type="button">Show configuration</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="config-status" class="status-message" role="status" aria-live="polite"></div>
+          <pre id="config-view" hidden></pre>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
