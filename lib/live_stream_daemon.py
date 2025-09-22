@@ -8,6 +8,7 @@ from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
+from lib.hls_controller import controller  # NEW
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -62,7 +63,9 @@ def main():
     stop_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
 
+    # Construct HLS encoder but do NOT start it; the web server starts/stops on demand.
     hls_dir = os.path.join(cfg["paths"]["tmp_dir"], "hls")
+    os.makedirs(hls_dir, exist_ok=True)
     hls = HLSTee(
         out_dir=hls_dir,
         sample_rate=SAMPLE_RATE,
@@ -72,7 +75,7 @@ def main():
         history_seconds=60,
         bitrate="64k",
     )
-    hls.start()
+    controller.attach(hls)
 
     while not stop_requested:
         p = None
@@ -106,7 +109,8 @@ def main():
 
                 while len(buf) >= FRAME_BYTES:
                     frame = bytes(buf[:FRAME_BYTES])
-                    hls.feed(frame)   # HLS streamer (NEW)
+                    # Always feed frames; HLSTee drops if not started.
+                    hls.feed(frame)
                     rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
@@ -133,7 +137,8 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
-                    hls.stop()   # NEW
+                    # Ensure encoder is stopped when daemon exits/restarts.
+                    controller.stop_now()
                     rec.flush(frame_idx)
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
