@@ -3,19 +3,18 @@
 Development launcher for Tricorder.
 
 - Stops voice-recorder.service on startup if running
-- Runs live_stream_daemon in its own thread
-- Starts web_streamer hooked to ffmpeg stdout (after ffmpeg is ready)
+- Runs live_stream_daemon in foreground
 - Ctrl-C exits cleanly
-- Ctrl-R restarts cleanly
+- Ctrl-R restarts the foreground daemon
 """
 
 import os
+import signal
 import subprocess
 import sys
 import termios
 import tty
 import threading
-import time
 
 from lib import live_stream_daemon
 from lib.web_streamer import start_web_streamer_in_thread
@@ -25,7 +24,7 @@ SERVICE = "voice-recorder.service"
 
 def stop_service():
     subprocess.run(["systemctl", "is-active", "--quiet", SERVICE])
-    if sys.exc_info()[0] is None:
+    if sys.exc_info()[0] is None:  # the last command succeeded
         print(f"[dev] Stopping {SERVICE} ...")
         subprocess.run(["systemctl", "stop", SERVICE], check=False)
 
@@ -37,7 +36,6 @@ class KeyWatcher(threading.Thread):
         self.old_settings = termios.tcgetattr(self.fd)
         tty.setcbreak(self.fd)
         self.restart_requested = False
-        self.stop_requested = False
 
     def run(self):
         try:
@@ -46,82 +44,52 @@ class KeyWatcher(threading.Thread):
                 if not ch:
                     continue
                 if ch == b"\x03":  # Ctrl-C
-                    self.stop_requested = True
-                    break
+                    os.kill(os.getpid(), signal.SIGINT)
                 elif ch == b"\x12":  # Ctrl-R
                     self.restart_requested = True
-                    break
+                    os.kill(os.getpid(), signal.SIGTERM)
         finally:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
 
 
-def wait_for_ffmpeg_stdout(timeout=5.0, poll=0.1):
-    """Wait until live_stream_daemon.ffmpeg_proc is spawned and stdout available."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        stdout = live_stream_daemon.get_ffmpeg_stdout()
-        if stdout is not None:
-            return stdout
-        time.sleep(poll)
-    return None
-
-
-def run_daemon_thread():
+def run_once():
     try:
         live_stream_daemon.main()
-    except Exception as e:
-        print(f"[dev] live_stream_daemon thread exited: {e!r}")
+    except KeyboardInterrupt:
+        pass
 
 
 def main():
     stop_service()
-    print("[dev] Running live_stream_daemon + web_streamer (Ctrl-C to exit, Ctrl-R to restart)")
+    print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
+
+    web_streamer = start_web_streamer_in_thread(
+        host="0.0.0.0",
+        port=8080,
+        access_log=False,
+        log_level="INFO",
+    )
 
     while True:
         watcher = KeyWatcher()
         watcher.start()
-
-        # Start daemon in a background thread
-        daemon_thread = threading.Thread(target=run_daemon_thread, name="live_stream_daemon", daemon=True)
-        daemon_thread.start()
-
-        # Wait for ffmpeg stdout
-        stdout = wait_for_ffmpeg_stdout(timeout=10.0)
-        if not stdout:
-            print("[dev] ERROR: ffmpeg stdout not available, cannot start web_streamer")
-            live_stream_daemon.request_stop()
-            daemon_thread.join(timeout=2)
-            return 1
-
-        # Start web streamer
-        web_streamer = start_web_streamer_in_thread(
-            ffmpeg_stdout=stdout,
-            host="0.0.0.0",
-            port=8080,
-            chunk_bytes=4096,
-            access_log=False,
-            log_level="INFO",
-        )
-
-        # Keep looping until Ctrl-C or Ctrl-R
         try:
-            while not (watcher.stop_requested or watcher.restart_requested):
-                time.sleep(0.2)
+            run_once()
         finally:
+            # IMPORTANT: stop the web streamer FIRST to avoid race/TTY side effects
             print("[dev] Stopping web_streamer ...")
-            try:
-                web_streamer.stop()
-            except Exception:
-                pass
-
-            print("[dev] Stopping live_stream_daemon ...")
-            live_stream_daemon.request_stop()
-            daemon_thread.join(timeout=5)
-
+            web_streamer.stop()
+            # Always restore terminal mode after services are down
             termios.tcsetattr(watcher.fd, termios.TCSADRAIN, watcher.old_settings)
 
         if watcher.restart_requested:
             print("[dev] Restart requested via Ctrl-R")
+            web_streamer = start_web_streamer_in_thread(
+                host="0.0.0.0",
+                port=8080,
+                access_log=False,
+                log_level="INFO",
+            )
             continue
         else:
             print("[dev] Exiting dev mode")
