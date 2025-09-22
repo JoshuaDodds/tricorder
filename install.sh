@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+INSTALL_OWNER="${USER:-}"
+if [[ -z "$INSTALL_OWNER" ]] && command -v id >/dev/null 2>&1; then
+  INSTALL_OWNER=$(id -un 2>/dev/null || true)
+fi
+
 # Allow override for test mode
 BASE="${BASE:-/apps/tricorder}"
 VENV="$BASE/venv"
@@ -109,7 +114,9 @@ fi
 
 # create app tree
 mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
-chown -R "$USER":"$USER" "$BASE" 2>/dev/null || true
+if [[ -n "$INSTALL_OWNER" ]]; then
+  chown -R "$INSTALL_OWNER":"$INSTALL_OWNER" "$BASE" 2>/dev/null || true
+fi
 
 # copy project files (idempotent overwrite)
 say "Installing project files"
@@ -117,7 +124,7 @@ say "Installing project files"
 cp -f bin/* "$BASE/bin/" 2>/dev/null || true
 chmod 755 "$BASE"/bin/* 2>/dev/null || true
 
-cp -f lib/* "$BASE/lib/" 2>/dev/null || true
+cp -rf lib/* "$BASE/lib/" 2>/dev/null || true
 chmod 755 "$BASE"/lib/* 2>/dev/null || true
 
 # shellcheck disable=SC2035

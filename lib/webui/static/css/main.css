@@ -1,0 +1,43 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  padding: 1rem;
+  margin: 0;
+  background-color: Canvas;
+  color: CanvasText;
+}
+
+header h1 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.75rem;
+}
+
+.stats {
+  color: #555;
+  margin: 0.5rem 0;
+}
+
+audio {
+  width: 100%;
+  margin-top: 1rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid #ccc;
+  min-width: 3ch;
+  text-align: center;
+}
+
+footer {
+  margin-top: 1.5rem;
+}
+
+footer a {
+  color: inherit;
+}
