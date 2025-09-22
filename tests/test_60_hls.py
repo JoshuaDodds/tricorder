@@ -81,3 +81,24 @@ def test_hls_controller_client_lifecycle(monkeypatch):
     controller.ensure_started()
     assert tee.started == 2
     controller.stop_now()
+
+
+def test_hls_controller_deduplicates_sessions():
+    controller = _HLSController()
+    tee = DummyHLSTee()
+    controller.attach(tee)
+    controller.set_cooldown(0.0)
+
+    assert controller.client_connected(session_id="abc") == 1
+    assert tee.started == 1
+    assert controller.client_connected(session_id="abc") == 1
+    assert controller.active_clients == 1
+
+    assert controller.client_connected(session_id="def") == 2
+    assert controller.active_clients == 2
+
+    assert controller.client_disconnected(session_id="zzz") == 2
+    assert controller.active_clients == 2
+
+    assert controller.client_disconnected(session_id="abc") == 1
+    assert controller.client_disconnected(session_id="def") == 0

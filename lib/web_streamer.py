@@ -65,6 +65,66 @@ audio{width:100%;margin-top:1rem}
     var audio = document.getElementById('player');
     var clients = document.getElementById('clients');
     var enc = document.getElementById('enc');
+    var sessionKey = 'tricorder.session';
+    var sessionId = null;
+
+    function generateSessionId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+      }
+      if (window.crypto && window.crypto.getRandomValues) {
+        var arr = new Uint8Array(16);
+        window.crypto.getRandomValues(arr);
+        return Array.from(arr, function(x) { return x.toString(16).padStart(2, '0'); }).join('');
+      }
+      return 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    }
+
+    function ensureSessionId() {
+      if (sessionId) {
+        return sessionId;
+      }
+      try {
+        sessionId = sessionStorage.getItem(sessionKey);
+      } catch (err) {
+        sessionId = null;
+      }
+      if (!sessionId) {
+        sessionId = generateSessionId();
+        try {
+          sessionStorage.setItem(sessionKey, sessionId);
+        } catch (err) {
+          /* ignore */
+        }
+      }
+      return sessionId;
+    }
+
+    function buildSessionUrl(path) {
+      var id = ensureSessionId();
+      if (!id) {
+        return path;
+      }
+      var sep = path.indexOf('?') === -1 ? '?' : '&';
+      return path + sep + 'session=' + encodeURIComponent(id);
+    }
+
+    function sendStart() {
+      fetch(buildSessionUrl('/hls/start'), {cache: 'no-store'}).catch(function(){});
+    }
+
+    function sendStop(useBeacon) {
+      var urlWithSession = buildSessionUrl('/hls/stop');
+      if (useBeacon && navigator.sendBeacon) {
+        try {
+          navigator.sendBeacon(urlWithSession, '');
+          return;
+        } catch (err) {
+          /* ignore and fall back */
+        }
+      }
+      fetch(urlWithSession, {cache: 'no-store', keepalive: true}).catch(function(){});
+    }
 
     function updateStats() {
       fetch('/hls/stats',{cache:'no-store'}).then(r => r.json()).then(function(j) {
@@ -78,7 +138,7 @@ audio{width:100%;margin-top:1rem}
     }
 
     function startPlay() {
-      fetch('/hls/start',{cache:'no-store'}).catch(function(){});
+      sendStart();
       if (nativeHlsOk()) {
         audio.src = url;
       } else {
@@ -97,6 +157,8 @@ audio{width:100%;margin-top:1rem}
       }
     }
 
+    ensureSessionId();
+
     window.addEventListener('load', function(){
       startPlay();
       updateStats();
@@ -105,15 +167,16 @@ audio{width:100%;margin-top:1rem}
 
     // Try to decrement on tab close / backgrounding
     window.addEventListener('beforeunload', function(){
-      if (navigator.sendBeacon) navigator.sendBeacon('/hls/stop');
-      else fetch('/hls/stop',{keepalive:true});
+      sendStop(true);
+    });
+    window.addEventListener('pagehide', function(){
+      sendStop(true);
     });
     document.addEventListener('visibilitychange', function(){
       if (document.visibilityState === 'hidden') {
-        if (navigator.sendBeacon) navigator.sendBeacon('/hls/stop');
-        else fetch('/hls/stop',{keepalive:true});
+        sendStop(false);
       } else if (document.visibilityState === 'visible') {
-        fetch('/hls/start',{cache:'no-store'});
+        sendStart();
       }
     });
   })();
@@ -126,12 +189,14 @@ audio{width:100%;margin-top:1rem}
         return web.Response(text=_index_html(), content_type="text/html")
 
     # --- Control/Stats API ---
-    async def hls_start(_: web.Request) -> web.Response:
-        n = controller.client_connected()
+    async def hls_start(request: web.Request) -> web.Response:
+        session_id = request.rel_url.query.get("session")
+        n = controller.client_connected(session_id=session_id)
         return web.json_response({"ok": True, "active_clients": n})
 
-    async def hls_stop(_: web.Request) -> web.Response:
-        n = controller.client_disconnected()
+    async def hls_stop(request: web.Request) -> web.Response:
+        session_id = request.rel_url.query.get("session")
+        n = controller.client_disconnected(session_id=session_id)
         return web.json_response({"ok": True, "active_clients": n})
 
     async def hls_stats(_: web.Request) -> web.Response:
@@ -157,7 +222,9 @@ audio{width:100%;margin-top:1rem}
 
     # Control + stats
     app.router.add_get("/hls/start", hls_start)
+    app.router.add_post("/hls/start", hls_start)
     app.router.add_get("/hls/stop", hls_stop)
+    app.router.add_post("/hls/stop", hls_stop)
     app.router.add_get("/hls/stats", hls_stats)
 
     # Playlist handler BEFORE static, so we can ensure start on direct access
