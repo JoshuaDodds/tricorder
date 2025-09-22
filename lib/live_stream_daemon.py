@@ -7,7 +7,7 @@ import signal
 from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
-from lib.web_stream_tap import WebStreamTee
+from lib.hls_mux import HLSTee
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -15,8 +15,6 @@ FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 
-
-# ENV AUDIO_DEV overrides config
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
 ARECORD_CMD = [
@@ -44,10 +42,8 @@ def handle_signal(signum, frame):  # noqa
         except Exception:
             pass
 
-
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
-
 
 def spawn_arecord():
     env = os.environ.copy()
@@ -61,20 +57,22 @@ def spawn_arecord():
         env=env
     )
 
-
 def main():
     global p, stop_requested
-    stop_requested = False  # reset on each new run
+    stop_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
 
-    tap = WebStreamTee(
-        path=os.path.join(cfg["paths"]["tmp_dir"], "web_stream.wav"),
+    hls_dir = os.path.join(cfg["paths"]["tmp_dir"], "hls")
+    hls = HLSTee(
+        out_dir=hls_dir,
         sample_rate=SAMPLE_RATE,
         channels=1,
         bits_per_sample=16,
+        segment_time=2.0,
         history_seconds=60,
+        bitrate="64k",
     )
-    tap.start()
+    hls.start()
 
     while not stop_requested:
         p = None
@@ -108,7 +106,7 @@ def main():
 
                 while len(buf) >= FRAME_BYTES:
                     frame = bytes(buf[:FRAME_BYTES])
-                    tap.feed(frame)  # new: continuous tee for web streamer
+                    hls.feed(frame)   # HLS streamer (NEW)
                     rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
@@ -125,7 +123,6 @@ def main():
                             data = os.read(stderr_fd, 4096)
                             if not data:
                                 break
-                        # drop arecord stderr
                     except BlockingIOError:
                         pass
                     except Exception:
@@ -136,8 +133,8 @@ def main():
         finally:
             try:
                 if 'rec' in locals():
-                    tap.stop() # stop tapping frames for the web streamer
-                    rec.flush(frame_idx) # noqa
+                    hls.stop()   # NEW
+                    rec.flush(frame_idx)
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 
@@ -162,7 +159,6 @@ def main():
                 time.sleep(5)
 
     print("[live] clean shutdown complete", flush=True)
-
 
 if __name__ == "__main__":
     try:

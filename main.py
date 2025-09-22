@@ -64,10 +64,8 @@ def main():
     print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
 
     web_streamer = start_web_streamer_in_thread(
-        pattern="/apps/tricorder/tmp/web_stream.wav",
         host="0.0.0.0",
         port=8080,
-        chunk_bytes=8192,
         access_log=False,
         log_level="INFO",
     )
@@ -87,10 +85,8 @@ def main():
         if watcher.restart_requested:
             print("[dev] Restart requested via Ctrl-R")
             web_streamer = start_web_streamer_in_thread(
-                pattern="/apps/tricorder/tmp/web_stream.wav",
                 host="0.0.0.0",
                 port=8080,
-                chunk_bytes=8192,
                 access_log=False,
                 log_level="INFO",
             )
