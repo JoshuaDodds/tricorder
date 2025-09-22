@@ -31,6 +31,8 @@ def build_app() -> web.Application:
 
     tmp_root = os.environ.get("TRICORDER_TMP", "/apps/tricorder/tmp")
     hls_dir = os.path.join(tmp_root, "hls")
+    os.makedirs(hls_dir, exist_ok=True)
+
 
     async def index(_: web.Request) -> web.Response:
         return web.Response(
