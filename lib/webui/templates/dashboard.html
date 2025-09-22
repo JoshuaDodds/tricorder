@@ -11,11 +11,22 @@
     <div class="app-shell">
       <header class="app-header">
         <div class="titles">
-          <h1>Tricorder Dashboard</h1>
+          <h1>Dashboard</h1>
           <p>Monitor live capture, browse stored sessions, and inspect configuration.</p>
         </div>
         <div class="header-actions">
           <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
+          <div
+            id="refresh-indicator"
+            class="refresh-indicator"
+            role="status"
+            aria-live="polite"
+            aria-hidden="true"
+            data-visible="false"
+          >
+            <span class="refresh-spinner" aria-hidden="true"></span>
+            <span class="refresh-text">Refreshing…</span>
+          </div>
           <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
         </div>
       </header>
@@ -70,6 +81,22 @@
             </div>
             <div class="waveform-container" id="waveform-container" hidden>
               <canvas id="waveform-canvas"></canvas>
+              <div
+                id="waveform-trigger-marker"
+                class="waveform-marker marker-trigger"
+                aria-hidden="true"
+                data-active="false"
+              >
+                <span>Trigger</span>
+              </div>
+              <div
+                id="waveform-release-marker"
+                class="waveform-marker marker-release"
+                aria-hidden="true"
+                data-active="false"
+              >
+                <span>Release</span>
+              </div>
               <div id="waveform-cursor" class="waveform-cursor" aria-hidden="true"></div>
             </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
@@ -104,14 +131,8 @@
                   </select>
                 </label>
                 <label class="input-group">
-                  <span>Extension</span>
-                  <select id="filter-extension">
-                    <option value="">All types</option>
-                  </select>
-                </label>
-                <label class="input-group">
                   <span>Limit</span>
-                  <input id="filter-limit" type="number" min="1" max="1000" value="200" />
+                  <input id="filter-limit" type="number" min="1" max="1000" value="500" />
                 </label>
               </div>
             </div>
