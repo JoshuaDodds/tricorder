@@ -31,7 +31,7 @@ The name is both a nod to the *Star Trek* tricorder (a portable device that cont
 and a literal description of this project’s **three core recording functions**:
 
 1. **Audio-triggered recording with Voice Activity Detection (VAD) tagging** – capture events when the input exceeds a sound threshold and/or speech is detected.  
-2. **Live Network Streaming ** – HLS live streaming of audio from the device microphone to any web browser.   
+2. **Live Network Streaming** – HLS live streaming of audio from the device microphone to any web browser.   
 3. **External file ingestion** – process/ingest external recordings, trimming away uninteresting parts automatically.
 
 ---
