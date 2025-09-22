@@ -45,9 +45,9 @@ graph TD
     C -->|tmp wav| D[encode_and_store.sh]
     D -->|opus files| E["recordings dir (/apps/tricorder/recordings)"]
 
-    B -->|frames| H[HLSTee (HLS encoder)]
+    B -->|frames| H["HLSTee (HLS encoder)"]
     H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"]
-    I -->|static files| J[web_streamer.py (aiohttp)]
+    I -->|static files| J["web_streamer.py (aiohttp)"]
     J -->|HTTP HLS| K[Browsers / Clients]
     J -->|client events| L[HLS controller]
     L -->|start/stop| H
@@ -58,9 +58,9 @@ graph TD
     end
 
     subgraph System Management
-        H[voice-recorder.service] --> B
-        I[dropbox.path + dropbox.service] --> G
-        J[tmpfs-guard.timer + tmpfs-guard.service] --> E
+        SM_voice_recorder[voice-recorder.service] --> B
+        SM_dropbox[dropbox.path + dropbox.service] --> G
+        SM_tmpfs_guard[tmpfs-guard.timer + tmpfs-guard.service] --> E
     end
 ```
 
