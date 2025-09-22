@@ -1,0 +1,18 @@
+[Unit]
+Description=Tricorder HLS Web Streamer
+After=network-online.target voice-recorder.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/apps/tricorder
+ExecStart=/apps/tricorder/venv/bin/python -m lib.web_streamer
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
