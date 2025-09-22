@@ -212,6 +212,14 @@ Key sections in config.yaml:
   ```bash
   journalctl -u voice-recorder.service -f
   ```
+- Recording filenames follow:
+  ```
+  <HH>-<MM>-<SS>_<TYPE>_RMS-<LEVEL>_<N>.opus
+  ```
+  - `<HH>-<MM>-<SS>` — wall-clock start time (24h) when the trigger fired.
+  - `<TYPE>` — classifier outcome once the segment ended: `Both` (RMS + VAD), `Human` (VAD only), or `Other` (RMS only).
+  - `RMS-<LEVEL>` — instantaneous RMS value that first crossed the RMS threshold and started the event.
+  - `<N>` — per-second counter so multiple triggers in the same second stay unique.
 - Recordings will appear under `/apps/tricorder/recordings`.
 - To test the pipeline, a self-test service/script will be added (see TODO).
 
@@ -220,15 +228,6 @@ Key sections in config.yaml:
 ## TODO (next improvements)
 
 - [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
-- [x] Harden `dropbox.service` ingestion loop to avoid race with partial files.
-- [x] Gate debug logging behind environment variable to reduce journald volume.
-- [x] Move all tunables, params, and config options to a unified config file.
-- [x] Add unit and e2e tests self-test script/service to generate a wav file, encode it, and verify an event end-to-end when any code changes.
-- [x] RMS room measurement helper tool for audio volume.
-- [x] auto denoising while transcoding to opus... test trimming out silence as well.
-- [x] Move all tunables, params, and config options to a unified config file.
-- [ ] Add RMS level that triggers a recording event as meta data in filename with postfix eg. *_Both_RMS-<int>_1.opus
-- [x] Update README with new web streaming details.
 ---
 
 ## Contributing

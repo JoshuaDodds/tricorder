@@ -211,6 +211,9 @@ class TimelineRecorder:
 
         self.base_name: str | None = None
         self.tmp_wav_path: str | None = None
+        self.event_timestamp: str | None = None
+        self.event_counter: int | None = None
+        self.trigger_rms: int | None = None
         self.queue_drops = 0
 
         self.frames_written = 0
@@ -306,6 +309,9 @@ class TimelineRecorder:
                 start_time = datetime.now().strftime("%H-%M-%S")
                 TimelineRecorder.event_counters[start_time] += 1
                 count = TimelineRecorder.event_counters[start_time]
+                self.event_timestamp = start_time
+                self.event_counter = count
+                self.trigger_rms = int(rms_val)
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
 
@@ -350,6 +356,7 @@ class TimelineRecorder:
 
         etype = "Both" if (self.saw_voiced and self.saw_loud) else ("Human" if self.saw_voiced else "Other")
         avg_rms = (self.sum_rms / self.frames_written) if self.frames_written else 0.0
+        trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 
         self._q_send(('close', self.base_name))
 
@@ -368,7 +375,10 @@ class TimelineRecorder:
         if tmp_wav_path and base:
             day = time.strftime("%Y%m%d")
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
-            cmd = [ENCODER, tmp_wav_path, base]
+            event_ts = self.event_timestamp or base.split("_", 1)[0]
+            event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
+            final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
+            cmd = [ENCODER, tmp_wav_path, final_base]
             try:
                 subprocess.run(cmd, capture_output=True, text=True, check=True)
             except subprocess.CalledProcessError as e:
@@ -389,6 +399,9 @@ class TimelineRecorder:
         self.base_name = None
         self.tmp_wav_path = None
         self.queue_drops = 0
+        self.event_timestamp = None
+        self.event_counter = None
+        self.trigger_rms = None
 
     def flush(self, idx: int):
         if self.active:
