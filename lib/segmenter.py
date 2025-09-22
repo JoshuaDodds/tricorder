@@ -54,6 +54,7 @@ POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
 RMS_THRESH = int(cfg["segmenter"]["rms_threshold"])
+ADAPTIVE_CFG = cfg["segmenter"].get("adaptive_threshold", {})
 vad = webrtcvad.Vad(int(cfg["audio"]["vad_aggressiveness"]))
 
 # DE-BOUNCE tunables
@@ -77,6 +78,106 @@ MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
 
 # Debug logging gate (DEV=1 or logging.dev_mode)
 DEBUG_VERBOSE = (os.getenv("DEV") == "1") or bool(cfg["logging"]["dev_mode"])
+
+
+class AdaptiveRmsController:
+    """Dynamic RMS threshold tracking using the current noise floor."""
+
+    def __init__(self, initial_threshold: int):
+        self.enabled = bool(ADAPTIVE_CFG.get("enabled", False))
+        self.min_threshold = max(1, int(ADAPTIVE_CFG.get("min_rms", initial_threshold)))
+        self.margin = float(ADAPTIVE_CFG.get("margin", 1.2))
+        self.percentile = float(ADAPTIVE_CFG.get("noise_percentile", 95.0))
+        self.update_interval = max(0.25, float(ADAPTIVE_CFG.get("update_interval_sec", 3.0)))
+        self.window_sec = max(1.0, float(ADAPTIVE_CFG.get("noise_window_sec", 45.0)))
+        self.min_samples = max(1, int(ADAPTIVE_CFG.get("min_buffer_samples", 50)))
+        self.rise_alpha = max(0.0, min(1.0, float(ADAPTIVE_CFG.get("rise_alpha", 0.35))))
+        self.fall_alpha = max(0.0, min(1.0, float(ADAPTIVE_CFG.get("fall_alpha", 0.12))))
+        self.hysteresis = max(0.0, float(ADAPTIVE_CFG.get("hysteresis", 25.0)))
+        self.noise_reject_ratio = max(1.0, float(ADAPTIVE_CFG.get("noise_reject_ratio", 4.0)))
+        self.cooldown_sec = max(0.0, float(ADAPTIVE_CFG.get("event_cooldown_sec", 0.75)))
+        max_rms = ADAPTIVE_CFG.get("max_rms")
+        self.max_threshold = int(max_rms) if isinstance(max_rms, (int, float)) else None
+
+        self.window_frames = max(1, int((self.window_sec * 1000.0) / FRAME_MS))
+        self.noise_samples: collections.deque[int] = collections.deque(maxlen=self.window_frames)
+
+        base_thresh = max(initial_threshold, self.min_threshold)
+        if self.max_threshold is not None:
+            base_thresh = min(base_thresh, self.max_threshold)
+        self.current_threshold = int(base_thresh)
+        self.target_threshold = float(self.current_threshold)
+        self.last_update = time.monotonic()
+        self.last_event_time = 0.0
+
+    @staticmethod
+    def _percentile(values: list[int], pct: float) -> float:
+        if not values:
+            return 0.0
+        vals = sorted(values)
+        if len(vals) == 1:
+            return float(vals[0])
+        k = pct / 100.0
+        idx = k * (len(vals) - 1)
+        low = int(idx)
+        high = min(len(vals) - 1, low + 1)
+        frac = idx - low
+        return vals[low] + (vals[high] - vals[low]) * frac
+
+    @property
+    def threshold(self) -> int:
+        return int(self.current_threshold)
+
+    @property
+    def target(self) -> int:
+        return int(round(self.target_threshold))
+
+    def observe(self, rms_val: int, voiced: bool, event_active: bool) -> None:
+        if not self.enabled:
+            return
+
+        now = time.monotonic()
+        if event_active:
+            self.last_event_time = now
+
+        allow_noise = (
+            (not event_active)
+            and (now - self.last_event_time) >= self.cooldown_sec
+            and not voiced
+        )
+        if allow_noise:
+            ceiling = max(self.min_threshold, self.threshold) * self.noise_reject_ratio
+            if rms_val <= ceiling:
+                self.noise_samples.append(int(rms_val))
+
+        if (now - self.last_update) < self.update_interval:
+            return
+
+        self.last_update = now
+        if len(self.noise_samples) < max(1, self.min_samples):
+            return
+
+        noise_vals = list(self.noise_samples)
+        p95 = self._percentile(noise_vals, self.percentile)
+        target = max(self.min_threshold, int(p95 * self.margin))
+        if self.max_threshold is not None:
+            target = min(target, self.max_threshold)
+
+        self.target_threshold = float(target)
+        diff = target - self.current_threshold
+        if abs(diff) < self.hysteresis:
+            return
+
+        alpha = self.rise_alpha if diff > 0 else self.fall_alpha
+        alpha = max(0.0, min(1.0, alpha))
+        if alpha == 0.0:
+            return
+
+        new_thresh = self.current_threshold + diff * alpha
+        new_thresh = max(self.min_threshold, int(round(new_thresh)))
+        if self.max_threshold is not None:
+            new_thresh = min(new_thresh, self.max_threshold)
+        self.current_threshold = new_thresh
 
 try:
     if USE_RNNOISE:
@@ -189,6 +290,7 @@ class TimelineRecorder:
     event_counters = collections.defaultdict(int)
 
     def __init__(self):
+        self.rms_ctrl = AdaptiveRmsController(RMS_THRESH)
         self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.active = False
         self.post_count = 0
@@ -256,8 +358,10 @@ class TimelineRecorder:
 
         rms_val = rms(proc_for_analysis)
         voiced = is_voice(proc_for_analysis)
-        loud = rms_val > RMS_THRESH
+        threshold = self.rms_ctrl.threshold
+        loud = rms_val > threshold
         frame_active = loud  # primary trigger
+        was_active = self.active
 
         # collect rolling window for debug stats
         self._dbg_rms.append(rms_val)
@@ -285,9 +389,12 @@ class TimelineRecorder:
 
             # Right text block with fixed width, including a percent that can reach 100.0
             # Use 6.1f so '100.0%' fits without pushing columns
+            thr_text = f"thr={threshold:4d}"
+            if self.rms_ctrl.enabled:
+                thr_text += f" tgt={self.rms_ctrl.target:4d}"
             right_text = (
                 f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d}  "
-                f"VAD voiced={voiced_ratio * 100:6.1f}%  |  "
+                f"VAD voiced={voiced_ratio * 100:6.1f}%  {thr_text}  |  "
             )
             right_block = right_text.ljust(RIGHT_TEXT_WIDTH)
 
@@ -330,9 +437,10 @@ class TimelineRecorder:
                 self.saw_loud = loud
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
-                    f"(trigger={'RMS' if loud else 'VAD'}>{RMS_THRESH} (rms={rms_val}))",
+                    f"(trigger={'RMS' if loud else 'VAD'}>{threshold} (rms={rms_val}))",
                     flush=True
                 )
+            self.rms_ctrl.observe(rms_val, voiced, event_active=self.active)
             return
 
         self._q_send(bytes(buf))
@@ -348,6 +456,8 @@ class TimelineRecorder:
 
         if self.post_count <= 0:
             self._finalize_event(reason=f"no active input for {POST_PAD}ms")
+
+        self.rms_ctrl.observe(rms_val, voiced, event_active=was_active)
 
     def _finalize_event(self, reason: str):
         if self.frames_written <= 0 or not self.base_name:

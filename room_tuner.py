@@ -2,13 +2,13 @@
 """
 room_tuner.py
 
-A console tool to help tune RMS_THRESH for a new room.
+A console tool to help tune RMS thresholds for a new room.
 
 Features:
 - Live capture from arecord (mono, 16-bit, 48kHz) in 20 ms frames.
 - Logs per-interval RMS stats and VAD activity to the console.
 - Rolling noise floor estimation from unvoiced frames (95th percentile).
-- Suggested RMS_THRESH = noise_floor_p95 * margin (configurable).
+- Suggests config.yaml values for both static rms_threshold and adaptive_threshold.min_rms.
 - Optional CSV logging of interval stats.
 - Adjustable VAD aggressiveness, gain, and reporting interval.
 
@@ -79,7 +79,7 @@ def print_banner(args):
           f"gain: {args.gain}x, margin: {args.margin}x, noise window: {args.noise_window}s", flush=True)
     if args.csv:
         print(f"CSV log: {args.csv}", flush=True)
-    print("Suggested RMS_THRESH is updated each interval from unvoiced noise floor (95th pct * margin).", flush=True)
+    print("Each report shows suggested rms_threshold and adaptive_threshold.min_rms settings.", flush=True)
     print("Press Ctrl+C to stop.\n", flush=True)
 
 
@@ -152,6 +152,8 @@ def main() -> int:
     # Rolling unvoiced RMS history
     noise_history = deque()  # stores tuples (timestamp, rms)
     max_noise_samples = int(args.noise_window * (1.0 / (FRAME_MS / 1000.0)))  # approx frames per noise_window
+    last_hint_static = None
+    last_hint_min = None
 
     def apply_gain(pcm: bytes) -> bytes:
         if args.gain == 1.0:
@@ -225,6 +227,9 @@ def main() -> int:
             noise_vals = [r for (_, r) in noise_history]
             noise_p95 = int(percentile_p95(noise_vals)) if noise_vals else 0
             suggested_thresh = int(noise_p95 * args.margin)
+            min_rms_hint = max(120, int(noise_p95 * 0.8)) if noise_p95 else 0
+            if suggested_thresh < min_rms_hint:
+                suggested_thresh = min_rms_hint
 
             # ASCII bar for quick glance
             def bar(val, scale=4000, width=20):
@@ -242,6 +247,22 @@ def main() -> int:
                 csv_file.write(f"{int(time.time())},{current_rms},{avg_rms},{peak_rms},"
                                f"{interval_voiced},{interval_frames},{voiced_ratio:.3f},"
                                f"{noise_p95},{suggested_thresh}\n")
+
+            if noise_p95 and (
+                last_hint_static is None
+                or abs(last_hint_static - suggested_thresh) >= 10
+                or abs((last_hint_min or 0) - min_rms_hint) >= 10
+            ):
+                print("    Suggested config.yaml snippet:", flush=True)
+                print("      segmenter:", flush=True)
+                print(f"        rms_threshold: {suggested_thresh}", flush=True)
+                print("        adaptive_threshold:", flush=True)
+                print("          enabled: true", flush=True)
+                print(f"          min_rms: {min_rms_hint}", flush=True)
+                print(f"          margin: {args.margin:.2f}", flush=True)
+                print(f"          noise_window_sec: {args.noise_window}", flush=True)
+                last_hint_static = suggested_thresh
+                last_hint_min = min_rms_hint
 
             # reset interval accumulators
             interval_rms_vals.clear()

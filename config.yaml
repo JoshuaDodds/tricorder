@@ -51,7 +51,22 @@ segmenter:
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
-  rms_threshold: 300 # was 300
+  rms_threshold: 300
+
+  # Adaptive noise-floor tracking keeps RMS_THRESHOLD aligned with the current environment.
+  adaptive_threshold:
+    enabled: true
+    min_rms: 260           # Floor to protect whisper-level events in quiet rooms
+    margin: 1.25           # Multiplier on noise-floor p95 when computing the working threshold
+    noise_percentile: 95.0 # Percentile of stored noise-floor samples to track
+    noise_window_sec: 60   # Seconds of unvoiced frames to keep in the rolling buffer
+    update_interval_sec: 3.0
+    min_buffer_samples: 75 # Require ~1.5s of noise data before recomputing
+    rise_alpha: 0.4        # Faster response to increasing noise
+    fall_alpha: 0.12       # Slower decay when room gets quieter
+    hysteresis: 30.0       # Ignore adjustments smaller than this delta
+    noise_reject_ratio: 4.0
+    event_cooldown_sec: 1.0
 
   # Sliding window length for “keep alive” logic (frames). With 20ms frames, 30 ≈ 600ms.
   # Typical: 20–60 frames.
