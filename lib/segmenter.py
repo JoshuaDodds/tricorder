@@ -440,7 +440,11 @@ class TimelineRecorder:
                     f"(trigger={'RMS' if loud else 'VAD'}>{threshold} (rms={rms_val}))",
                     flush=True
                 )
-            self.rms_ctrl.observe(rms_val, voiced, event_active=self.active)
+            self.rms_ctrl.observe(
+                rms_val,
+                voiced,
+                event_active=(self.active or frame_active),
+            )
             return
 
         self._q_send(bytes(buf))
@@ -457,7 +461,11 @@ class TimelineRecorder:
         if self.post_count <= 0:
             self._finalize_event(reason=f"no active input for {POST_PAD}ms")
 
-        self.rms_ctrl.observe(rms_val, voiced, event_active=was_active)
+        self.rms_ctrl.observe(
+            rms_val,
+            voiced,
+            event_active=(self.active or was_active or frame_active),
+        )
 
     def _finalize_event(self, reason: str):
         if self.frames_written <= 0 or not self.base_name:
