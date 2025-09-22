@@ -109,6 +109,61 @@ def _probe_duration(path: Path, stat: os.stat_result) -> float | None:
     return _probe_duration_cached(str(path), int(mtime_ns), size_bytes)
 
 
+def _scan_recordings_worker(
+    recordings_root: Path, allowed_ext: tuple[str, ...]
+) -> tuple[list[dict[str, object]], list[str], list[str], int]:
+    entries: list[dict[str, object]] = []
+    day_set: set[str] = set()
+    ext_set: set[str] = set()
+    total_bytes = 0
+    if not recordings_root.exists():
+        return entries, [], [], 0
+
+    for path in recordings_root.rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if allowed_ext and suffix not in allowed_ext:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+
+        try:
+            rel = path.relative_to(recordings_root)
+        except ValueError:
+            continue
+
+        rel_posix = rel.as_posix()
+        day = rel.parts[0] if len(rel.parts) > 1 else ""
+        if day:
+            day_set.add(day)
+        if suffix:
+            ext_set.add(suffix)
+
+        duration = _probe_duration(path, stat)
+        size_bytes = stat.st_size
+        total_bytes += size_bytes
+        entries.append(
+            {
+                "name": path.stem,
+                "path": rel_posix,
+                "day": day,
+                "extension": suffix.lstrip("."),
+                "size_bytes": size_bytes,
+                "modified": stat.st_mtime,
+                "modified_iso": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                "duration": duration,
+            }
+        )
+
+    entries.sort(key=lambda item: item["modified"], reverse=True)
+    days_sorted = sorted(day_set, reverse=True)
+    exts_sorted = sorted(ext.lstrip(".") for ext in ext_set)
+    return entries, days_sorted, exts_sorted, total_bytes
+
+
 SHUTDOWN_EVENT_KEY: AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 RECORDINGS_ROOT_KEY: AppKey[Path] = web.AppKey("recordings_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
@@ -159,57 +214,12 @@ def build_app() -> web.Application:
         html = webui.render_template("hls_index.html", **template_defaults)
         return web.Response(text=html, content_type="text/html")
 
-    def _scan_recordings() -> tuple[list[dict[str, object]], list[str], list[str], int]:
-        entries: list[dict[str, object]] = []
-        day_set: set[str] = set()
-        ext_set: set[str] = set()
-        total_bytes = 0
-        if not recordings_root.exists():
-            return entries, [], [], 0
+    def _scan_recordings_sync() -> tuple[list[dict[str, object]], list[str], list[str], int]:
+        return _scan_recordings_worker(recordings_root, allowed_ext)
 
-        for path in recordings_root.rglob("*"):
-            if not path.is_file():
-                continue
-            suffix = path.suffix.lower()
-            if allowed_ext and suffix not in allowed_ext:
-                continue
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-
-            try:
-                rel = path.relative_to(recordings_root)
-            except ValueError:
-                continue
-
-            rel_posix = rel.as_posix()
-            day = rel.parts[0] if len(rel.parts) > 1 else ""
-            if day:
-                day_set.add(day)
-            if suffix:
-                ext_set.add(suffix)
-
-            duration = _probe_duration(path, stat)
-            size_bytes = stat.st_size
-            total_bytes += size_bytes
-            entries.append(
-                {
-                    "name": path.stem,
-                    "path": rel_posix,
-                    "day": day,
-                    "extension": suffix.lstrip("."),
-                    "size_bytes": size_bytes,
-                    "modified": stat.st_mtime,
-                    "modified_iso": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                    "duration": duration,
-                }
-            )
-
-        entries.sort(key=lambda item: item["modified"], reverse=True)
-        days_sorted = sorted(day_set, reverse=True)
-        exts_sorted = sorted(ext.lstrip(".") for ext in ext_set)
-        return entries, days_sorted, exts_sorted, total_bytes
+    async def _scan_recordings() -> tuple[list[dict[str, object]], list[str], list[str], int]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _scan_recordings_sync)
 
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
         query = request.rel_url.query
@@ -291,7 +301,7 @@ def build_app() -> web.Application:
         }
 
     async def recordings_api(request: web.Request) -> web.Response:
-        entries, available_days, available_exts, total_bytes = _scan_recordings()
+        entries, available_days, available_exts, total_bytes = await _scan_recordings()
         payload = _filter_recordings(entries, request)
         payload["available_days"] = available_days
         payload["available_extensions"] = available_exts
