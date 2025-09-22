@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}" />
+    <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="titles">
+          <h1>Tricorder Dashboard</h1>
+          <p>Monitor live capture, browse stored sessions, and inspect configuration.</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
+          <a class="primary-button" href="/hls" target="_blank" rel="noopener">Live Stream</a>
+        </div>
+      </header>
+      <section class="status-bar">
+        <div class="stat">
+          <span class="label">Recordings</span>
+          <span class="value" id="recording-count">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Selected</span>
+          <span class="value" id="selected-count">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Storage</span>
+          <span class="value" id="storage-usage">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Last updated</span>
+          <span class="value" id="last-updated">--</span>
+        </div>
+      </section>
+      <section class="main-grid">
+        <aside class="filters card">
+          <div class="card-header">
+            <h2>Filters</h2>
+            <button id="clear-filters" class="ghost-button small" type="button">Reset</button>
+          </div>
+          <label class="input-group">
+            <span>Search</span>
+            <input id="filter-search" type="search" placeholder="Name or path" autocomplete="off" />
+          </label>
+          <label class="input-group">
+            <span>Day</span>
+            <select id="filter-day">
+              <option value="">All days</option>
+            </select>
+          </label>
+          <label class="input-group">
+            <span>Extension</span>
+            <select id="filter-extension">
+              <option value="">All types</option>
+            </select>
+          </label>
+          <label class="input-group">
+            <span>Limit</span>
+            <input id="filter-limit" type="number" min="1" max="1000" value="200" />
+          </label>
+          <div class="filter-footer">
+            <button id="apply-filters" class="primary-button small" type="button">Apply</button>
+          </div>
+        </aside>
+        <section class="content">
+          <div class="card player-card">
+            <div class="card-header">
+              <h2>Preview</h2>
+              <div class="player-meta" id="player-meta">Select a recording to preview.</div>
+            </div>
+            <audio id="preview-player" controls preload="none"></audio>
+          </div>
+          <div class="card table-card">
+            <div class="card-header">
+              <h2>Recent recordings</h2>
+              <div class="table-actions">
+                <button id="select-all" class="ghost-button small" type="button">Select all</button>
+                <button id="clear-selection" class="ghost-button small" type="button">Clear</button>
+                <button id="delete-selected" class="danger-button small" type="button" disabled>Delete selected</button>
+              </div>
+            </div>
+            <div class="table-responsive">
+              <table id="recordings-table">
+                <thead>
+                  <tr>
+                    <th class="checkbox-cell">
+                      <input type="checkbox" id="toggle-all" aria-label="Toggle all" />
+                    </th>
+                    <th>Name</th>
+                    <th>Day</th>
+                    <th>Updated</th>
+                    <th>Size</th>
+                    <th>Type</th>
+                    <th class="actions">Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+      <section class="card config-card">
+        <div class="card-header">
+          <h2>Configuration snapshot</h2>
+          <div class="card-subtitle">Read-only view of merged configuration.</div>
+        </div>
+        <div id="config-viewer" class="code-block" role="region" aria-live="polite"></div>
+      </section>
+    </div>
+  </body>
+</html>
