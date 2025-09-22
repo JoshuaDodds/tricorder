@@ -31,6 +31,7 @@ class _HLSController:
         self._lock = threading.Lock()
         self._tee: Optional["HLSTee"] = None
         self._clients = 0
+        self._sessions: set[str] = set()
         self._cooldown = 10.0  # seconds after last client to stop
         self._stop_timer: Optional[threading.Timer] = None
         self._last_change = time.time()
@@ -41,21 +42,36 @@ class _HLSController:
             self._tee = tee
 
     # --- Client accounting ---
-    def client_connected(self) -> int:
+    def client_connected(self, session_id: str | None = None) -> int:
         with self._lock:
-            self._clients += 1
+            added = True
+            if session_id is not None:
+                if session_id in self._sessions:
+                    added = False
+                else:
+                    self._sessions.add(session_id)
+            if added:
+                self._clients += 1
             self._last_change = time.time()
             # Cancel any pending stop when a client arrives
             if self._stop_timer:
                 self._stop_timer.cancel()
                 self._stop_timer = None
+            clients = self._clients
         # Start encoder outside lock
         self.ensure_started()
-        return self.active_clients
+        return clients
 
-    def client_disconnected(self) -> int:
+    def client_disconnected(self, session_id: str | None = None) -> int:
         with self._lock:
-            if self._clients > 0:
+            removed = session_id is None
+            if session_id is not None:
+                if session_id in self._sessions:
+                    self._sessions.remove(session_id)
+                    removed = True
+                else:
+                    return self._clients
+            if removed and self._clients > 0:
                 self._clients -= 1
             self._last_change = time.time()
             clients = self._clients

@@ -36,4 +36,5 @@ async def test_web_streamer_static_assets_available(aiohttp_client):
     assert js_response.status == 200
     js_body = await js_response.text()
     assert "const START_ENDPOINT" in js_body
-    assert "fetch(STATS_ENDPOINT" in js_body
+    assert "const SESSION_STORAGE_KEY" in js_body
+    assert "withSession" in js_body

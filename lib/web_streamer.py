@@ -50,12 +50,14 @@ def build_app() -> web.Application:
         return web.Response(text=html, content_type="text/html")
 
     # --- Control/Stats API ---
-    async def hls_start(_: web.Request) -> web.Response:
-        n = controller.client_connected()
+    async def hls_start(request: web.Request) -> web.Response:
+        session_id = request.rel_url.query.get("session")
+        n = controller.client_connected(session_id=session_id)
         return web.json_response({"ok": True, "active_clients": n})
 
-    async def hls_stop(_: web.Request) -> web.Response:
-        n = controller.client_disconnected()
+    async def hls_stop(request: web.Request) -> web.Response:
+        session_id = request.rel_url.query.get("session")
+        n = controller.client_disconnected(session_id=session_id)
         return web.json_response({"ok": True, "active_clients": n})
 
     async def hls_stats(_: web.Request) -> web.Response:
@@ -81,7 +83,9 @@ def build_app() -> web.Application:
 
     # Control + stats
     app.router.add_get("/hls/start", hls_start)
+    app.router.add_post("/hls/start", hls_start)
     app.router.add_get("/hls/stop", hls_stop)
+    app.router.add_post("/hls/stop", hls_stop)
     app.router.add_get("/hls/stats", hls_stats)
 
     # Playlist handler BEFORE static, so we can ensure start on direct access
