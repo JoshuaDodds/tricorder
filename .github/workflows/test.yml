@@ -1,0 +1,37 @@
+name: Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    env:
+      DEV: "0"
+      USER: root
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build pytest image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/Dockerfile
+          load: true
+          tags: tricorder-tests:local
+          cache-from: type=gha,scope=tricorder-pytest
+          cache-to: type=gha,mode=max,scope=tricorder-pytest
+
+      - name: Run tests inside container
+        run: |
+          docker run --rm \
+            -e DEV="${DEV}" \
+            -e USER="${USER}" \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            tricorder-tests:local
