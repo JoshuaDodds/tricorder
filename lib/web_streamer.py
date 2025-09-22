@@ -239,9 +239,9 @@ def build_app() -> web.Application:
         ext_filter = {token.lower().lstrip(".") for token in _collect("ext")}
 
         try:
-            limit = int(query.get("limit", "200"))
+            limit = int(query.get("limit", "500"))
         except ValueError:
-            limit = 200
+            limit = 500
         limit = max(1, min(1000, limit))
 
         try:
