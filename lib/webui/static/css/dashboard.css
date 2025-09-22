@@ -94,6 +94,25 @@ body {
   font-size: 0.75rem;
 }
 
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--danger);
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.connection-status[data-visible="true"] {
+  opacity: 1;
+  visibility: visible;
+}
+
 .status-bar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
