@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-import os, sys, subprocess, time
+import os
+import subprocess
+import sys
+import time
+import wave
+from contextlib import contextmanager
 from pathlib import Path
-from lib.segmenter import TimelineRecorder, SAMPLE_RATE, FRAME_BYTES
+
+from lib.segmenter import FRAME_BYTES, SAMPLE_RATE, SAMPLE_WIDTH, TimelineRecorder
 from lib.config import get_cfg
 
 cfg = get_cfg()
@@ -12,6 +18,70 @@ DROPBOX_DIR = Path(cfg["paths"]["dropbox_dir"])
 WORK_DIR = Path(cfg["paths"]["ingest_work_dir"])
 ALLOWED_EXT = set(x.lower() for x in cfg["ingest"]["allowed_ext"])
 IGNORE_SUFFIXES = set(cfg["ingest"]["ignore_suffixes"])
+
+
+@contextmanager
+def _pcm_source(path: Path):
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(path),
+        "-ac",
+        "1",
+        "-ar",
+        str(SAMPLE_RATE),
+        "-f",
+        "s16le",
+        "-",
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    except FileNotFoundError:
+        if path.suffix.lower() != ".wav":
+            raise
+        with wave.open(str(path), "rb") as wav_file:
+            if (
+                wav_file.getnchannels() != 1
+                or wav_file.getsampwidth() != SAMPLE_WIDTH
+                or wav_file.getframerate() != SAMPLE_RATE
+            ):
+                raise RuntimeError(
+                    "ffmpeg not found and WAV fallback requires 16-bit mono "
+                    f"audio at {SAMPLE_RATE} Hz ({path})"
+                )
+
+            frames_per_chunk = FRAME_BYTES // SAMPLE_WIDTH
+
+            def wav_iter():
+                while True:
+                    data = wav_file.readframes(frames_per_chunk)
+                    if not data:
+                        break
+                    yield data
+
+            yield wav_iter()
+            return
+    else:
+        try:
+            stdout = proc.stdout
+            if stdout is None:
+                raise RuntimeError("ffmpeg stdout pipe unavailable")
+
+            def proc_iter():
+                while True:
+                    data = stdout.read(FRAME_BYTES)
+                    if not data:
+                        break
+                    yield data
+
+            yield proc_iter()
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+            proc.wait()
 
 def _is_candidate(p: Path) -> bool:
     if not p.is_file():
@@ -85,32 +155,24 @@ def scan_and_ingest() -> None:
                 print(f"[ingest] cleanup failed for {work_file}: {e}", flush=True)
 
 def process_file(path):
-    print(f"[dropbox] Processing {path}", flush=True)
-    cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-i", path, "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"
-    ]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    path_obj = Path(path)
+    print(f"[dropbox] Processing {path_obj}", flush=True)
 
     rec = TimelineRecorder()
     idx = 0
-    try:
-        while True:
-            buf = p.stdout.read(FRAME_BYTES)
+
+    with _pcm_source(path_obj) as stream:
+        for buf in stream:
             if not buf:
                 break
             if len(buf) != FRAME_BYTES:
                 continue
             rec.ingest(buf, idx)
             idx += 1
-    finally:
-        if p.stdout:
-            p.stdout.close()
-        p.wait()
 
     # Ensure finalization of last segment(s)
     rec.flush(idx)
-    print(f"[dropbox] Finished processing {path}", flush=True)
+    print(f"[dropbox] Finished processing {path_obj}", flush=True)
 
 if __name__ == "__main__":
     import argparse

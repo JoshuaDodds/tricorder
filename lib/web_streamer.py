@@ -28,6 +28,7 @@ import time
 from aiohttp import web
 
 from lib.hls_controller import controller
+from lib import webui
 
 
 def build_app() -> web.Application:
@@ -39,91 +40,14 @@ def build_app() -> web.Application:
     hls_dir = os.path.join(tmp_root, "hls")
     os.makedirs(hls_dir, exist_ok=True)
 
-    # --- HTML pages (displays live client count / encoder status) ---
-    def _index_html() -> str:
-        return """<!doctype html>
-<html>
-<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Tricorder HLS Stream</title>
-<style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:1rem}
-.stats{color:#555;margin:.5rem 0}
-audio{width:100%;margin-top:1rem}
-.badge{display:inline-block;padding:.2rem .5rem;border-radius:.5rem;border:1px solid #ccc;min-width:3ch;text-align:center}
-</style>
-</head>
-<body>
-  <h1>HLS Audio Stream</h1>
-  <div class="stats">
-    Active listeners: <span id="clients" class="badge">0</span>
-    &nbsp;|&nbsp; Encoder: <span id="enc" class="badge">stopped</span>
-  </div>
-  <audio id="player" controls autoplay></audio>
-  <script>
-  (function() {
-    var url = '/hls/live.m3u8';
-    var audio = document.getElementById('player');
-    var clients = document.getElementById('clients');
-    var enc = document.getElementById('enc');
-
-    function updateStats() {
-      fetch('/hls/stats',{cache:'no-store'}).then(r => r.json()).then(function(j) {
-        clients.textContent = j.active_clients;
-        enc.textContent = j.encoder_running ? 'running' : 'stopped';
-      }).catch(function(){});
+    template_defaults = {
+        "page_title": "Tricorder HLS Stream",
+        "heading": "HLS Audio Stream",
     }
-
-    function nativeHlsOk() {
-      return audio.canPlayType('application/vnd.apple.mpegurl') || audio.canPlayType('application/x-mpegURL');
-    }
-
-    function startPlay() {
-      fetch('/hls/start',{cache:'no-store'}).catch(function(){});
-      if (nativeHlsOk()) {
-        audio.src = url;
-      } else {
-        var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
-        s.onload = function() {
-          if (window.Hls && window.Hls.isSupported()) {
-            var hls = new Hls({ lowLatencyMode: true });
-            hls.loadSource(url);
-            hls.attachMedia(audio);
-          } else {
-            audio.src = url;
-          }
-        };
-        document.body.appendChild(s);
-      }
-    }
-
-    window.addEventListener('load', function(){
-      startPlay();
-      updateStats();
-      setInterval(updateStats, 2000);
-    });
-
-    // Try to decrement on tab close / backgrounding
-    window.addEventListener('beforeunload', function(){
-      if (navigator.sendBeacon) navigator.sendBeacon('/hls/stop');
-      else fetch('/hls/stop',{keepalive:true});
-    });
-    document.addEventListener('visibilitychange', function(){
-      if (document.visibilityState === 'hidden') {
-        if (navigator.sendBeacon) navigator.sendBeacon('/hls/stop');
-        else fetch('/hls/stop',{keepalive:true});
-      } else if (document.visibilityState === 'visible') {
-        fetch('/hls/start',{cache:'no-store'});
-      }
-    });
-  })();
-  </script>
-  <p><a href="/healthz">healthz</a></p>
-</body>
-</html>"""
 
     async def index(_: web.Request) -> web.Response:
-        return web.Response(text=_index_html(), content_type="text/html")
+        html = webui.render_template("hls_index.html", **template_defaults)
+        return web.Response(text=html, content_type="text/html")
 
     # --- Control/Stats API ---
     async def hls_start(_: web.Request) -> web.Response:
@@ -165,6 +89,7 @@ audio{width:100%;margin-top:1rem}
 
     # Static segments/playlist directory (segments like seg00001.ts)
     app.router.add_static("/hls/", hls_dir, show_index=True)
+    app.router.add_static("/static/", webui.static_directory(), show_index=False)
 
     app.router.add_get("/healthz", healthz)
     return app
