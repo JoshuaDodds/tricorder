@@ -203,6 +203,21 @@ def build_app() -> web.Application:
         "heading": "HLS Audio Stream",
     }
 
+    playlist_ready_timeout = 5.0
+    playlist_poll_interval = 0.1
+
+    def _playlist_has_segments(path: str) -> bool:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    if line.lstrip().startswith("#EXTINF"):
+                        return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+        return False
+
     async def dashboard(_: web.Request) -> web.Response:
         html = webui.render_template(
             "dashboard.html",
@@ -426,12 +441,26 @@ def build_app() -> web.Application:
     async def hls_playlist(_: web.Request) -> web.StreamResponse:
         controller.ensure_started()
         path = os.path.join(hls_dir, "live.m3u8")
-        if not os.path.exists(path):
-            # Bootstrap playlist so players poll while ffmpeg warms up
-            text = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
-            return web.Response(text=text, content_type="application/vnd.apple.mpegurl",
-                                headers={"Cache-Control": "no-store"})
-        return web.FileResponse(path, headers={"Cache-Control": "no-store"})
+
+        ready = _playlist_has_segments(path)
+        if not ready:
+            deadline = time.monotonic() + playlist_ready_timeout
+            while time.monotonic() < deadline:
+                await asyncio.sleep(playlist_poll_interval)
+                if _playlist_has_segments(path):
+                    ready = True
+                    break
+
+        if ready:
+            return web.FileResponse(path, headers={"Cache-Control": "no-store"})
+
+        # Bootstrap playlist so players poll while ffmpeg warms up.
+        text = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        return web.Response(
+            text=text,
+            content_type="application/vnd.apple.mpegurl",
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def healthz(_: web.Request) -> web.Response:
         return web.Response(text="ok\n")
