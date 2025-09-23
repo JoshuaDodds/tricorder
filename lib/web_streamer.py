@@ -267,6 +267,80 @@ def build_app() -> web.Application:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _scan_recordings_sync)
 
+    capture_status_path = os.path.join(cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json")
+
+    def _read_capture_status() -> dict[str, object]:
+        try:
+            with open(capture_status_path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except FileNotFoundError:
+            return {"capturing": False, "updated_at": None}
+        except json.JSONDecodeError:
+            return {"capturing": False, "updated_at": None, "error": "invalid"}
+        except OSError:
+            return {"capturing": False, "updated_at": None}
+
+        status: dict[str, object] = {"capturing": bool(raw.get("capturing", False))}
+        updated_at = raw.get("updated_at")
+        if isinstance(updated_at, (int, float)):
+            status["updated_at"] = float(updated_at)
+        else:
+            status["updated_at"] = None
+
+        event_payload = raw.get("event")
+        if isinstance(event_payload, dict):
+            event: dict[str, object] = {}
+            base_name = event_payload.get("base_name")
+            if isinstance(base_name, str) and base_name:
+                event["base_name"] = base_name
+            started_at = event_payload.get("started_at")
+            if isinstance(started_at, str) and started_at:
+                event["started_at"] = started_at
+            started_epoch = event_payload.get("started_epoch")
+            if isinstance(started_epoch, (int, float)):
+                event["started_epoch"] = float(started_epoch)
+            trigger_rms = event_payload.get("trigger_rms")
+            if isinstance(trigger_rms, (int, float)):
+                event["trigger_rms"] = float(trigger_rms)
+            if event:
+                status["event"] = event
+
+        last_payload = raw.get("last_event")
+        if isinstance(last_payload, dict):
+            last_event: dict[str, object] = {}
+            base_name = last_payload.get("base_name")
+            if isinstance(base_name, str) and base_name:
+                last_event["base_name"] = base_name
+            started_at = last_payload.get("started_at")
+            if isinstance(started_at, str) and started_at:
+                last_event["started_at"] = started_at
+            started_epoch = last_payload.get("started_epoch")
+            if isinstance(started_epoch, (int, float)):
+                last_event["started_epoch"] = float(started_epoch)
+            ended_epoch = last_payload.get("ended_epoch")
+            if isinstance(ended_epoch, (int, float)):
+                last_event["ended_epoch"] = float(ended_epoch)
+            duration_seconds = last_payload.get("duration_seconds")
+            if isinstance(duration_seconds, (int, float)):
+                last_event["duration_seconds"] = float(duration_seconds)
+            avg_rms = last_payload.get("avg_rms")
+            if isinstance(avg_rms, (int, float)):
+                last_event["avg_rms"] = float(avg_rms)
+            trigger_rms = last_payload.get("trigger_rms")
+            if isinstance(trigger_rms, (int, float)):
+                last_event["trigger_rms"] = float(trigger_rms)
+            etype = last_payload.get("etype")
+            if isinstance(etype, str) and etype:
+                last_event["etype"] = etype
+            if last_event:
+                status["last_event"] = last_event
+
+        reason = raw.get("last_stop_reason")
+        if isinstance(reason, str) and reason:
+            status["last_stop_reason"] = reason
+
+        return status
+
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
         query = request.rel_url.query
 
@@ -365,6 +439,7 @@ def build_app() -> web.Application:
             payload["storage_total_bytes"] = int(usage.total)
             payload["storage_used_bytes"] = int(usage.used)
             payload["storage_free_bytes"] = int(usage.free)
+        payload["capture_status"] = _read_capture_status()
         return web.json_response(payload)
 
     async def recordings_delete(request: web.Request) -> web.Response:
