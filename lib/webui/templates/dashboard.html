@@ -15,6 +15,27 @@
           <p>Monitor live capture, browse stored sessions, and inspect configuration.</p>
         </div>
         <div class="header-actions">
+          <div class="header-status">
+            <div
+              id="recording-indicator"
+              class="recording-indicator"
+              role="status"
+              aria-live="polite"
+              aria-hidden="false"
+              data-state="unknown"
+            >
+              <span class="indicator-dot" aria-hidden="true"></span>
+              <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+            </div>
+            <div
+              id="connection-status"
+              class="connection-status"
+              role="status"
+              aria-live="polite"
+              aria-hidden="true"
+              data-visible="false"
+            ></div>
+          </div>
           <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
           <div
             id="refresh-indicator"
@@ -27,14 +48,6 @@
             <span class="refresh-spinner" aria-hidden="true"></span>
             <span class="refresh-text">Refreshing…</span>
           </div>
-          <div
-            id="connection-status"
-            class="connection-status"
-            role="status"
-            aria-live="polite"
-            aria-hidden="true"
-            data-visible="false"
-          ></div>
           <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
         </div>
       </header>

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import sys
 import time
@@ -274,6 +275,54 @@ class TimelineRecorder:
         self.saw_voiced = False
         self.saw_loud = False
 
+        self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
+        self._status_cache: dict[str, object] | None = None
+        self.event_started_epoch: float | None = None
+        self._update_capture_status(False, reason="idle")
+
+    def _update_capture_status(
+        self,
+        capturing: bool,
+        *,
+        event: dict | None = None,
+        last_event: dict | None = None,
+        reason: str | None = None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "capturing": bool(capturing),
+            "updated_at": time.time(),
+        }
+        if capturing and event:
+            payload["event"] = event
+        if not capturing and last_event:
+            payload["last_event"] = last_event
+        if reason:
+            payload["last_stop_reason"] = reason
+
+        compare_keys = ("capturing", "event", "last_event", "last_stop_reason")
+        if self._status_cache is not None:
+            previous = {key: self._status_cache.get(key) for key in compare_keys}
+            current = {key: payload.get(key) for key in compare_keys}
+            if previous == current:
+                self._status_cache = payload
+                return
+
+        self._status_cache = payload
+        tmp_path = f"{self.status_path}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self.status_path), exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+                handle.write("\n")
+            os.replace(tmp_path, self.status_path)
+        except Exception as exc:  # pragma: no cover - diagnostics only in DEV builds
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            if DEBUG_VERBOSE:
+                print(f"[segmenter] WARN: failed to write capture status: {exc!r}", flush=True)
+
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
         if GAIN == 1.0:
@@ -378,6 +427,7 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
+                self.event_started_epoch = time.time()
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
@@ -386,6 +436,13 @@ class TimelineRecorder:
                     f"(trigger={'RMS' if loud else 'VAD'}>{RMS_THRESH} (rms={rms_val}))",
                     flush=True
                 )
+                event_status = {
+                    "base_name": self.base_name,
+                    "started_at": self.event_timestamp,
+                    "started_epoch": self.event_started_epoch,
+                    "trigger_rms": self.trigger_rms,
+                }
+                self._update_capture_status(True, event=event_status)
             return
 
         self._q_send(bytes(buf))
@@ -411,6 +468,9 @@ class TimelineRecorder:
         avg_rms = (self.sum_rms / self.frames_written) if self.frames_written else 0.0
         trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 
+        ended_epoch = time.time()
+        duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+
         self._q_send(('close', self.base_name))
 
         tmp_wav_path, base = None, None
@@ -433,6 +493,29 @@ class TimelineRecorder:
             final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
             _enqueue_encode_job(tmp_wav_path, final_base)
 
+            last_event_status = {
+                "base_name": final_base,
+                "started_at": self.event_timestamp,
+                "started_epoch": self.event_started_epoch,
+                "ended_epoch": ended_epoch,
+                "duration_seconds": duration_seconds,
+                "avg_rms": avg_rms,
+                "trigger_rms": trigger_rms,
+                "etype": etype,
+            }
+        else:
+            last_event_status = {
+                "base_name": self.base_name or "",
+                "started_at": self.event_timestamp,
+                "started_epoch": self.event_started_epoch,
+                "ended_epoch": ended_epoch,
+                "duration_seconds": duration_seconds,
+                "avg_rms": avg_rms,
+                "trigger_rms": trigger_rms,
+                "etype": etype,
+            }
+
+        self._update_capture_status(False, last_event=last_event_status, reason=reason)
         self._reset_event_state()
 
     def _reset_event_state(self):
@@ -451,6 +534,7 @@ class TimelineRecorder:
         self.event_timestamp = None
         self.event_counter = None
         self.trigger_rms = None
+        self.event_started_epoch = None
 
     def flush(self, idx: int):
         if self.active:
@@ -465,6 +549,13 @@ class TimelineRecorder:
             ENCODE_QUEUE.join()
         except Exception:
             pass
+
+        last_event = None
+        if isinstance(self._status_cache, dict):
+            cached_last = self._status_cache.get("last_event")
+            if isinstance(cached_last, dict):
+                last_event = cached_last
+        self._update_capture_status(False, last_event=last_event, reason="shutdown")
 
 
 def main():

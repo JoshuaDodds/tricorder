@@ -64,8 +64,84 @@ body {
   flex-wrap: wrap;
 }
 
-.refresh-indicator {
+.header-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.recording-indicator {
   display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.55);
+  box-shadow: 0 10px 24px -18px rgba(15, 23, 42, 0.65);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.recording-indicator .indicator-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.4);
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.15);
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.recording-indicator .indicator-text {
+  white-space: nowrap;
+}
+
+.recording-indicator[data-state="active"] {
+  color: #fca5a5;
+}
+
+.recording-indicator[data-state="active"] .indicator-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 5px rgba(248, 113, 113, 0.22);
+  animation: recording-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.recording-indicator[data-state="idle"] {
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.recording-indicator[data-state="idle"] .indicator-dot {
+  background: rgba(56, 189, 248, 0.85);
+  box-shadow: 0 0 0 5px rgba(56, 189, 248, 0.18);
+}
+
+.recording-indicator[data-state="unknown"] {
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.recording-indicator[data-state="unknown"] .indicator-dot {
+  background: rgba(148, 163, 184, 0.35);
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+}
+
+@keyframes recording-pulse {
+  from {
+    transform: scale(0.9);
+    opacity: 0.85;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.refresh-indicator {
+  display: none;
   align-items: center;
   gap: 0.45rem;
   min-height: 2rem;
@@ -80,6 +156,7 @@ body {
 }
 
 .refresh-indicator[data-visible="true"] {
+  display: inline-flex;
   opacity: 1;
   visibility: visible;
 }
@@ -101,22 +178,18 @@ body {
 }
 
 .connection-status {
-  display: inline-flex;
+  display: none;
   align-items: center;
   min-height: 2rem;
   font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--danger);
-  white-space: nowrap;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
+  white-space: normal;
 }
 
 .connection-status[data-visible="true"] {
-  opacity: 1;
-  visibility: visible;
+  display: inline-flex;
 }
 
 .status-bar {
