@@ -19,6 +19,7 @@ outdir="/apps/tricorder/recordings/$day"
 mkdir -p "$outdir"
 
 outfile="$outdir/${base}.opus"
+waveform_file="${outfile}.waveform.json"
 
 # Optional denoise filter chain
 FILTERS=()
@@ -47,6 +48,15 @@ if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
     "$VENV/bin/python" -m lib.fault_handler encode_failure "$in_wav" "$base"
     exit 1
 fi
+
+if ! "$VENV/bin/python" -m lib.waveform_cache "$in_wav" "$waveform_file"; then
+  echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
+  rm -f "$outfile"
+  rm -f "$in_wav"
+  exit 1
+fi
+
+echo "[encode] Wrote waveform $waveform_file"
 
 rm -f "$in_wav"
 

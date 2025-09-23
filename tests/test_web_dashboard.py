@@ -1,6 +1,9 @@
 import asyncio
 import os
 
+import json
+from pathlib import Path
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -35,6 +38,19 @@ async def _start_client(app: web.Application) -> tuple[TestClient, TestServer]:
     return client, server
 
 
+def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
+    payload = {
+        "version": 1,
+        "channels": 1,
+        "sample_rate": 48000,
+        "frame_count": int(max(duration, 0) * 48000),
+        "duration_seconds": duration,
+        "peak_scale": 32767,
+        "peaks": [0, 0],
+    }
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_recordings_listing_filters(dashboard_env):
     async def runner():
         day_a = dashboard_env / "20240101"
@@ -50,6 +66,9 @@ def test_recordings_listing_filters(dashboard_env):
         file_b.write_bytes(b"b")
         file_c.write_bytes(b"c")
 
+        for item in (file_a, file_b, file_c):
+            _write_waveform_stub(item.with_suffix(item.suffix + ".waveform.json"))
+
         os.utime(file_a, (1_700_000_000, 1_700_000_000))
         os.utime(file_b, (1_700_010_000, 1_700_010_000))
         os.utime(file_c, (1_700_020_000, 1_700_020_000))
@@ -64,6 +83,7 @@ def test_recordings_listing_filters(dashboard_env):
             assert payload["total"] == 3
             names = [item["name"] for item in payload["items"]]
             assert names == ["gamma", "beta", "alpha"]
+            assert all(item.get("waveform_path") for item in payload["items"])
             assert "20240101" in payload["available_days"]
             assert "20240102" in payload["available_days"]
 
@@ -87,6 +107,8 @@ def test_delete_recording(dashboard_env):
         target_dir.mkdir()
         target = target_dir / "delete-me.opus"
         target.write_bytes(b"data")
+        waveform = target.with_suffix(target.suffix + ".waveform.json")
+        _write_waveform_stub(waveform)
 
         app = web_streamer.build_app()
         client, server = await _start_client(app)
@@ -97,6 +119,7 @@ def test_delete_recording(dashboard_env):
             payload = await resp.json()
             assert payload["deleted"] == ["20240103/delete-me.opus"]
             assert not target.exists()
+            assert not waveform.exists()
 
             resp = await client.post("/api/recordings/delete", json={"items": ["../outside"]})
             assert resp.status == 200
