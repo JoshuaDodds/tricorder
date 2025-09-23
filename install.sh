@@ -128,8 +128,18 @@ cp -rf lib/* "$BASE/lib/" 2>/dev/null || true
 chmod 755 "$BASE"/lib/* 2>/dev/null || true
 
 # shellcheck disable=SC2035
-cp -f *.py *.yaml "$BASE" 2>/dev/null || true
+cp -f *.py "$BASE" 2>/dev/null || true
 chmod 755 "$BASE"/*.py 2>/dev/null || true
+
+# Copy YAML configs but skip if already present
+for f in *.yaml; do
+    target="$BASE/$f"
+    if [ -f "$target" ]; then
+        echo "Keeping existing $target"
+    else
+        cp "$f" "$BASE/"
+    fi
+done
 
 for unit in systemd/*; do
   [ -f "$unit" ] || continue

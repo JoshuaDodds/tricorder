@@ -60,26 +60,37 @@
           <span class="value" id="last-updated">--</span>
         </div>
       </section>
-      <section class="main-grid">
-        <div class="card player-card">
-          <div id="live-stream-panel" class="live-stream-panel" aria-hidden="true">
-            <div class="live-stream-header">
-              <div class="live-stream-titles">
-                <h3>Live stream</h3>
-                <span id="live-stream-status" class="live-stream-status">Idle</span>
-              </div>
-              <div class="live-stream-actions">
-                <span class="live-stream-metric">Listeners <span id="live-stream-clients">0</span></span>
-                <span class="live-stream-metric">Encoder <span id="live-stream-encoder">stopped</span></span>
-                <button id="live-stream-close" class="ghost-button small" type="button">Hide</button>
-              </div>
+      <section
+        id="live-stream-card"
+        class="card live-stream-card"
+        hidden
+        data-active="false"
+        aria-hidden="true"
+      >
+        <div id="live-stream-panel" class="live-stream-panel" aria-hidden="true">
+          <div class="live-stream-header">
+            <div class="live-stream-titles">
+              <h3>Live stream</h3>
+              <span id="live-stream-status" class="live-stream-status">Idle</span>
             </div>
-            <audio id="live-stream-audio" controls preload="auto"></audio>
-            <p class="live-stream-hint">Streaming pauses automatically when hidden.</p>
+            <div class="live-stream-actions">
+              <span class="live-stream-metric">Listeners <span id="live-stream-clients">0</span></span>
+              <span class="live-stream-metric">Encoder <span id="live-stream-encoder">stopped</span></span>
+              <button id="live-stream-close" class="ghost-button small" type="button">Hide</button>
+            </div>
           </div>
+          <audio id="live-stream-audio" controls preload="auto"></audio>
+          <p class="live-stream-hint">Streaming pauses automatically when hidden.</p>
+        </div>
+      </section>
+      <section class="main-grid">
+        <div id="player-card" class="card player-card" hidden data-active="false">
           <div class="card-header">
-            <h2>Preview</h2>
-            <div class="player-meta" id="player-meta">Select a recording to preview.</div>
+            <div class="card-heading">
+              <h2>Preview</h2>
+              <div class="player-meta" id="player-meta">Select a recording to preview.</div>
+            </div>
+            <button id="preview-close" class="ghost-button small" type="button">Hide</button>
           </div>
           <audio id="preview-player" controls preload="none"></audio>
           <div class="waveform-section" id="waveform-section">

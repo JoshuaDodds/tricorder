@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import os
 import shutil
@@ -125,15 +126,45 @@ def _scan_recordings_worker(
         suffix = path.suffix.lower()
         if allowed_ext and suffix not in allowed_ext:
             continue
+        waveform_path = path.with_suffix(path.suffix + ".waveform.json")
+        try:
+            waveform_stat = waveform_path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+
+        if waveform_stat.st_size <= 0:
+            continue
+
+        try:
+            rel = path.relative_to(recordings_root)
+            waveform_rel = waveform_path.relative_to(recordings_root)
+        except ValueError:
+            continue
+
         try:
             stat = path.stat()
         except OSError:
             continue
 
+        waveform_meta: dict[str, object] | None = None
         try:
-            rel = path.relative_to(recordings_root)
-        except ValueError:
+            with waveform_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+                if isinstance(payload, dict):
+                    waveform_meta = payload
+        except (OSError, json.JSONDecodeError):
             continue
+
+        raw_duration = None
+        if waveform_meta is not None:
+            raw_duration = waveform_meta.get("duration_seconds")
+        duration = None
+        if isinstance(raw_duration, (int, float)) and raw_duration > 0:
+            duration = float(raw_duration)
+        else:
+            duration = _probe_duration(path, stat)
 
         rel_posix = rel.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
@@ -142,7 +173,6 @@ def _scan_recordings_worker(
         if suffix:
             ext_set.add(suffix)
 
-        duration = _probe_duration(path, stat)
         size_bytes = stat.st_size
         total_bytes += size_bytes
         entries.append(
@@ -155,6 +185,7 @@ def _scan_recordings_worker(
                 "modified": stat.st_mtime,
                 "modified_iso": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 "duration": duration,
+                "waveform_path": waveform_rel.as_posix(),
             }
         )
 
@@ -303,6 +334,11 @@ def build_app() -> web.Application:
                     if isinstance(entry.get("duration"), (int, float))
                     else None
                 ),
+                "waveform_path": (
+                    str(entry.get("waveform_path"))
+                    if entry.get("waveform_path")
+                    else ""
+                ),
             }
             for entry in window
         ]
@@ -374,6 +410,13 @@ def build_app() -> web.Application:
             try:
                 resolved.unlink()
                 deleted.append(rel.replace(os.sep, "/"))
+                waveform_sidecar = resolved.with_suffix(resolved.suffix + ".waveform.json")
+                try:
+                    waveform_sidecar.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
             except Exception as exc:
                 errors.append({"item": rel, "error": str(exc)})
                 continue
