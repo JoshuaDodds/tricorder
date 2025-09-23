@@ -141,7 +141,7 @@ body {
 }
 
 .refresh-indicator {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 0.45rem;
   min-height: 2rem;
@@ -156,6 +156,7 @@ body {
 }
 
 .refresh-indicator[data-visible="true"] {
+  display: inline-flex;
   opacity: 1;
   visibility: visible;
 }
