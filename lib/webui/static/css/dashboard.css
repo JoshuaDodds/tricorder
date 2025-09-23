@@ -177,7 +177,7 @@ body {
 }
 
 .connection-status {
-  display: inline-flex;
+  display: none;
   align-items: center;
   min-height: 2rem;
   font-size: 0.85rem;
@@ -185,14 +185,10 @@ body {
   letter-spacing: 0.04em;
   color: var(--danger);
   white-space: normal;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
 }
 
 .connection-status[data-visible="true"] {
-  opacity: 1;
-  visibility: visible;
+  display: inline-flex;
 }
 
 .status-bar {
