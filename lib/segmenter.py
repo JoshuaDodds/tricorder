@@ -185,6 +185,59 @@ class _WriterWorker(threading.Thread):
                 self.q.task_done()
 
 
+# ---------- Async encoder worker ----------
+ENCODE_QUEUE: queue.Queue = queue.Queue()
+_ENCODE_WORKER = None
+_ENCODE_LOCK = threading.Lock()
+
+
+class _EncoderWorker(threading.Thread):
+    def __init__(self, job_queue: queue.Queue):
+        super().__init__(daemon=True)
+        self.q = job_queue
+
+    def run(self):
+        while True:
+            item = self.q.get()
+            try:
+                if item is None:
+                    return
+
+                wav_path, base_name = item
+                cmd = [ENCODER, wav_path, base_name]
+                try:
+                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                except subprocess.CalledProcessError as exc:
+                    print(f"[encoder] FAIL {exc.returncode}", flush=True)
+                    if exc.stdout:
+                        print(exc.stdout, flush=True)
+                    if exc.stderr:
+                        print(exc.stderr, flush=True)
+                except Exception as exc:  # noqa: BLE001 - log and continue
+                    print(f"[encoder] unexpected error: {exc!r}", flush=True)
+            finally:
+                self.q.task_done()
+
+
+def _ensure_encoder_worker() -> None:
+    global _ENCODE_WORKER
+    with _ENCODE_LOCK:
+        if _ENCODE_WORKER is None or not _ENCODE_WORKER.is_alive():
+            _ENCODE_WORKER = _EncoderWorker(ENCODE_QUEUE)
+            _ENCODE_WORKER.start()
+
+
+def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> None:
+    if not tmp_wav_path or not base_name:
+        return
+    _ensure_encoder_worker()
+    try:
+        ENCODE_QUEUE.put_nowait((tmp_wav_path, base_name))
+    except queue.Full:
+        ENCODE_QUEUE.put((tmp_wav_path, base_name))
+    print(f"[segmenter] queued encode job for {base_name}", flush=True)
+
+
 class TimelineRecorder:
     event_counters = collections.defaultdict(int)
 
@@ -378,11 +431,7 @@ class TimelineRecorder:
             event_ts = self.event_timestamp or base.split("_", 1)[0]
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
-            cmd = [ENCODER, tmp_wav_path, final_base]
-            try:
-                subprocess.run(cmd, capture_output=True, text=True, check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"[encoder] FAIL {e.returncode}", flush=True)
+            _enqueue_encode_job(tmp_wav_path, final_base)
 
         self._reset_event_state()
 
@@ -409,6 +458,11 @@ class TimelineRecorder:
             self._finalize_event(reason="shutdown")
         try:
             self.audio_q.put_nowait(None)
+        except Exception:
+            pass
+
+        try:
+            ENCODE_QUEUE.join()
         except Exception:
             pass
 

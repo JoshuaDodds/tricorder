@@ -8,14 +8,17 @@ import contextlib
 import json
 import math
 import os
+import subprocess
+import tempfile
 from array import array
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Sequence
 import wave
 
 DEFAULT_BUCKET_COUNT = 2048
 MAX_BUCKET_COUNT = 8192
 PEAK_SCALE = 32767
+DEFAULT_BACKFILL_EXTENSIONS: tuple[str, ...] = (".opus", ".ogg", ".flac", ".mp3")
 
 
 def _clamp_int16(value: int) -> int:
@@ -36,6 +39,159 @@ def _write_payload(destination: Path, payload: dict[str, Any]) -> None:
     with tmp_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp_path, destination)
+
+
+def _normalize_extensions(exts: Iterable[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for ext in exts:
+        if not ext:
+            continue
+        ext_lower = ext.lower()
+        if not ext_lower.startswith("."):
+            ext_lower = f".{ext_lower}"
+        normalized.append(ext_lower)
+    # Preserve order while removing duplicates
+    seen: set[str] = set()
+    result: list[str] = []
+    for ext in normalized:
+        if ext not in seen:
+            seen.add(ext)
+            result.append(ext)
+    return tuple(result)
+
+
+def _decode_audio_to_wav(source: Path) -> Path:
+    tmp_file = tempfile.NamedTemporaryFile(prefix="waveform_", suffix=".wav", delete=False)
+    tmp_file.close()
+    tmp_path = Path(tmp_file.name)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        str(tmp_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise RuntimeError(f"ffmpeg failed while decoding {source}") from exc
+    return tmp_path
+
+
+def ensure_waveform_sidecar(
+    source_audio: os.PathLike[str] | str,
+    waveform_destination: os.PathLike[str] | str,
+    *,
+    bucket_count: int = DEFAULT_BUCKET_COUNT,
+) -> bool:
+    """Ensure a waveform sidecar exists for the provided audio file.
+
+    Returns True if a waveform was generated, False if it already existed.
+    """
+
+    source_path = Path(source_audio)
+    waveform_path = Path(waveform_destination)
+
+    try:
+        existing = waveform_path.stat()
+    except FileNotFoundError:
+        needs_waveform = True
+    except OSError:
+        needs_waveform = True
+    else:
+        needs_waveform = existing.st_size <= 0
+
+    if not needs_waveform:
+        return False
+
+    suffix = source_path.suffix.lower()
+    if suffix == ".wav":
+        generate_waveform(source_path, waveform_path, bucket_count=bucket_count)
+        return True
+
+    tmp_wav: Path | None = None
+    try:
+        tmp_wav = _decode_audio_to_wav(source_path)
+        generate_waveform(tmp_wav, waveform_path, bucket_count=bucket_count)
+    finally:
+        if tmp_wav is not None:
+            try:
+                tmp_wav.unlink(missing_ok=True)
+            except Exception:
+                pass
+    return True
+
+
+def backfill_missing_waveforms(
+    recordings_root: os.PathLike[str] | str,
+    *,
+    bucket_count: int = DEFAULT_BUCKET_COUNT,
+    allowed_extensions: Sequence[str] | None = None,
+    strict: bool = False,
+) -> list[Path]:
+    """Generate waveform sidecars for any recordings that are missing them."""
+
+    root = Path(recordings_root)
+    if not root.exists():
+        return []
+
+    base_exts: Sequence[str]
+    if not allowed_extensions:
+        base_exts = DEFAULT_BACKFILL_EXTENSIONS
+    else:
+        base_exts = allowed_extensions
+
+    allowed = set(_normalize_extensions(base_exts))
+    allowed.add(".wav")
+
+    generated: list[Path] = []
+
+    for audio_path in sorted(root.rglob("*")):
+        if not audio_path.is_file():
+            continue
+
+        suffix = audio_path.suffix.lower()
+        if allowed and suffix not in allowed:
+            continue
+
+        waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+
+        try:
+            needs_waveform = waveform_path.stat().st_size <= 0
+        except FileNotFoundError:
+            needs_waveform = True
+        except OSError:
+            needs_waveform = True
+
+        if not needs_waveform:
+            continue
+
+        try:
+            created = ensure_waveform_sidecar(
+                audio_path,
+                waveform_path,
+                bucket_count=bucket_count,
+            )
+        except Exception as exc:  # noqa: BLE001 - log and continue unless strict
+            print(f"[waveform] failed to backfill {audio_path}: {exc!r}", flush=True)
+            if strict:
+                raise
+            continue
+
+        if created:
+            generated.append(waveform_path)
+
+    return generated
 
 
 def generate_waveform(
@@ -157,6 +313,31 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         generate_waveform(args.source, args.destination, bucket_count=args.buckets)
+        try:
+            from lib.config import get_cfg  # Lazy import to avoid config load for library use
+
+            cfg = get_cfg()
+            raw_dir = cfg.get("paths", {}).get("recordings_dir")
+            recordings_dir = Path(raw_dir) if raw_dir else None
+            allowed_ext = cfg.get("ingest", {}).get("allowed_ext")
+        except Exception as exc:  # noqa: BLE001 - fall back if config unavailable
+            print(f"[waveform] unable to load configuration for backfill: {exc!r}", flush=True)
+        else:
+            if recordings_dir:
+                try:
+                    backfilled = backfill_missing_waveforms(
+                        recordings_dir,
+                        bucket_count=args.buckets,
+                        allowed_extensions=allowed_ext,
+                    )
+                except Exception as exc:  # noqa: BLE001 - log and continue
+                    print(f"[waveform] backfill sweep failed: {exc!r}", flush=True)
+                else:
+                    if backfilled:
+                        print(
+                            f"[waveform] backfilled {len(backfilled)} recording(s)",
+                            flush=True,
+                        )
     except Exception as exc:  # pragma: no cover - surfaced to caller
         parser.error(str(exc))
         return 1
