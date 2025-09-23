@@ -228,5 +228,29 @@
         <div id="config-viewer" class="code-block" role="region" aria-live="polite"></div>
       </section>
     </div>
+    <div
+      id="confirm-modal"
+      class="confirm-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="confirm-modal-dialog"
+        class="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
+        aria-describedby="confirm-modal-message"
+        tabindex="-1"
+      >
+        <h2 id="confirm-modal-title" class="confirm-title">Delete recordings</h2>
+        <p id="confirm-modal-message" class="confirm-message"></p>
+        <div class="confirm-actions">
+          <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
+          <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
