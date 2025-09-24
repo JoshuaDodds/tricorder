@@ -74,6 +74,8 @@ _DEFAULTS: Dict[str, Any] = {
             {"unit": "voice-recorder.service", "label": "Recorder"},
             {"unit": "web-streamer.service", "label": "Web UI"},
             {"unit": "dropbox.service", "label": "Dropbox ingest"},
+            {"unit": "tricorder-auto-update.service", "label": "Auto updater"},
+            {"unit": "tmpfs-guard.service", "label": "Tmpfs guard"},
         ],
         "web_service": "web-streamer.service",
     },

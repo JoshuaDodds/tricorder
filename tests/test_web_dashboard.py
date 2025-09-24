@@ -235,6 +235,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "yes",
                 "no",
                 "yes",
+                "",
             ),
             "web-streamer.service": (
                 "loaded",
@@ -246,6 +247,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "yes",
                 "no",
                 "yes",
+                "",
             ),
             "dropbox.service": (
                 "loaded",
@@ -257,13 +259,90 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "yes",
                 "no",
                 "yes",
+                "dropbox.path",
+            ),
+            "dropbox.path": (
+                "loaded",
+                "active",
+                "waiting",
+                "enabled",
+                "Dropbox path watcher",
+                "yes",
+                "no",
+                "no",
+                "no",
+                "",
+            ),
+            "tricorder-auto-update.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "enabled",
+                "Auto update",
+                "yes",
+                "no",
+                "no",
+                "yes",
+                "tricorder-auto-update.timer",
+            ),
+            "tricorder-auto-update.timer": (
+                "loaded",
+                "active",
+                "waiting",
+                "enabled",
+                "Auto update schedule",
+                "yes",
+                "yes",
+                "no",
+                "no",
+                "",
+            ),
+            "tmpfs-guard.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "enabled",
+                "Tmpfs guard",
+                "yes",
+                "no",
+                "no",
+                "yes",
+                "tmpfs-guard.timer",
+            ),
+            "tmpfs-guard.timer": (
+                "loaded",
+                "active",
+                "waiting",
+                "enabled",
+                "Tmpfs guard schedule",
+                "yes",
+                "yes",
+                "no",
+                "no",
+                "",
             ),
         }
 
         async def fake_systemctl(args):
             if args and args[0] == "show" and len(args) >= 2:
                 unit = args[1]
-                values = "\n".join(show_map.get(unit, ("not-found", "", "", "", "", "no", "no", "no", "no")))
+                values = "\n".join(
+                    show_map.get(
+                        unit,
+                        (
+                            "not-found",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "no",
+                            "no",
+                            "no",
+                            "no",
+                            "",
+                        ),
+                    )
+                )
                 return 0, f"{values}\n", ""
             return 0, "", ""
 
@@ -283,8 +362,30 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
             assert recorder["status_text"].startswith("Active")
             dropbox = next((item for item in services if item["unit"] == "dropbox.service"), None)
             assert dropbox is not None
-            assert dropbox["status_text"].lower() == "inactive (dead)"
+            assert dropbox["status_text"].startswith("Waiting (")
+            assert dropbox.get("status_state") == "waiting"
             assert dropbox["available"] is True
+            related = dropbox.get("related_units", [])
+            assert any(unit["unit"] == "dropbox.path" for unit in related)
+            auto_update = next(
+                (item for item in services if item["unit"] == "tricorder-auto-update.service"),
+                None,
+            )
+            assert auto_update is not None
+            assert auto_update.get("status_state") == "waiting"
+            assert any(
+                unit["unit"] == "tricorder-auto-update.timer"
+                for unit in auto_update.get("related_units", [])
+            )
+            tmpfs_guard = next(
+                (item for item in services if item["unit"] == "tmpfs-guard.service"),
+                None,
+            )
+            assert tmpfs_guard is not None
+            assert any(
+                unit["unit"] == "tmpfs-guard.timer"
+                for unit in tmpfs_guard.get("related_units", [])
+            )
         finally:
             await client.close()
             await server.close()

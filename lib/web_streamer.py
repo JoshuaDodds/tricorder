@@ -227,6 +227,29 @@ def _service_label_from_unit(unit: str) -> str:
     return " ".join(token.capitalize() for token in tokens)
 
 
+def _friendly_unit_label(unit: str) -> str:
+    base_label = _service_label_from_unit(unit)
+    if unit.endswith(".path"):
+        return f"{base_label} Path"
+    if unit.endswith(".timer"):
+        return f"{base_label} Timer"
+    return base_label
+
+
+def _derive_status_category(status: dict[str, Any]) -> str:
+    if not status.get("available", False):
+        return "error"
+    active_state = str(status.get("active_state", "")).lower()
+    sub_state = str(status.get("sub_state", "")).lower()
+    if active_state == "active" and sub_state in {"waiting", "listening"}:
+        return "waiting"
+    if status.get("is_active"):
+        return "active"
+    if active_state in {"activating", "reloading"}:
+        return "active"
+    return "inactive"
+
+
 def _normalize_dashboard_services(cfg: dict[str, Any]) -> tuple[list[dict[str, str]], set[str]]:
     dashboard_cfg = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
     raw_services = dashboard_cfg.get("services", [])
@@ -284,6 +307,7 @@ _SYSTEMCTL_PROPERTIES = [
     "CanStop",
     "CanReload",
     "CanRestart",
+    "TriggeredBy",
 ]
 
 
@@ -357,6 +381,7 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
             "can_restart": False,
             "status_text": f"Unavailable ({error})",
             "is_active": False,
+            "triggered_by": [],
         }
 
     data = _parse_show_output(stdout, _SYSTEMCTL_PROPERTIES)
@@ -369,6 +394,8 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
     can_stop = data.get("CanStop", "no").lower() == "yes"
     can_reload = data.get("CanReload", "no").lower() == "yes"
     can_restart = data.get("CanRestart", "no").lower() == "yes"
+    triggered_raw = data.get("TriggeredBy", "")
+    triggered = [token.strip() for token in triggered_raw.split() if token.strip()]
     return {
         "available": True,
         "error": "",
@@ -383,6 +410,7 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
         "can_restart": can_restart,
         "status_text": summary,
         "is_active": active_state.lower() in {"active", "reloading", "activating"},
+        "triggered_by": triggered,
     }
 
 
@@ -390,12 +418,64 @@ async def _collect_service_state(
     entry: dict[str, str], auto_restart_units: set[str]
 ) -> dict[str, Any]:
     status = await _fetch_service_status(entry["unit"])
+    triggered_units = [unit for unit in status.pop("triggered_by", []) if unit]
+    related_units: list[dict[str, Any]] = []
+    if triggered_units:
+        fetched = await asyncio.gather(
+            *(_fetch_service_status(unit) for unit in triggered_units),
+            return_exceptions=True,
+        )
+        for unit, payload in zip(triggered_units, fetched):
+            if isinstance(payload, Exception):
+                related = {
+                    "available": False,
+                    "error": str(payload),
+                    "load_state": "",
+                    "active_state": "",
+                    "sub_state": "",
+                    "unit_file_state": "",
+                    "system_description": "",
+                    "can_start": False,
+                    "can_stop": False,
+                    "can_reload": False,
+                    "can_restart": False,
+                    "status_text": "Unavailable",
+                    "is_active": False,
+                }
+            else:
+                related = dict(payload)
+            related.pop("triggered_by", None)
+            related.update(
+                {
+                    "unit": unit,
+                    "label": _friendly_unit_label(unit),
+                    "relation": "triggered-by",
+                }
+            )
+            related["status_state"] = _derive_status_category(related)
+            related_units.append(related)
+
+    status_state = _derive_status_category(status)
+    waiting_related = [
+        rel
+        for rel in related_units
+        if rel.get("relation") == "triggered-by"
+        and rel.get("status_state") in {"active", "waiting"}
+    ]
+    if status_state == "inactive" and waiting_related:
+        watchers_label = ", ".join(rel.get("unit", "") for rel in waiting_related if rel.get("unit"))
+        if watchers_label:
+            status["status_text"] = f"Waiting ({watchers_label})"
+        status_state = "waiting"
+
     status.update(
         {
             "unit": entry["unit"],
             "label": entry.get("label", entry["unit"]),
             "description": entry.get("description", ""),
             "auto_restart": entry["unit"] in auto_restart_units,
+            "status_state": status_state,
+            "related_units": related_units,
         }
     )
     return status

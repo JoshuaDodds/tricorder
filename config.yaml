@@ -140,6 +140,12 @@ dashboard:
     - unit: "dropbox.service"
       label: "Dropbox ingest"
       description: "Imports audio dropped into the Dropbox directory."
+    - unit: "tricorder-auto-update.service"
+      label: "Auto updater"
+      description: "Runs scheduled self-update checks."
+    - unit: "tmpfs-guard.service"
+      label: "Tmpfs guard"
+      description: "Prunes tmpfs recordings staging area on a timer."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.
