@@ -225,6 +225,30 @@
             </div>
           </div>
         </div>
+        <section id="services-card" class="card services-card">
+          <div class="card-header">
+            <div class="card-heading">
+              <h2>Service controls</h2>
+              <div class="card-subtitle">Start, stop, or reload systemd units. Web UI restarts automatically.</div>
+            </div>
+            <button id="services-refresh" class="ghost-button small" type="button">Refresh</button>
+          </div>
+          <div
+            id="services-status"
+            class="services-status"
+            role="status"
+            aria-live="polite"
+            aria-hidden="true"
+          ></div>
+          <div
+            id="services-list"
+            class="services-list"
+            role="region"
+            aria-live="polite"
+            aria-label="Service statuses"
+          ></div>
+          <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
+        </section>
       </section>
       <section class="card config-card">
         <div class="card-header">

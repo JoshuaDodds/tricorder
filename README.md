@@ -230,6 +230,29 @@ All adaptive knobs also accept environment overrides (`ADAPTIVE_RMS_ENABLED`, `A
 - `tricorder-auto-update.timer` + `tricorder-auto-update.service` → periodically fetch the main branch and reinstall when updates land
 - `clear_logs.sh` → legacy; prefers journald size limits (utility script not a service)
 
+### Dashboard service controls
+
+The management dashboard now exposes start/stop/reload controls for a curated set of systemd units. Configure the list under `dashboard.services` in `config.yaml`; each entry accepts a `unit` name plus optional `label` and `description` shown in the UI. Example:
+
+```yaml
+dashboard:
+  services:
+    - unit: "voice-recorder.service"
+      label: "Recorder"
+      description: "Segments microphone input into individual events."
+    - unit: "web-streamer.service"
+      label: "Web UI"
+      description: "Serves the dashboard and HLS live stream."
+  web_service: "web-streamer.service"
+```
+
+Units listed in `dashboard.web_service` are automatically restarted when a stop or reload action is requested so the dashboard stays reachable even if the web process is cycled. Override the defaults via:
+
+- `DASHBOARD_SERVICES="unit|Label|Description;other.service|Other"`
+- `DASHBOARD_WEB_SERVICE="web-streamer.service"`
+
+Entries are separated by semicolons; optional `|label|description` segments override the UI text for each unit.
+
 ---
 
 ## Automatic updates
