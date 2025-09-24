@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for Tricorder updates on GitHub
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=30m
+AccuracySec=1m
+Persistent=true
+Unit=tricorder-auto-update.service
+
+[Install]
+WantedBy=timers.target

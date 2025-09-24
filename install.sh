@@ -13,7 +13,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE=$VENV/lib/python$PY_VER/site-packages
 
-UNITS=(voice-recorder.service web-streamer.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer)
+UNITS=(voice-recorder.service web-streamer.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer)
 
 say(){ echo "[Tricorder] $*"; }
 
@@ -174,7 +174,10 @@ if [[ "${DEV:-0}" != "1" ]]; then
   for unit in voice-recorder.service web-streamer.service dropbox.service tmpfs-guard.service; do
       sudo systemctl enable --now "$unit" || true
   done
-  for unit in dropbox.path tmpfs-guard.timer; do
+  for timer in tmpfs-guard.timer tricorder-auto-update.timer; do
+      sudo systemctl enable --now "$timer" || true
+  done
+  for unit in dropbox.path; do
       sudo systemctl start "$unit" || true
   done
 else
