@@ -2,6 +2,7 @@ import asyncio
 import os
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,37 @@ def test_recordings_listing_filters(dashboard_env):
             resp = await client.get("/api/recordings?search=beta")
             search = await resp.json()
             assert [item["name"] for item in search["items"]] == ["beta"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recording_start_epoch_in_payload(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240105"
+        day_dir.mkdir()
+
+        recording = day_dir / "12-34-56_Both_1.opus"
+        recording.write_bytes(b"d")
+        waveform = recording.with_suffix(recording.suffix + ".waveform.json")
+        _write_waveform_stub(waveform, duration=3.5)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings?limit=5")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["items"], "Expected at least one recording"
+            match = next((item for item in payload["items"] if item["name"] == "12-34-56_Both_1"), None)
+            assert match is not None
+            expected = time.mktime(time.strptime("20240105 12-34-56", "%Y%m%d %H-%M-%S"))
+            assert match["start_epoch"] == pytest.approx(expected, rel=0, abs=1e-6)
+            assert isinstance(match["started_at"], str)
+            assert match["started_at"].startswith("2024-01-05T")
         finally:
             await client.close()
             await server.close()

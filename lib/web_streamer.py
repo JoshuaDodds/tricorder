@@ -168,6 +168,24 @@ def _scan_recordings_worker(
 
         rel_posix = rel.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
+
+        start_epoch: float | None = None
+        started_at_iso: str | None = None
+        if day:
+            time_component = path.stem.split("_", 1)[0]
+            if time_component:
+                try:
+                    struct_time = time.strptime(
+                        f"{day} {time_component}", "%Y%m%d %H-%M-%S"
+                    )
+                except ValueError:
+                    pass
+                else:
+                    start_epoch = float(time.mktime(struct_time))
+                    started_at_iso = datetime.fromtimestamp(
+                        start_epoch, tz=timezone.utc
+                    ).isoformat()
+
         if day:
             day_set.add(day)
         if suffix:
@@ -186,6 +204,8 @@ def _scan_recordings_worker(
                 "modified_iso": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 "duration": duration,
                 "waveform_path": waveform_rel.as_posix(),
+                "start_epoch": start_epoch,
+                "started_at": started_at_iso,
             }
         )
 
@@ -411,6 +431,16 @@ def build_app() -> web.Application:
                 "waveform_path": (
                     str(entry.get("waveform_path"))
                     if entry.get("waveform_path")
+                    else ""
+                ),
+                "start_epoch": (
+                    float(entry.get("start_epoch", 0.0))
+                    if isinstance(entry.get("start_epoch"), (int, float))
+                    else None
+                ),
+                "started_at": (
+                    str(entry.get("started_at"))
+                    if isinstance(entry.get("started_at"), str)
                     else ""
                 ),
             }
