@@ -606,6 +606,32 @@ button.small {
   height: 100%;
 }
 
+.waveform-clock {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.35rem 0.75rem;
+  border-radius: 0.65rem;
+  background: rgba(15, 23, 42, 0.82);
+  color: var(--text);
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", "Courier New", monospace;
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.45);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 1;
+  text-transform: uppercase;
+}
+
+.waveform-clock[data-active="true"] {
+  opacity: 1;
+}
+
 .waveform-cursor {
   position: absolute;
   top: 0;
