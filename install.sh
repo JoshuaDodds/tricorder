@@ -113,7 +113,7 @@ else
 fi
 
 # create app tree
-mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp}
+mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp,repo}
 if [[ -n "$INSTALL_OWNER" ]]; then
   chown -R "$INSTALL_OWNER":"$INSTALL_OWNER" "$BASE" 2>/dev/null || true
 fi

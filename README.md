@@ -208,15 +208,15 @@ The adaptive controller monitors a rolling window of RMS samples to track the cu
 
 Relevant configuration keys:
 
-| Field | Description |
-| ----- | ----------- |
-| `adaptive_rms.enabled` | Turn the controller on. When `false`, the fixed `segmenter.rms_threshold` is used. |
-| `adaptive_rms.min_thresh` | Lower bound on the normalized RMS threshold (keep above background hiss). |
-| `adaptive_rms.margin` | Multiplier applied to the raise candidate percentile to determine the live threshold. |
-| `adaptive_rms.update_interval_sec` | How often background statistics are sampled for potential adjustments. |
-| `adaptive_rms.window_sec` | Size of the lookback window used to estimate background energy. |
-| `adaptive_rms.hysteresis_tolerance` | Minimum relative delta before a new threshold is published. |
-| `adaptive_rms.release_percentile` | Percentile used when releasing after a loud room quiets down (smaller values recover faster). |
+| Field                               | Description                                                                                   |
+|-------------------------------------|-----------------------------------------------------------------------------------------------|
+| `adaptive_rms.enabled`              | Turn the controller on. When `false`, the fixed `segmenter.rms_threshold` is used.            |
+| `adaptive_rms.min_thresh`           | Lower bound on the normalized RMS threshold (keep above background hiss).                     |
+| `adaptive_rms.margin`               | Multiplier applied to the raise candidate percentile to determine the live threshold.         |
+| `adaptive_rms.update_interval_sec`  | How often background statistics are sampled for potential adjustments.                        |
+| `adaptive_rms.window_sec`           | Size of the lookback window used to estimate background energy.                               |
+| `adaptive_rms.hysteresis_tolerance` | Minimum relative delta before a new threshold is published.                                   |
+| `adaptive_rms.release_percentile`   | Percentile used when releasing after a loud room quiets down (smaller values recover faster). |
 
 All adaptive knobs also accept environment overrides (`ADAPTIVE_RMS_ENABLED`, `ADAPTIVE_RMS_MIN_THRESH`, `ADAPTIVE_RMS_MARGIN`, `ADAPTIVE_RMS_UPDATE_INTERVAL_SEC`, `ADAPTIVE_RMS_WINDOW_SEC`, `ADAPTIVE_RMS_HYSTERESIS_TOLERANCE`, `ADAPTIVE_RMS_RELEASE_PERCENTILE`). Use `room_tuner.py` to visualize the running thresholds while dialing them in for a space.
 

@@ -2,9 +2,9 @@
 Description=Check for Tricorder updates on GitHub
 
 [Timer]
-OnBootSec=10m
-OnUnitActiveSec=30m
-AccuracySec=1m
+OnBootSec=3m
+OnUnitActiveSec=1m
+AccuracySec=1s
 Persistent=true
 Unit=tricorder-auto-update.service
 
