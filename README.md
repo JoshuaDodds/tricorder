@@ -1,293 +1,247 @@
 # Tricorder
 
-Tricorder is an embedded audio event recorder designed to run continuously on a Raspberry Pi Zero 2 W.  
-It listens to audio input, segments interesting activity using WebRTC VAD, encodes detected events to Opus,  
-and stores them locally. Also supports dropping externally recorded events into this project's processing pipeline
-for processing. 
+Tricorder is an embedded audio event recorder designed for 24/7 capture on a Raspberry Pi Zero 2 W. It listens to a mono ALSA input, segments interesting activity with WebRTC VAD, encodes events to Opus, and serves them through an on-device dashboard and HLS stream.
 
-This project is designed for **single-purpose deployment** on a dedicated device.
-
-Note: This project is pinned to Python ≥3.10 with requirements.txt to ensure consistent builds on Raspberry Pi Zero 2W 
-(armhf/arm64 wheels).
+This project targets **single-purpose deployments** on low-power hardware. The runtime is pinned to Python&nbsp;3.10 via `requirements.txt` to ensure wheel availability for the Pi Zero 2&nbsp;W.
 
 ---
 
-## Features
+## Highlights
 
-- Continuous low-power audio monitoring on RPi Zero 2 W
-- WebRTC-based voice activity detection at 48 kHz / 20 ms frames
-- Efficient encoding with `ffmpeg` (Opus @ ~48 kbps, mono)
-- Event-based segmentation with pre- / post-roll context
-- Adaptive RMS threshold tracking that follows background noise and recovers when rooms quiet down
-- Systemd-managed services for recording, encoding, storage, and syncing
-- On-demand HLS web streaming of the live microphone feed with automatic
-  start/stop when listeners connect or disconnect
-- Automatic tmpfs space guard and log rotation
-- Optional systemd auto-update service to keep deployments current without manual pulls
+- Continuous audio capture with adaptive RMS tracking and configurable VAD aggressiveness.
+- Event segmentation with pre/post roll, asynchronous encoding, and automatic waveform sidecars for fast preview rendering.
+- Live HLS streaming that powers up only when listeners are present and tears down when idle.
+- Web dashboard (aiohttp + Jinja) for monitoring recorder state, browsing recordings, previewing audio + waveform, deleting files, and inspecting configuration.
+- Dropbox-style ingest path for external recordings that reuses the segmentation + encoding pipeline.
+- Systemd-managed services and timers, including optional automatic updates driven by `tricorder_auto_update.sh`.
+- Utilities for deployment (`install.sh`), cleanup (`clear_logs.sh`), and environment tuning (`room_tuner.py`).
 
 ---
 
-## Why the name “Tricorder”?
-
-The name is both a nod to the *Star Trek* tricorder (a portable device that continuously scans and records signals)  
-and a literal description of this project’s **three core recording functions**:
-
-1. **Audio-triggered recording with Voice Activity Detection (VAD) tagging** – capture events when the input exceeds a sound threshold and/or speech is detected.  
-2. **Live Network Streaming** – HLS live streaming of audio from the device microphone to any web browser.   
-3. **External file ingestion** – process/ingest external recordings, trimming away uninteresting parts automatically.
-
----
-
-# Tricorder Architecture
+## Architecture
 
 ```mermaid
 graph TD
-    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py]
-    B -->|frames| C[segmenter.py]
-    C -->|tmp wav| D[encode_and_store.sh]
-    D -->|opus files| E["recordings dir (/apps/tricorder/recordings)"]
+    A[Microphone / ALSA device] -->|raw PCM| B[live_stream_daemon.py]
+    B -->|frames| C[TimelineRecorder (segmenter.py)]
+    C -->|tmp WAV| D[encode_and_store.sh]
+    D -->|Opus + waveform JSON| E[recordings dir (/apps/tricorder/recordings)]
 
-    B -->|frames| H["HLSTee (HLS encoder)"]
-    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"]
-    I -->|static files| J["web_streamer.py (aiohttp)"]
-    J -->|HTTP HLS| K[Browsers / Clients]
-    J -->|client events| L[HLS controller]
-    L -->|start/stop| H
+    B -->|frames| H[HLSTee (hls_mux.py)]
+    H -->|segments + playlist| I[tmp/hls]
+    I -->|static files| J[web_streamer.py + webui]
+    J -->|HTTP (dashboard + APIs)| K[Browsers / clients]
+    J -->|encoder control| H
 
-    subgraph Dropbox Ingestion
-        F["Incoming File (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py]
+    subgraph Dropbox ingest
+        F[Incoming file (/apps/tricorder/dropbox)] --> G[process_dropped_file.py]
         G --> C
     end
 
-    subgraph System Management
+    subgraph Background services
         SM_voice_recorder[voice-recorder.service] --> B
+        SM_web_streamer[web-streamer.service] --> J
         SM_dropbox[dropbox.path + dropbox.service] --> G
-        SM_tmpfs_guard[tmpfs-guard.timer + tmpfs-guard.service] --> E
+        SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E
+        SM_updater[tricorder-auto-update.timer + service] --> D
     end
 ```
 
-## Live HLS Web Streaming
+Waveform sidecars are produced via `lib.waveform_cache` during the encode step so the dashboard can render previews instantly. The same encoder pipeline is reused for live capture and for files dropped into the ingest directory.
 
-Real-time listening is handled by a lightweight HLS pipeline that only runs
-while someone is tuned in:
+---
 
-- `live_stream_daemon.py` instantiates `HLSTee` but leaves it idle until
-  requested. Audio frames are always fed so a warm encoder can spin up quickly.
-- `web_streamer.py` is an `aiohttp` server that serves `/hls/live.m3u8` and the
-  generated segments, plus a simple dashboard that shows listener counts.
-- `hls_controller` tracks active clients and starts the encoder on the first
-  listener, then schedules a cooldown stop once the audience drops to zero.
+## Systemd units and helpers
 
-HLS artifacts (playlist + `.ts` segments) live under `<tmp_dir>/hls`
-(defaults to `/apps/tricorder/tmp/hls`). `ffmpeg`'s `-hls_flags delete_segments`
-keeps this directory self-pruning.
+| Unit / Script | Purpose |
+| --- | --- |
+| `voice-recorder.service` | Runs `live_stream_daemon.py` for continuous capture and segmentation. |
+| `web-streamer.service` | Hosts the aiohttp dashboard + HLS endpoints (`lib/web_streamer.py`). |
+| `dropbox.path` / `dropbox.service` | Watches `/apps/tricorder/dropbox` and processes externally provided recordings. |
+| `tmpfs-guard.timer` / `tmpfs-guard.service` | Enforces tmpfs usage/rotation to prevent storage exhaustion. |
+| `tricorder-auto-update.timer` / `tricorder-auto-update.service` | Periodically run `bin/tricorder_auto_update.sh` to pull and install updates. |
+| `bin/encode_and_store.sh` | Invoked by the segmenter to encode WAV captures to Opus and call `lib.waveform_cache`. |
+| `bin/tmpfs_guard.sh` | Cleans tmpfs + recording directories when the guard timer fires. |
+| `bin/tricorder_auto_update.sh` | Git-pulls the configured remote, runs `install.sh`, then restarts core services. |
+| `room_tuner.py` | Interactive console utility to dial in RMS thresholds and VAD aggressiveness for new rooms. |
+| `main.py` | Development launcher that stops the systemd recorder, runs the live daemon in the foreground, and serves the dashboard on port 8080. |
 
-### Running the streamer locally
+`updater.env-example` documents the environment file expected by the auto-update service (`/etc/tricorder/update.env`). Update this file whenever new updater tunables are introduced.
+
+---
+
+## Web dashboard
+
+`lib/web_streamer.py` + `lib/webui` expose a dashboard at `/` with the following capabilities:
+
+- Live recorder status and listener counts with encoder start/stop controls.
+- Recording browser with search, day filtering, pagination, and bulk deletion.
+- Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
+- Config viewer that renders the merged runtime configuration (post-environment overrides).
+- JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats`, etc.) consumed by the dashboard and available for automation.
+- Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
+
+Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`).
+
+### Running locally
 
 ```bash
 python -m lib.web_streamer --host 0.0.0.0 --port 8080
 ```
 
-Visit `http://<device>:8080/hls` to listen. The page automatically calls
-`/hls/start` and `/hls/stop` so the encoder powers up only when needed. During
-local development `python main.py` launches both the recorder loop and the web
-streamer in tandem.
+Visit `http://<device>:8080/` for the dashboard or `http://<device>:8080/hls` for the legacy HLS page. During development `python main.py` launches the live recorder and dashboard together, automatically stopping the systemd service while dev mode is active.
 
 ---
 
-## Project Structure
+## Live HLS streaming
 
-```text
-Folders
--------
+The live stream relies on `lib.hls_mux.HLSTee` to buffer recent audio frames and generate HLS segments only when listeners are connected:
+
+- `/hls/start` increments the listener count and starts the encoder if idle.
+- `/hls/live.m3u8` blocks until the first segment exists and is served with `Cache-Control: no-store`.
+- `/hls/stop` decrements the listener count and schedules encoder shutdown after a cooldown.
+- `/hls/stats` exposes the current listener count and encoder status for dashboards or monitoring.
+
+HLS artifacts live under `<tmp_dir>/hls` (defaults to `/apps/tricorder/tmp/hls`). `ffmpeg` runs with `-hls_flags delete_segments` so disk usage stays bounded.
+
+---
+
+## Project layout
+
+```
 tricorder/
-  bin/                # Shell utilities
-  lib/                # Core Python modules
-  systemd/            # Systemd unit files
-  
-Layout
-------
-tricorder/
-├── README.md
-├── requirements.txt
+├── bin/
+│   ├── encode_and_store.sh
+│   ├── tmpfs_guard.sh
+│   └── tricorder_auto_update.sh
+├── ci/Dockerfile
+├── config.yaml                # Default configuration shipped with the repo
 ├── install.sh
 ├── clear_logs.sh
-├── main.py
-├── __init__.py
-├── .gitignore
-├── .gitattributes
-│
-├── bin/
-│ ├── encode_and_store.sh
-│ └── tmpfs_guard.sh
-│
 ├── lib/
-│ ├── __init__.py
-│ ├── config.py
-│ ├── fault_handler.py
-│ ├── hls_controller.py
-│ ├── hls_mux.py
-│ ├── live_stream_daemon.py
-│ ├── process_dropped_file.py
-│ ├── segmenter.py
-│ └── web_streamer.py
-│
-└── systemd/
-├── voice-recorder.service
-├── dropbox.service
-├── dropbox.path
-├── tmpfs-guard.service
-└── tmpfs-guard.timer
-
+│   ├── config.py              # Config loader with YAML + env overrides
+│   ├── fault_handler.py
+│   ├── hls_controller.py
+│   ├── hls_mux.py
+│   ├── live_stream_daemon.py
+│   ├── process_dropped_file.py
+│   ├── segmenter.py           # TimelineRecorder + encoder pipeline
+│   ├── waveform_cache.py
+│   ├── web_streamer.py        # aiohttp app + dashboard APIs
+│   └── webui/                 # Templates + static assets for the dashboard
+├── main.py
+├── room_tuner.py
+├── systemd/
+│   ├── dropbox.path
+│   ├── dropbox.service
+│   ├── tmpfs-guard.service
+│   ├── tmpfs-guard.timer
+│   ├── tricorder-auto-update.service
+│   ├── tricorder-auto-update.timer
+│   ├── voice-recorder.service
+│   └── web-streamer.service
+├── tests/
+│   ├── test_00_install.py
+│   ├── test_10_segmenter.py
+│   ├── test_20__fault_handler.py
+│   ├── test_25_web_streamer.py
+│   ├── test_30_dropbox.py
+│   ├── test_40_end_to_end.py
+│   ├── test_50_uninstall.py
+│   ├── test_60_hls.py
+│   ├── test_waveform_cache.py
+│   └── test_web_dashboard.py
+├── requirements.txt
+├── requirements-dev.txt
+├── updater.env-example
+└── README.md
 ```
----
-
-## Testing
-
-This project uses **pytest** for unit and end-to-end testing.
-
-### Run all tests
-```bash
-pytest -v
-```
-
-### Test categories
-- **Unit tests**: `tests/test_10_segmenter.py`, `tests/test_20__fault_handler.py`
-- **Dropbox ingestion**: `tests/test_30_dropbox.py` (verifies processing of external files)
-- **End-to-end**: `tests/test_40_end_to_end.py` (generates WAV → pipeline → validates Opus output)
-- **Installer / cleanup**: `tests/test_00_install.py`, `tests/test_50_uninstall.py`
-- **HLS streaming controls**: `tests/test_60_hls.py` (on-demand encoder + client lifecycle)
-
-### CI/CD
-In CI pipelines, add:
-```yaml
-- name: Run tests
-  run: pytest -v --maxfail=1 --disable-warnings
-```
-
-Tests write to `/apps/tricorder/recordings` and temporary paths under `/tmp`. Ensure these are writable in your CI environment.
 
 ---
 
-## Installation
+## Installation and upgrade
 
-1. Flash Ubuntu 24.04 LTS onto an SD card. Boot and connect to network.
-2. Copy/Clone this repo onto the Pi. (not the installation directory)
-3. Run the installer:
+1. Flash a current Raspberry Pi OS (Bookworm) or Ubuntu Server image onto an SD card for a Raspberry Pi Zero&nbsp;2&nbsp;W. Boot, connect to the network, and clone this repository to a temporary working directory.
+2. Run the installer from the repo checkout:
    ```bash
    ./install.sh
    ```
-   This will install dependencies, set up a Python venv, and register systemd services. It willl also nable and start services
-   
+   - Installs apt dependencies (`ffmpeg`, `alsa-utils`, `python3-venv`, `python3-pip`).
+   - Creates a Python virtualenv under `/apps/tricorder/venv` and installs `requirements.txt`.
+   - Copies project files into `/apps/tricorder`, preserving existing YAML configs.
+   - Installs/updates systemd units, enables services (`voice-recorder`, `web-streamer`, `dropbox`) and timers (`tmpfs-guard`, `tricorder-auto-update`).
+3. Optional flags:
+   - `DEV=1 ./install.sh` skips apt + systemd actions and also copies `main.py` and `room_tuner.py` for development setups.
+   - `BASE=/custom/path ./install.sh` installs into an alternate root (used by tests and CI).
+
+### Auto-update service
+
+Copy `updater.env-example` to `/etc/tricorder/update.env` (or another path referenced by the systemd unit) and set:
+
+- `TRICORDER_UPDATE_REMOTE` – Git URL to pull updates from.
+- `TRICORDER_UPDATE_BRANCH` – Branch to track (default `main`).
+- `TRICORDER_UPDATE_DIR` – Working directory for the updater checkout (default `/apps/tricorder/repo`).
+- `TRICORDER_INSTALL_BASE` / `TRICORDER_INSTALL_SCRIPT` – Override install location or script if needed.
+- `TRICORDER_UPDATE_SERVICES` – Space-separated units to restart after an update.
+- `DEV=1` – Disable the updater without removing the timer.
+
+The timer is configured for short intervals in tests; adjust to a longer cadence in production.
+
 ---
 
 ## Configuration
 
-This project now uses a unified YAML file for configuration. Load order:
-1. /etc/tricorder/config.yaml
-2. /apps/tricorder/config.yaml
-3. ./config.yaml (project root)
+Configuration is merged from multiple sources (first match wins):
 
-Environment variables override the file when set (e.g., DEV=1, AUDIO_DEV, GAIN, REC_DIR, TMP_DIR, DROPBOX_DIR, INGEST_*, ADAPTIVE_RMS_*).
+1. `TRICORDER_CONFIG` environment variable pointing to a YAML file.
+2. `/etc/tricorder/config.yaml`
+3. `/apps/tricorder/config.yaml`
+4. `<project_root>/config.yaml`
+5. `<script_dir>/config.yaml` (directory of the invoking script)
+6. `./config.yaml`
 
-Key sections in config.yaml:
-- audio: device, sample_rate, frame_ms, gain, vad_aggressiveness
-- paths: tmp_dir, recordings_dir, dropbox_dir, ingest_work_dir, encoder_script
-- segmenter: pre- / post-pads, RMS threshold, debounce, and buffer settings
-- adaptive_rms: rolling background tracker that raises/lowers the RMS trigger based on recent noise levels
-- ingest: stability checks and file filters
-- logging: dev_mode toggle (equivalent to DEV=1)
+Environment variables override YAML values. Common overrides include:
 
-### Adaptive RMS controller
+- `DEV=1` — enable verbose logging.
+- `AUDIO_DEV`, `GAIN` — audio input and software gain.
+- `REC_DIR`, `TMP_DIR`, `DROPBOX_DIR` — paths for recordings, tmpfs, and dropbox.
+- `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
+- `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.
 
-The adaptive controller monitors a rolling window of RMS samples to track the current background floor. When enabled it:
+Key configuration sections (see `config.yaml` for defaults and documentation):
 
-1. Estimates the 95th percentile (configurable) of the recent background to form a **raise candidate** threshold.
-2. Remembers the last quiet window to compute a **release candidate** so the trigger can fall quickly once loud noise subsides.
-3. Applies hysteresis to avoid noisy oscillations and clamps stale values when most frames are silent.
-
-Relevant configuration keys:
-
-| Field                               | Description                                                                                   |
-|-------------------------------------|-----------------------------------------------------------------------------------------------|
-| `adaptive_rms.enabled`              | Turn the controller on. When `false`, the fixed `segmenter.rms_threshold` is used.            |
-| `adaptive_rms.min_thresh`           | Lower bound on the normalized RMS threshold (keep above background hiss).                     |
-| `adaptive_rms.margin`               | Multiplier applied to the raise candidate percentile to determine the live threshold.         |
-| `adaptive_rms.update_interval_sec`  | How often background statistics are sampled for potential adjustments.                        |
-| `adaptive_rms.window_sec`           | Size of the lookback window used to estimate background energy.                               |
-| `adaptive_rms.hysteresis_tolerance` | Minimum relative delta before a new threshold is published.                                   |
-| `adaptive_rms.release_percentile`   | Percentile used when releasing after a loud room quiets down (smaller values recover faster). |
-
-All adaptive knobs also accept environment overrides (`ADAPTIVE_RMS_ENABLED`, `ADAPTIVE_RMS_MIN_THRESH`, `ADAPTIVE_RMS_MARGIN`, `ADAPTIVE_RMS_UPDATE_INTERVAL_SEC`, `ADAPTIVE_RMS_WINDOW_SEC`, `ADAPTIVE_RMS_HYSTERESIS_TOLERANCE`, `ADAPTIVE_RMS_RELEASE_PERCENTILE`). Use `room_tuner.py` to visualize the running thresholds while dialing them in for a space.
+- `audio` – device, sample rate, frame size, gain, VAD aggressiveness.
+- `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles.
+- `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
+- `ingest` – file stability checks, extension filters, ignore suffixes.
+- `logging` – developer-mode verbosity toggle.
 
 ---
 
-## Services
+## Tuning and utilities
 
-- `voice-recorder.service` → runs the recorder daemon and segments audio into events
-- `dropbox.path` + `dropbox.service` → monitor Dropbox folder and ingest files from it
-- `tmpfs-guard.timer` + `tmpfs-guard.service` → ensure tmpfs doesn’t fill beyond threshold
-- `tricorder-auto-update.timer` + `tricorder-auto-update.service` → periodically fetch the main branch and reinstall when updates land
-- `clear_logs.sh` → legacy; prefers journald size limits (utility script not a service)
+- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing.
+- `clear_logs.sh` rotates `journalctl` and wipes recordings/tmpfs directories; useful before running end-to-end tests.
 
 ---
 
-## Automatic updates
+## Testing
 
-The auto-updater runs as `tricorder-auto-update.timer`, which wakes `tricorder-auto-update.service` every 30 minutes (after a 10
-minute boot delay). The service clones a configurable Git remote, runs `install.sh`, and restarts the active daemons when a new
-commit is detected.
-
-Create `/etc/tricorder/update.env` with at least the repository URL:
+This repository uses `pytest`. Run the full suite before committing changes:
 
 ```bash
-sudo tee /etc/tricorder/update.env >/dev/null <<'EOF'
-TRICORDER_UPDATE_REMOTE=https://github.com/you/tricorder.git
-# Optional overrides:
-# TRICORDER_UPDATE_BRANCH=main
-# TRICORDER_UPDATE_DIR=/var/lib/tricorder-updater
-# TRICORDER_INSTALL_BASE=/apps/tricorder
-# TRICORDER_UPDATE_SERVICES="voice-recorder.service web-streamer.service dropbox.service"
-EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now tricorder-auto-update.timer
+pytest -q
 ```
 
-The timer is enabled automatically by `install.sh`, but the snippet above is helpful when updating an existing deployment. To
-trigger an immediate run:
+Notable test modules:
 
-```bash
-sudo systemctl start tricorder-auto-update.service
-```
+- `tests/test_00_install.py` / `tests/test_50_uninstall.py` – installer and cleanup coverage.
+- `tests/test_10_segmenter.py` / `tests/test_20__fault_handler.py` – segmentation pipeline + USB fault handling.
+- `tests/test_25_web_streamer.py` / `tests/test_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
+- `tests/test_30_dropbox.py` – dropbox ingestion pipeline.
+- `tests/test_40_end_to_end.py` – WAV → event encoding → Opus artifact validation.
+- `tests/test_60_hls.py` – HLS controller lifecycle and playlist availability.
+- `tests/test_waveform_cache.py` – waveform generation/backfill behavior.
 
-Set `DEV=1` in the unit environment to disable auto-updates (useful on development systems).
-
----
-
-## Usage
-
-- Logs can be monitored with:
-  ```bash
-  journalctl -u voice-recorder.service -f
-  ```
-- Recording filenames follow:
-  ```
-  <HH>-<MM>-<SS>_<TYPE>_RMS-<LEVEL>_<N>.opus
-  ```
-  - `<HH>-<MM>-<SS>` — wall-clock start time (24h) when the trigger fired.
-  - `<TYPE>` — classifier outcome once the segment ended: `Both` (RMS + VAD), `Human` (VAD only), or `Other` (RMS only).
-  - `RMS-<LEVEL>` — instantaneous RMS value that first crossed the RMS threshold and started the event.
-  - `<N>` — per-second counter so multiple triggers in the same second stay unique.
-- Recordings will appear under `/apps/tricorder/recordings`.
-- To test the pipeline, a self-test service/script will be added (see TODO).
-
----
-
-## TODO (next improvements)
-
-- [ ] Make `/apps/tricorder` paths configurable via environment variables (e.g., `REC_DIR`, `TMP_DIR`).
----
-
-## Contributing
-
-This project is optimized for embedded deployment. Keep changes minimal, efficient, and mindful of Pi Zero 2 W constraints (CPU, RAM, storage).
+Tests write to `/apps/tricorder/recordings` and temporary paths under `/tmp`. Ensure these paths are writable (CI uses environment overrides to redirect paths when necessary).
