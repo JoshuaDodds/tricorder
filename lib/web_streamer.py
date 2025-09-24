@@ -42,6 +42,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+
+DEFAULT_RECORDINGS_LIMIT = 200
+MAX_RECORDINGS_LIMIT = 1000
+
 from aiohttp import web
 from aiohttp.web import AppKey
 
@@ -379,10 +383,10 @@ def build_app() -> web.Application:
         ext_filter = {token.lower().lstrip(".") for token in _collect("ext")}
 
         try:
-            limit = int(query.get("limit", "500"))
+            limit = int(query.get("limit", str(DEFAULT_RECORDINGS_LIMIT)))
         except ValueError:
-            limit = 500
-        limit = max(1, min(1000, limit))
+            limit = DEFAULT_RECORDINGS_LIMIT
+        limit = max(1, min(MAX_RECORDINGS_LIMIT, limit))
 
         try:
             offset = int(query.get("offset", "0"))

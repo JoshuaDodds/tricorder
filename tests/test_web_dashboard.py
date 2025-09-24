@@ -102,6 +102,63 @@ def test_recordings_listing_filters(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_pagination(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240110"
+        day_dir.mkdir()
+
+        base_epoch = 1_700_100_000
+        for idx in range(12):
+            file = day_dir / f"{idx:02d}.opus"
+            file.write_bytes(b"data")
+            _write_waveform_stub(file.with_suffix(file.suffix + ".waveform.json"))
+            os.utime(file, (base_epoch + idx, base_epoch + idx))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["limit"] == web_streamer.DEFAULT_RECORDINGS_LIMIT
+            assert payload["offset"] == 0
+            assert payload["total"] == 12
+
+            first_resp = await client.get("/api/recordings?limit=5")
+            first_page = await first_resp.json()
+            assert first_page["limit"] == 5
+            assert first_page["offset"] == 0
+            assert [item["name"] for item in first_page["items"]] == [
+                "11",
+                "10",
+                "09",
+                "08",
+                "07",
+            ]
+
+            second_resp = await client.get("/api/recordings?limit=5&offset=5")
+            second_page = await second_resp.json()
+            assert second_page["offset"] == 5
+            assert [item["name"] for item in second_page["items"]] == [
+                "06",
+                "05",
+                "04",
+                "03",
+                "02",
+            ]
+
+            third_resp = await client.get("/api/recordings?limit=5&offset=10")
+            third_page = await third_resp.json()
+            assert third_page["offset"] == 10
+            assert [item["name"] for item in third_page["items"]] == ["01", "00"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recording_start_epoch_in_payload(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"
