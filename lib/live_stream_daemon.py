@@ -15,6 +15,7 @@ SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
+STATE_POLL_INTERVAL = 1.0
 
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
@@ -75,7 +76,10 @@ def main():
         history_seconds=60,
         bitrate="64k",
     )
+    state_path = os.path.join(hls_dir, "controller_state.json")
+    controller.set_state_path(state_path, persist=False)
     controller.attach(hls)
+    controller.refresh_from_state()
 
     while not stop_requested:
         p = None
@@ -91,6 +95,7 @@ def main():
             buf = bytearray()
             frame_idx = 0
             last_frame_time = time.monotonic()
+            next_state_poll = 0.0
 
             assert p.stdout is not None
             stderr_fd = p.stderr.fileno() if p.stderr is not None else None
@@ -102,6 +107,10 @@ def main():
                     pass
 
             while not stop_requested:
+                now = time.monotonic()
+                if now >= next_state_poll:
+                    controller.refresh_from_state()
+                    next_state_poll = now + STATE_POLL_INTERVAL
                 chunk = p.stdout.read(CHUNK_BYTES)
                 if not chunk:
                     break
@@ -136,6 +145,7 @@ def main():
             print(f"[live] loop error: {e!r}", flush=True)
         finally:
             try:
+                controller.refresh_from_state()
                 if 'rec' in locals():
                     # Ensure encoder is stopped when daemon exits/restarts.
                     controller.stop_now()
