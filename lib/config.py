@@ -58,6 +58,7 @@ _DEFAULTS: Dict[str, Any] = {
         "update_interval_sec": 5.0,
         "window_sec": 10.0,
         "hysteresis_tolerance": 0.1,
+        "release_percentile": 0.5,
     },
     "ingest": {
         "stable_checks": 2,
@@ -143,6 +144,7 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         "ADAPTIVE_RMS_UPDATE_INTERVAL_SEC": ("update_interval_sec", float),
         "ADAPTIVE_RMS_WINDOW_SEC": ("window_sec", float),
         "ADAPTIVE_RMS_HYSTERESIS_TOLERANCE": ("hysteresis_tolerance", float),
+        "ADAPTIVE_RMS_RELEASE_PERCENTILE": ("release_percentile", float),
     }
     for env_key, (key, caster) in adaptive_env.items():
         if env_key in os.environ:

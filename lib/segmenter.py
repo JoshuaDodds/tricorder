@@ -257,12 +257,14 @@ class AdaptiveRmsController:
         self.margin = max(0.0, float(section.get("margin", 1.2)))
         self.update_interval = max(0.1, float(section.get("update_interval_sec", 5.0)))
         self.hysteresis_tolerance = max(0.0, float(section.get("hysteresis_tolerance", 0.1)))
+        self.release_percentile = min(1.0, max(0.01, float(section.get("release_percentile", 0.5))))
         window_sec = max(0.1, float(section.get("window_sec", 10.0)))
         window_frames = max(1, int(round((window_sec * 1000.0) / frame_ms)))
         self._buffer: collections.deque[float] = collections.deque(maxlen=window_frames)
         self._last_update = time.monotonic()
         self._last_p95: float | None = None
         self._last_candidate: float | None = None
+        self._last_release: float | None = None
         initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
         if self.enabled:
             initial_norm = max(self.min_thresh_norm, initial_norm)
@@ -287,6 +289,10 @@ class AdaptiveRmsController:
     def last_candidate(self) -> float | None:
         return self._last_candidate
 
+    @property
+    def last_release(self) -> float | None:
+        return self._last_release
+
     def observe(self, rms_value: int, voiced: bool) -> bool:
         if not self.enabled:
             return False
@@ -306,9 +312,17 @@ class AdaptiveRmsController:
         ordered = sorted(self._buffer)
         idx = max(0, int(math.ceil(0.95 * len(ordered)) - 1))
         p95 = ordered[idx]
-        candidate = min(1.0, max(self.min_thresh_norm, p95 * self.margin))
+        candidate_raise = min(1.0, max(self.min_thresh_norm, p95 * self.margin))
+        rel_idx = max(0, int(math.ceil(self.release_percentile * len(ordered)) - 1))
+        release_val = ordered[rel_idx]
+        candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
+        if (candidate_raise > self._current_norm) and (candidate_release > self._current_norm):
+            candidate = candidate_raise
+        else:
+            candidate = min(self._current_norm, candidate_release)
         self._last_p95 = p95
         self._last_candidate = candidate
+        self._last_release = release_val
 
         if self._current_norm <= 0.0:
             should_update = True
@@ -320,11 +334,16 @@ class AdaptiveRmsController:
             previous = self._current_norm
             self._current_norm = candidate
             if self.debug:
+                details = (
+                    f"(p95={p95:.4f}, margin={self.margin:.2f}, "
+                    f"release_pctl={self.release_percentile:.2f}, "
+                    f"release={release_val:.4f})"
+                )
                 print(
                     "[segmenter] adaptive RMS threshold updated: "
                     f"prev={int(round(previous * self._NORM))} "
                     f"new={self.threshold_linear} "
-                    f"(p95={p95:.4f}, margin={self.margin:.2f})",
+                    f"{details}",
                     flush=True,
                 )
             return True

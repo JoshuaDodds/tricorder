@@ -101,6 +101,10 @@ adaptive_rms:
   # Relative change required before applying a new threshold (0.1 ⇒ ±10%).
   hysteresis_tolerance: 0.1
 
+  # Percentile (0.0-1.0] used when lowering the threshold after noise subsides.
+  # Smaller values release faster once the room quiets; higher values stay conservative.
+  release_percentile: 0.5
+
 ingest:
   # Number of consecutive size-stability checks required before accepting a file.
   # Prevents racing with partial/incomplete files.
