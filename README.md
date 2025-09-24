@@ -202,7 +202,40 @@ Key sections in config.yaml:
 - `voice-recorder.service` → runs the recorder daemon and segments audio into events
 - `dropbox.path` + `dropbox.service` → monitor Dropbox folder and ingest files from it
 - `tmpfs-guard.timer` + `tmpfs-guard.service` → ensure tmpfs doesn’t fill beyond threshold
+- `tricorder-auto-update.timer` + `tricorder-auto-update.service` → periodically fetch the main branch and reinstall when updates land
 - `clear_logs.sh` → legacy; prefers journald size limits (utility script not a service)
+
+---
+
+## Automatic updates
+
+The auto-updater runs as `tricorder-auto-update.timer`, which wakes `tricorder-auto-update.service` every 30 minutes (after a 10
+minute boot delay). The service clones a configurable Git remote, runs `install.sh`, and restarts the active daemons when a new
+commit is detected.
+
+Create `/etc/tricorder/update.env` with at least the repository URL:
+
+```bash
+sudo tee /etc/tricorder/update.env >/dev/null <<'EOF'
+TRICORDER_UPDATE_REMOTE=https://github.com/you/tricorder.git
+# Optional overrides:
+# TRICORDER_UPDATE_BRANCH=main
+# TRICORDER_UPDATE_DIR=/var/lib/tricorder-updater
+# TRICORDER_INSTALL_BASE=/apps/tricorder
+# TRICORDER_UPDATE_SERVICES="voice-recorder.service web-streamer.service dropbox.service"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now tricorder-auto-update.timer
+```
+
+The timer is enabled automatically by `install.sh`, but the snippet above is helpful when updating an existing deployment. To
+trigger an immediate run:
+
+```bash
+sudo systemctl start tricorder-auto-update.service
+```
+
+Set `DEV=1` in the unit environment to disable auto-updates (useful on development systems).
 
 ---
 
