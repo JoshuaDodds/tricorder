@@ -5,6 +5,9 @@
 - Keep dependencies lean. Prefer the standard library first, and justify any new third-party packages by documenting why they are needed for the embedded deployment. Update `requirements.txt` and `requirements-dev.txt` together if you add Python dependencies.
 - Preserve the existing logging approach that relies on `print(..., flush=True)` so journalctl/systemd logs stay chronological. Use structured helper functions only when they do not hide log messages during boot.
 - When modifying long-running daemons, ensure they handle signals cleanly and always close subprocess pipes. Mirror the patterns already used in `lib/live_stream_daemon.py` and `lib/segmenter.py`.
+- When adding new tunables, environment variables, or background services, update `README.md` and the inline comments in
+  `config.yaml` so deployers can discover the change without digging through code. Prefer tables or bullet lists when documenting
+  new configuration surface area.
 
 ## Python code style
 - Match the current imperative style: module-level constants are `UPPER_SNAKE_CASE`, functions and variables use `snake_case`.

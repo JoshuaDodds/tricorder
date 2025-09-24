@@ -18,10 +18,12 @@ Note: This project is pinned to Python ≥3.10 with requirements.txt to ensure c
 - WebRTC-based voice activity detection at 48 kHz / 20 ms frames
 - Efficient encoding with `ffmpeg` (Opus @ ~48 kbps, mono)
 - Event-based segmentation with pre- / post-roll context
+- Adaptive RMS threshold tracking that follows background noise and recovers when rooms quiet down
 - Systemd-managed services for recording, encoding, storage, and syncing
 - On-demand HLS web streaming of the live microphone feed with automatic
   start/stop when listeners connect or disconnect
 - Automatic tmpfs space guard and log rotation
+- Optional systemd auto-update service to keep deployments current without manual pulls
 
 ---
 
@@ -186,14 +188,37 @@ This project now uses a unified YAML file for configuration. Load order:
 2. /apps/tricorder/config.yaml
 3. ./config.yaml (project root)
 
-Environment variables override the file when set (e.g., DEV=1, AUDIO_DEV, GAIN, REC_DIR, TMP_DIR, DROPBOX_DIR, INGEST_*).
+Environment variables override the file when set (e.g., DEV=1, AUDIO_DEV, GAIN, REC_DIR, TMP_DIR, DROPBOX_DIR, INGEST_*, ADAPTIVE_RMS_*).
 
 Key sections in config.yaml:
 - audio: device, sample_rate, frame_ms, gain, vad_aggressiveness
 - paths: tmp_dir, recordings_dir, dropbox_dir, ingest_work_dir, encoder_script
 - segmenter: pre- / post-pads, RMS threshold, debounce, and buffer settings
+- adaptive_rms: rolling background tracker that raises/lowers the RMS trigger based on recent noise levels
 - ingest: stability checks and file filters
 - logging: dev_mode toggle (equivalent to DEV=1)
+
+### Adaptive RMS controller
+
+The adaptive controller monitors a rolling window of RMS samples to track the current background floor. When enabled it:
+
+1. Estimates the 95th percentile (configurable) of the recent background to form a **raise candidate** threshold.
+2. Remembers the last quiet window to compute a **release candidate** so the trigger can fall quickly once loud noise subsides.
+3. Applies hysteresis to avoid noisy oscillations and clamps stale values when most frames are silent.
+
+Relevant configuration keys:
+
+| Field | Description |
+| ----- | ----------- |
+| `adaptive_rms.enabled` | Turn the controller on. When `false`, the fixed `segmenter.rms_threshold` is used. |
+| `adaptive_rms.min_thresh` | Lower bound on the normalized RMS threshold (keep above background hiss). |
+| `adaptive_rms.margin` | Multiplier applied to the raise candidate percentile to determine the live threshold. |
+| `adaptive_rms.update_interval_sec` | How often background statistics are sampled for potential adjustments. |
+| `adaptive_rms.window_sec` | Size of the lookback window used to estimate background energy. |
+| `adaptive_rms.hysteresis_tolerance` | Minimum relative delta before a new threshold is published. |
+| `adaptive_rms.release_percentile` | Percentile used when releasing after a loud room quiets down (smaller values recover faster). |
+
+All adaptive knobs also accept environment overrides (`ADAPTIVE_RMS_ENABLED`, `ADAPTIVE_RMS_MIN_THRESH`, `ADAPTIVE_RMS_MARGIN`, `ADAPTIVE_RMS_UPDATE_INTERVAL_SEC`, `ADAPTIVE_RMS_WINDOW_SEC`, `ADAPTIVE_RMS_HYSTERESIS_TOLERANCE`, `ADAPTIVE_RMS_RELEASE_PERCENTILE`). Use `room_tuner.py` to visualize the running thresholds while dialing them in for a space.
 
 ---
 
