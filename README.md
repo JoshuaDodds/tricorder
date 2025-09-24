@@ -18,23 +18,34 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 
 ---
 
+## Why the name “Tricorder”?
+
+The name is both a nod to the *Star Trek* tricorder (a portable device that continuously scans and records signals)  
+and a literal description of this project’s **three core recording functions**:
+
+1. **Audio-triggered recording with Voice Activity Detection (VAD) tagging** – capture events when the input exceeds a sound threshold and/or speech is detected.  
+2. **Live Network Streaming** – HLS live streaming of audio from the device microphone to any web browser.   
+3. **External file ingestion** – process/ingest external recordings, trimming away uninteresting parts automatically.
+
+---
+
 ## Architecture
 
 ```mermaid
 graph TD
     A[Microphone / ALSA device] -->|raw PCM| B[live_stream_daemon.py]
-    B -->|frames| C[TimelineRecorder (segmenter.py)]
+    B -->|frames| C["TimelineRecorder<br/>(segmenter.py)"]
     C -->|tmp WAV| D[encode_and_store.sh]
-    D -->|Opus + waveform JSON| E[recordings dir (/apps/tricorder/recordings)]
+    D -->|Opus + waveform JSON| E["recordings dir<br/>(/apps/tricorder/recordings)"]
 
-    B -->|frames| H[HLSTee (hls_mux.py)]
+    B -->|frames| H["HLSTee<br/>(hls_mux.py)"]
     H -->|segments + playlist| I[tmp/hls]
     I -->|static files| J[web_streamer.py + webui]
     J -->|HTTP (dashboard + APIs)| K[Browsers / clients]
     J -->|encoder control| H
 
     subgraph Dropbox ingest
-        F[Incoming file (/apps/tricorder/dropbox)] --> G[process_dropped_file.py]
+        F["Incoming file<br/>(/apps/tricorder/dropbox)"] --> G[process_dropped_file.py]
         G --> C
     end
 
