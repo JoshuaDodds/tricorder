@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import shutil
 
@@ -102,3 +103,42 @@ def test_hls_controller_deduplicates_sessions():
 
     assert controller.client_disconnected(session_id="abc") == 1
     assert controller.client_disconnected(session_id="def") == 0
+
+
+def test_hls_controller_state_persistence(monkeypatch, tmp_path):
+    state_path = tmp_path / "controller_state.json"
+
+    writer = _HLSController()
+    writer.set_state_path(str(state_path), persist=True)
+    writer.set_cooldown(0.0)
+    writer.attach(DummyHLSTee())
+
+    assert writer.client_connected(session_id="one") == 1
+    assert writer.client_connected(session_id="two") == 2
+
+    with state_path.open("r", encoding="utf-8") as handle:
+        saved = json.load(handle)
+    assert saved["clients"] == 2
+    assert set(saved["sessions"]) == {"one", "two"}
+
+    reader = _HLSController()
+    reader.attach(DummyHLSTee())
+    reader.set_cooldown(0.5)
+    reader.set_state_path(str(state_path), persist=False)
+
+    assert reader.refresh_from_state() == 2
+    assert reader.active_clients == 2
+    assert reader.status()["encoder_running"] is True
+
+    stops: list[float] = []
+
+    def fake_schedule(seconds: float) -> None:
+        stops.append(seconds)
+
+    monkeypatch.setattr(reader, "_schedule_stop_after", fake_schedule)
+
+    assert writer.client_disconnected(session_id="one") == 1
+    assert writer.client_disconnected(session_id="two") == 0
+
+    assert reader.refresh_from_state() == 0
+    assert stops == [0.5]

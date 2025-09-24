@@ -443,6 +443,8 @@ def build_app() -> web.Application:
     tmp_root = os.environ.get("TRICORDER_TMP", "/apps/tricorder/tmp")
     hls_dir = os.path.join(tmp_root, "hls")
     os.makedirs(hls_dir, exist_ok=True)
+    controller.set_state_path(os.path.join(hls_dir, "controller_state.json"), persist=True)
+    controller.refresh_from_state()
 
     cfg = get_cfg()
     recordings_root = Path(cfg["paths"]["recordings_dir"])
