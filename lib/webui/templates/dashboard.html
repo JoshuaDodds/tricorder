@@ -12,6 +12,15 @@
       <header class="app-header">
         <div class="titles">
           <h1>Dashboard</h1>
+          <button
+            id="services-open"
+            class="ghost-button"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+          >
+            Services
+          </button>
         </div>
         <div class="header-actions">
           <div class="header-status">
@@ -232,30 +241,6 @@
             </div>
           </div>
         </div>
-        <section id="services-card" class="card services-card">
-          <div class="card-header">
-            <div class="card-heading">
-              <h2>Service controls</h2>
-              <div class="card-subtitle">Start, stop, or reload systemd units. Web UI restarts automatically.</div>
-            </div>
-            <button id="services-refresh" class="ghost-button small" type="button">Refresh</button>
-          </div>
-          <div
-            id="services-status"
-            class="services-status"
-            role="status"
-            aria-live="polite"
-            aria-hidden="true"
-          ></div>
-          <div
-            id="services-list"
-            class="services-list"
-            role="region"
-            aria-live="polite"
-            aria-label="Service statuses"
-          ></div>
-          <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
-        </section>
       </section>
       <section class="card config-card">
         <div class="card-header">
@@ -286,6 +271,53 @@
         <div class="confirm-actions">
           <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
           <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div
+      id="services-modal"
+      class="services-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="services-dialog"
+        class="services-dialog card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="services-dialog-title"
+        aria-describedby="services-dialog-description"
+        tabindex="-1"
+      >
+        <div class="card-header services-dialog-header">
+          <div class="card-heading">
+            <h2 id="services-dialog-title">Service controls</h2>
+            <p id="services-dialog-description" class="card-subtitle">
+              Start, stop, or reload systemd units. Web UI restarts automatically.
+            </p>
+          </div>
+          <div class="services-dialog-actions">
+            <button id="services-refresh" class="ghost-button small" type="button">Refresh</button>
+            <button id="services-close" class="ghost-button small" type="button">Close</button>
+          </div>
+        </div>
+        <div id="services-dialog-body" class="services-dialog-body">
+          <div
+            id="services-status"
+            class="services-status"
+            role="status"
+            aria-live="polite"
+            aria-hidden="true"
+          ></div>
+          <div
+            id="services-list"
+            class="services-list"
+            role="region"
+            aria-live="polite"
+            aria-label="Service statuses"
+          ></div>
+          <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
         </div>
       </div>
     </div>

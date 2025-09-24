@@ -41,12 +41,18 @@ body {
 .app-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 1.5rem;
 }
 
+.titles {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .app-header h1 {
-  margin: 0 0 0.35rem;
+  margin: 0;
   font-size: clamp(1.6rem, 2.4vw, 2.1rem);
   letter-spacing: -0.015em;
 }
@@ -729,15 +735,57 @@ button.small {
   padding: 1.25rem 1.5rem 1.5rem;
 }
 
-.services-card {
+.services-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1.5rem, 4vw, 3rem);
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(12px);
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.services-modal[hidden] {
+  display: none;
+}
+
+.services-modal[data-visible="true"] {
+  opacity: 1;
+  visibility: visible;
+}
+
+.services-dialog {
+  width: min(960px, 96vw);
+  max-height: min(90vh, 960px);
   display: flex;
   flex-direction: column;
+  padding: clamp(1.25rem, 1.5vw + 1rem, 1.75rem);
+}
+
+.services-dialog-header {
+  align-items: flex-start;
   gap: 1rem;
 }
 
-.services-card .card-header {
-  align-items: flex-start;
+.services-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.services-dialog-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+  margin-right: -0.25rem;
 }
 
 .services-status {
@@ -1289,12 +1337,35 @@ button.small {
     justify-content: flex-end;
   }
 
+  .titles {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
   #recordings-table {
     min-width: 100%;
   }
 }
 
 @media (max-width: 640px) {
+  .services-modal {
+    padding: 1rem;
+  }
+
+  .services-dialog {
+    width: 100%;
+    max-height: 100vh;
+    border-radius: 1rem;
+  }
+
+  .services-dialog-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
   .table-card .card-header {
     padding: 1.1rem 1.25rem 0.9rem;
   }
