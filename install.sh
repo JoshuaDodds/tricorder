@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$SCRIPT_DIR"
+
 INSTALL_OWNER="${USER:-}"
 if [[ -z "$INSTALL_OWNER" ]] && command -v id >/dev/null 2>&1; then
   INSTALL_OWNER=$(id -un 2>/dev/null || true)
