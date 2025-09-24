@@ -33,15 +33,15 @@ and a literal description of this project’s **three core recording functions**
 
 ```mermaid
 graph TD
-    A[Microphone / ALSA device] -->|raw PCM| B[live_stream_daemon.py]
+    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py]
     B -->|frames| C["TimelineRecorder (segmenter.py)"]
     C -->|tmp WAV| D[encode_and_store.sh]
     D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"]
 
     B -->|frames| H["HLSTee (hls_mux.py)"]
-    H -->|segments + playlist| I[tmp/hls]
+    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"]
     I -->|static files| J["web_streamer.py + webui"]
-    J -->|HTTP (dashboard + APIs)| K[Browsers / clients]
+    J -->|HTTP (dashboard + APIs)| K[Browsers / Clients]
     J -->|encoder control| H
 
     subgraph "Dropbox ingest"
