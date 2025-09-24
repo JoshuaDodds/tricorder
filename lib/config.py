@@ -69,6 +69,14 @@ _DEFAULTS: Dict[str, Any] = {
     "logging": {
         "dev_mode": False  # if True or ENV DEV=1, enable verbose debug
     },
+    "dashboard": {
+        "services": [
+            {"unit": "voice-recorder.service", "label": "Recorder"},
+            {"unit": "web-streamer.service", "label": "Web UI"},
+            {"unit": "dropbox.service", "label": "Dropbox ingest"},
+        ],
+        "web_service": "web-streamer.service",
+    },
 }
 
 _cfg_cache: Dict[str, Any] | None = None
@@ -152,6 +160,40 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
                 cfg.setdefault("adaptive_rms", {})[key] = caster(os.environ[env_key])
             except Exception:
                 pass
+
+    def _service_label_from_unit(unit: str) -> str:
+        base = unit.split(".", 1)[0]
+        tokens = [segment for segment in base.replace("_", "-").split("-") if segment]
+        if not tokens:
+            return unit
+        return " ".join(token.capitalize() for token in tokens)
+
+    if "DASHBOARD_SERVICES" in os.environ:
+        raw = os.environ["DASHBOARD_SERVICES"]
+        entries = []
+        for chunk in raw.split(";"):
+            piece = chunk.strip()
+            if not piece:
+                continue
+            parts = [p.strip() for p in piece.split("|", 2)]
+            unit = parts[0]
+            if not unit:
+                continue
+            label = parts[1] if len(parts) > 1 and parts[1] else _service_label_from_unit(unit)
+            description = parts[2] if len(parts) > 2 and parts[2] else ""
+            entry: Dict[str, Any] = {"unit": unit}
+            if label:
+                entry["label"] = label
+            if description:
+                entry["description"] = description
+            entries.append(entry)
+        if entries:
+            cfg.setdefault("dashboard", {})["services"] = entries
+
+    if "DASHBOARD_WEB_SERVICE" in os.environ:
+        value = os.environ["DASHBOARD_WEB_SERVICE"].strip()
+        if value:
+            cfg.setdefault("dashboard", {})["web_service"] = value
 
 def get_cfg() -> Dict[str, Any]:
     global _cfg_cache
