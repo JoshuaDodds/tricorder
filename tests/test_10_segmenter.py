@@ -20,3 +20,112 @@ def test_event_trigger_and_flush(tmp_path, monkeypatch):
 
     # After flush, recorder resets state
     assert rec.base_name is None
+
+
+def test_adaptive_threshold_updates(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=300,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.001,
+            "margin": 1.1,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    initial = ctrl.threshold_linear
+    values = [800, 900, 1000, 1100, 1200]
+    for val in values:
+        ctrl.observe(val, voiced=False)
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear > initial
+    assert ctrl.last_p95 is not None
+    assert ctrl.last_candidate is not None
+
+
+def test_adaptive_threshold_hysteresis(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=500,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.0,
+            "margin": 1.0,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.5,
+        },
+        debug=False,
+    )
+
+    baseline = ctrl.threshold_linear
+    ctrl.observe(520, voiced=False)
+    fake_time[0] += 0.05
+    ctrl.observe(540, voiced=False)
+
+    # Change < 50% => no update
+    assert ctrl.threshold_linear == baseline
+
+
+def test_adaptive_threshold_recovery(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=300,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.001,
+            "margin": 1.1,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.2,
+            "hysteresis_tolerance": 0.0,
+            "release_percentile": 0.5,
+        },
+        debug=False,
+    )
+
+    for _ in range(10):
+        ctrl.observe(1200, voiced=False)
+        fake_time[0] += 0.05
+
+    raised = ctrl.threshold_linear
+    assert raised > 300
+
+    for _ in range(10):
+        ctrl.observe(200, voiced=False)
+        fake_time[0] += 0.05
+
+    lowered = ctrl.threshold_linear
+    assert lowered < raised
+
+    expected_norm = max(
+        ctrl.min_thresh_norm,
+        (200 / segmenter.AdaptiveRmsController._NORM) * ctrl.margin,
+    )
+    expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
+    assert lowered == expected_linear

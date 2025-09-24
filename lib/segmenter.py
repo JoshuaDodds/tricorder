@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import sys
 import time
@@ -54,7 +55,7 @@ PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
 # thresholds
-RMS_THRESH = int(cfg["segmenter"]["rms_threshold"])
+STATIC_RMS_THRESH = int(cfg["segmenter"]["rms_threshold"])
 vad = webrtcvad.Vad(int(cfg["audio"]["vad_aggressiveness"]))
 
 # DE-BOUNCE tunables
@@ -239,6 +240,117 @@ def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> None:
     print(f"[segmenter] queued encode job for {base_name}", flush=True)
 
 
+class AdaptiveRmsController:
+    _NORM = 32768.0
+
+    def __init__(
+        self,
+        *,
+        frame_ms: int,
+        initial_linear_threshold: int,
+        cfg_section: dict[str, object] | None,
+        debug: bool,
+    ) -> None:
+        section = cfg_section or {}
+        self.enabled = bool(section.get("enabled", False))
+        self.min_thresh_norm = min(1.0, max(0.0, float(section.get("min_thresh", 0.01))))
+        self.margin = max(0.0, float(section.get("margin", 1.2)))
+        self.update_interval = max(0.1, float(section.get("update_interval_sec", 5.0)))
+        self.hysteresis_tolerance = max(0.0, float(section.get("hysteresis_tolerance", 0.1)))
+        self.release_percentile = min(1.0, max(0.01, float(section.get("release_percentile", 0.5))))
+        window_sec = max(0.1, float(section.get("window_sec", 10.0)))
+        window_frames = max(1, int(round((window_sec * 1000.0) / frame_ms)))
+        self._buffer: collections.deque[float] = collections.deque(maxlen=window_frames)
+        self._last_update = time.monotonic()
+        self._last_p95: float | None = None
+        self._last_candidate: float | None = None
+        self._last_release: float | None = None
+        initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
+        if self.enabled:
+            initial_norm = max(self.min_thresh_norm, initial_norm)
+        self._current_norm = initial_norm
+        self.debug = debug
+
+    @property
+    def threshold_linear(self) -> int:
+        if not self.enabled:
+            return int(self._current_norm * self._NORM)
+        return int(round(self._current_norm * self._NORM))
+
+    @property
+    def threshold_norm(self) -> float:
+        return self._current_norm
+
+    @property
+    def last_p95(self) -> float | None:
+        return self._last_p95
+
+    @property
+    def last_candidate(self) -> float | None:
+        return self._last_candidate
+
+    @property
+    def last_release(self) -> float | None:
+        return self._last_release
+
+    def observe(self, rms_value: int, voiced: bool) -> bool:
+        if not self.enabled:
+            return False
+
+        norm = max(0.0, min(rms_value / self._NORM, 1.0))
+        if not voiced:
+            self._buffer.append(norm)
+
+        now = time.monotonic()
+        if (now - self._last_update) < self.update_interval:
+            return False
+
+        if not self._buffer:
+            return False
+
+        self._last_update = now
+        ordered = sorted(self._buffer)
+        idx = max(0, int(math.ceil(0.95 * len(ordered)) - 1))
+        p95 = ordered[idx]
+        candidate_raise = min(1.0, max(self.min_thresh_norm, p95 * self.margin))
+        rel_idx = max(0, int(math.ceil(self.release_percentile * len(ordered)) - 1))
+        release_val = ordered[rel_idx]
+        candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
+        if (candidate_raise > self._current_norm) and (candidate_release > self._current_norm):
+            candidate = candidate_raise
+        else:
+            candidate = min(self._current_norm, candidate_release)
+        self._last_p95 = p95
+        self._last_candidate = candidate
+        self._last_release = release_val
+
+        if self._current_norm <= 0.0:
+            should_update = True
+        else:
+            delta = abs(candidate - self._current_norm)
+            should_update = (delta / self._current_norm) >= self.hysteresis_tolerance
+
+        if should_update:
+            previous = self._current_norm
+            self._current_norm = candidate
+            if self.debug:
+                details = (
+                    f"(p95={p95:.4f}, margin={self.margin:.2f}, "
+                    f"release_pctl={self.release_percentile:.2f}, "
+                    f"release={release_val:.4f})"
+                )
+                print(
+                    "[segmenter] adaptive RMS threshold updated: "
+                    f"prev={int(round(previous * self._NORM))} "
+                    f"new={self.threshold_linear} "
+                    f"{details}",
+                    flush=True,
+                )
+            return True
+
+        return False
+
+
 class TimelineRecorder:
     event_counters = collections.defaultdict(int)
 
@@ -262,6 +374,13 @@ class TimelineRecorder:
         self.done_q: queue.Queue = queue.Queue(maxsize=2)
         self.writer = _WriterWorker(self.audio_q, self.done_q, FLUSH_THRESHOLD)
         self.writer.start()
+
+        self._adaptive = AdaptiveRmsController(
+            frame_ms=FRAME_MS,
+            initial_linear_threshold=STATIC_RMS_THRESH,
+            cfg_section=cfg.get("adaptive_rms"),
+            debug=DEBUG_VERBOSE,
+        )
 
         self.base_name: str | None = None
         self.tmp_wav_path: str | None = None
@@ -291,6 +410,7 @@ class TimelineRecorder:
         payload: dict[str, object] = {
             "capturing": bool(capturing),
             "updated_at": time.time(),
+            "adaptive_rms_threshold": int(self._adaptive.threshold_linear),
         }
         if capturing and event:
             payload["event"] = event
@@ -299,7 +419,13 @@ class TimelineRecorder:
         if reason:
             payload["last_stop_reason"] = reason
 
-        compare_keys = ("capturing", "event", "last_event", "last_stop_reason")
+        compare_keys = (
+            "capturing",
+            "event",
+            "last_event",
+            "last_stop_reason",
+            "adaptive_rms_threshold",
+        )
         if self._status_cache is not None:
             previous = {key: self._status_cache.get(key) for key in compare_keys}
             current = {key: payload.get(key) for key in compare_keys}
@@ -322,6 +448,14 @@ class TimelineRecorder:
                 pass
             if DEBUG_VERBOSE:
                 print(f"[segmenter] WARN: failed to write capture status: {exc!r}", flush=True)
+
+    def _emit_threshold_update(self) -> None:
+        cached = self._status_cache or {}
+        capturing = bool(cached.get("capturing", self.active))
+        event = cached.get("event") if capturing else None
+        last_event = None if capturing else cached.get("last_event")
+        reason = cached.get("last_stop_reason")
+        self._update_capture_status(capturing, event=event, last_event=last_event, reason=reason)
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
@@ -358,12 +492,17 @@ class TimelineRecorder:
 
         rms_val = rms(proc_for_analysis)
         voiced = is_voice(proc_for_analysis)
-        loud = rms_val > RMS_THRESH
+        current_threshold = self._adaptive.threshold_linear
+        loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
 
         # collect rolling window for debug stats
         self._dbg_rms.append(rms_val)
         self._dbg_voiced.append(bool(voiced))
+
+        threshold_updated = self._adaptive.observe(rms_val, bool(voiced))
+        if threshold_updated:
+            self._emit_threshold_update()
 
         # once per-second debug (only if DEV enabled)
         now = time.monotonic()
@@ -388,7 +527,7 @@ class TimelineRecorder:
             # Right text block with fixed width, including a percent that can reach 100.0
             # Use 6.1f so '100.0%' fits without pushing columns
             right_text = (
-                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d}  "
+                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d} thr={current_threshold:4d}  "
                 f"VAD voiced={voiced_ratio * 100:6.1f}%  |  "
             )
             right_block = right_text.ljust(RIGHT_TEXT_WIDTH)
@@ -433,7 +572,7 @@ class TimelineRecorder:
                 self.saw_loud = loud
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
-                    f"(trigger={'RMS' if loud else 'VAD'}>{RMS_THRESH} (rms={rms_val}))",
+                    f"(trigger={'RMS' if loud else 'VAD'}>{current_threshold} (rms={rms_val}))",
                     flush=True
                 )
                 event_status = {

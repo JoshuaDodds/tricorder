@@ -81,6 +81,30 @@ segmenter:
   # Keep modest to avoid memory spikes. Typical: 256–1024.
   max_queue_frames: 512
 
+adaptive_rms:
+  # Enable adaptive thresholding to track background RMS levels. When false, the fixed
+  # segmenter.rms_threshold is used.
+  enabled: false
+
+  # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
+  min_thresh: 0.01
+
+  # Multiplier applied to the background P95 value when computing the candidate threshold.
+  margin: 1.2
+
+  # Seconds between adaptive threshold updates. Larger values smooth out short-term swings.
+  update_interval_sec: 5.0
+
+  # Length of the rolling window (seconds) used to estimate the background RMS distribution.
+  window_sec: 10.0
+
+  # Relative change required before applying a new threshold (0.1 ⇒ ±10%).
+  hysteresis_tolerance: 0.1
+
+  # Percentile (0.0-1.0] used when lowering the threshold after noise subsides.
+  # Smaller values release faster once the room quiets; higher values stay conservative.
+  release_percentile: 0.5
+
 ingest:
   # Number of consecutive size-stability checks required before accepting a file.
   # Prevents racing with partial/incomplete files.

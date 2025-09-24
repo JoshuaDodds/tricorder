@@ -1,0 +1,13 @@
+[Unit]
+Description=Tricorder auto-update service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/tricorder/update.env
+WorkingDirectory=/apps/tricorder
+ExecStart=/apps/tricorder/bin/tricorder_auto_update.sh
+
+[Install]
+WantedBy=multi-user.target

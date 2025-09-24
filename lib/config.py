@@ -51,6 +51,15 @@ _DEFAULTS: Dict[str, Any] = {
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
     },
+    "adaptive_rms": {
+        "enabled": False,
+        "min_thresh": 0.01,
+        "margin": 1.2,
+        "update_interval_sec": 5.0,
+        "window_sec": 10.0,
+        "hysteresis_tolerance": 0.1,
+        "release_percentile": 0.5,
+    },
     "ingest": {
         "stable_checks": 2,
         "stable_interval_sec": 1.0,
@@ -122,6 +131,25 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         if env_key in os.environ:
             try:
                 cfg.setdefault(section, {})[key] = cast(os.environ[env_key])
+            except Exception:
+                pass
+
+    def _parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    adaptive_env = {
+        "ADAPTIVE_RMS_ENABLED": ("enabled", _parse_bool),
+        "ADAPTIVE_RMS_MIN_THRESH": ("min_thresh", float),
+        "ADAPTIVE_RMS_MARGIN": ("margin", float),
+        "ADAPTIVE_RMS_UPDATE_INTERVAL_SEC": ("update_interval_sec", float),
+        "ADAPTIVE_RMS_WINDOW_SEC": ("window_sec", float),
+        "ADAPTIVE_RMS_HYSTERESIS_TOLERANCE": ("hysteresis_tolerance", float),
+        "ADAPTIVE_RMS_RELEASE_PERCENTILE": ("release_percentile", float),
+    }
+    for env_key, (key, caster) in adaptive_env.items():
+        if env_key in os.environ:
+            try:
+                cfg.setdefault("adaptive_rms", {})[key] = caster(os.environ[env_key])
             except Exception:
                 pass
 
