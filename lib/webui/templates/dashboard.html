@@ -170,7 +170,7 @@
                 </label>
                 <label class="input-group">
                   <span>Limit</span>
-                  <input id="filter-limit" type="number" min="1" max="1000" value="500" />
+                  <input id="filter-limit" type="number" min="1" max="1000" value="200" />
                 </label>
               </div>
             </div>
@@ -223,8 +223,40 @@
                 <tbody></tbody>
               </table>
             </div>
+            <div class="table-footer">
+              <div class="results-summary" id="results-summary" aria-live="polite">Loading recordings…</div>
+              <div class="pagination-controls" id="pagination-controls" hidden>
+                <button id="page-prev" class="ghost-button small" type="button">Previous</button>
+                <span id="pagination-status" class="pagination-status">Page 1 of 1</span>
+                <button id="page-next" class="ghost-button small" type="button">Next</button>
+              </div>
+            </div>
           </div>
         </div>
+        <section id="services-card" class="card services-card">
+          <div class="card-header">
+            <div class="card-heading">
+              <h2>Service controls</h2>
+              <div class="card-subtitle">Start, stop, or reload systemd units. Web UI restarts automatically.</div>
+            </div>
+            <button id="services-refresh" class="ghost-button small" type="button">Refresh</button>
+          </div>
+          <div
+            id="services-status"
+            class="services-status"
+            role="status"
+            aria-live="polite"
+            aria-hidden="true"
+          ></div>
+          <div
+            id="services-list"
+            class="services-list"
+            role="region"
+            aria-live="polite"
+            aria-label="Service statuses"
+          ></div>
+          <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
+        </section>
       </section>
       <section class="card config-card">
         <div class="card-header">

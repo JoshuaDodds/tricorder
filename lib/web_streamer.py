@@ -40,7 +40,11 @@ import time
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Sequence
+
+
+DEFAULT_RECORDINGS_LIMIT = 200
+MAX_RECORDINGS_LIMIT = 1000
 
 from aiohttp import web
 from aiohttp.web import AppKey
@@ -215,9 +219,220 @@ def _scan_recordings_worker(
     return entries, days_sorted, exts_sorted, total_bytes
 
 
+def _service_label_from_unit(unit: str) -> str:
+    base = unit.split(".", 1)[0]
+    tokens = [segment for segment in base.replace("_", "-").split("-") if segment]
+    if not tokens:
+        return unit
+    return " ".join(token.capitalize() for token in tokens)
+
+
+def _normalize_dashboard_services(cfg: dict[str, Any]) -> tuple[list[dict[str, str]], set[str]]:
+    dashboard_cfg = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
+    raw_services = dashboard_cfg.get("services", [])
+    services: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in raw_services:
+        unit = ""
+        label = ""
+        description = ""
+        if isinstance(raw, str):
+            unit = raw.strip()
+        elif isinstance(raw, dict):
+            unit_candidate = raw.get("unit") or raw.get("name") or raw.get("service")
+            if isinstance(unit_candidate, str):
+                unit = unit_candidate.strip()
+            label_candidate = raw.get("label") or raw.get("display") or raw.get("title")
+            if isinstance(label_candidate, str):
+                label = label_candidate.strip()
+            desc_candidate = raw.get("description") or raw.get("summary")
+            if isinstance(desc_candidate, str):
+                description = desc_candidate.strip()
+        if not unit or unit in seen:
+            continue
+        if not label:
+            label = _service_label_from_unit(unit)
+        services.append({
+            "unit": unit,
+            "label": label,
+            "description": description,
+        })
+        seen.add(unit)
+
+    web_service = ""
+    raw_web_service = dashboard_cfg.get("web_service")
+    if isinstance(raw_web_service, str):
+        web_service = raw_web_service.strip()
+
+    auto_restart = {web_service} if web_service else set()
+    return services, auto_restart
+
+
 SHUTDOWN_EVENT_KEY: AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 RECORDINGS_ROOT_KEY: AppKey[Path] = web.AppKey("recordings_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
+SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_services", list)
+AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
+
+_SYSTEMCTL_PROPERTIES = [
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "Description",
+    "CanStart",
+    "CanStop",
+    "CanReload",
+    "CanRestart",
+]
+
+
+async def _run_systemctl(args: Sequence[str]) -> tuple[int, str, str]:
+    cmd = ["systemctl", "--no-ask-password", *args]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return 127, "", "systemctl not found"
+    except Exception as exc:  # pragma: no cover - unexpected spawn failure
+        return 1, "", str(exc)
+
+    stdout_raw, stderr_raw = await proc.communicate()
+    stdout = stdout_raw.decode("utf-8", errors="replace")
+    stderr = stderr_raw.decode("utf-8", errors="replace")
+    return proc.returncode, stdout, stderr
+
+
+def _parse_show_output(payload: str, properties: Sequence[str]) -> dict[str, str]:
+    lines = payload.splitlines()
+    result: dict[str, str] = {}
+    for idx, key in enumerate(properties):
+        value = lines[idx].strip() if idx < len(lines) else ""
+        result[key] = value
+    return result
+
+
+def _summarize_state(load_state: str, active_state: str, sub_state: str) -> str:
+    def _format(token: str) -> str:
+        token = token.strip()
+        if not token:
+            return ""
+        token = token.replace("-", " ")
+        return token[:1].upper() + token[1:]
+
+    if load_state and load_state not in {"loaded", "stub"}:
+        return _format(load_state)
+    if active_state:
+        formatted_active = _format(active_state)
+        formatted_sub = _format(sub_state)
+        if formatted_sub and formatted_sub.lower() != formatted_active.lower():
+            return f"{formatted_active} ({formatted_sub})"
+        return formatted_active
+    return "Unknown"
+
+
+async def _fetch_service_status(unit: str) -> dict[str, Any]:
+    code, stdout, stderr = await _run_systemctl([
+        "show",
+        unit,
+        f"--property={','.join(_SYSTEMCTL_PROPERTIES)}",
+        "--value",
+    ])
+    if code != 0:
+        error = stderr.strip() or stdout.strip() or f"systemctl exited with {code}"
+        return {
+            "available": False,
+            "error": error,
+            "load_state": "",
+            "active_state": "",
+            "sub_state": "",
+            "unit_file_state": "",
+            "system_description": "",
+            "can_start": False,
+            "can_stop": False,
+            "can_reload": False,
+            "can_restart": False,
+            "status_text": f"Unavailable ({error})",
+            "is_active": False,
+        }
+
+    data = _parse_show_output(stdout, _SYSTEMCTL_PROPERTIES)
+    load_state = data.get("LoadState", "")
+    active_state = data.get("ActiveState", "")
+    sub_state = data.get("SubState", "")
+    unit_file_state = data.get("UnitFileState", "")
+    summary = _summarize_state(load_state, active_state, sub_state)
+    can_start = data.get("CanStart", "no").lower() == "yes"
+    can_stop = data.get("CanStop", "no").lower() == "yes"
+    can_reload = data.get("CanReload", "no").lower() == "yes"
+    can_restart = data.get("CanRestart", "no").lower() == "yes"
+    return {
+        "available": True,
+        "error": "",
+        "load_state": load_state,
+        "active_state": active_state,
+        "sub_state": sub_state,
+        "unit_file_state": unit_file_state,
+        "system_description": data.get("Description", ""),
+        "can_start": can_start,
+        "can_stop": can_stop,
+        "can_reload": can_reload,
+        "can_restart": can_restart,
+        "status_text": summary,
+        "is_active": active_state.lower() in {"active", "reloading", "activating"},
+    }
+
+
+async def _collect_service_state(
+    entry: dict[str, str], auto_restart_units: set[str]
+) -> dict[str, Any]:
+    status = await _fetch_service_status(entry["unit"])
+    status.update(
+        {
+            "unit": entry["unit"],
+            "label": entry.get("label", entry["unit"]),
+            "description": entry.get("description", ""),
+            "auto_restart": entry["unit"] in auto_restart_units,
+        }
+    )
+    return status
+
+
+def _enqueue_service_actions(
+    unit: str,
+    actions: Sequence[str],
+    delay: float = 0.5,
+) -> None:
+    if not actions:
+        return
+
+    loop = asyncio.get_running_loop()
+    log = logging.getLogger("web_streamer")
+
+    async def _runner() -> None:
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            for action in actions:
+                code, stdout, stderr = await _run_systemctl([action, unit])
+                if code != 0:
+                    log.warning(
+                        "systemctl %s %s failed (%s): %s %s",
+                        action,
+                        unit,
+                        code,
+                        stdout.strip(),
+                        stderr.strip(),
+                    )
+        except asyncio.CancelledError:  # pragma: no cover - only triggered during shutdown
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.warning("Scheduled service action %s on %s failed: %s", actions, unit, exc)
+
+    loop.create_task(_runner())
 
 
 def build_app() -> web.Application:
@@ -243,6 +458,10 @@ def build_app() -> web.Application:
         for ext in (s.lower() for s in allowed_ext_cfg)
     ) or (".opus",)
     app[ALLOWED_EXT_KEY] = allowed_ext
+
+    service_entries, auto_restart_units = _normalize_dashboard_services(cfg)
+    app[SERVICE_ENTRIES_KEY] = service_entries
+    app[AUTO_RESTART_KEY] = auto_restart_units
 
     try:
         recordings_root_resolved = recordings_root.resolve()
@@ -379,10 +598,10 @@ def build_app() -> web.Application:
         ext_filter = {token.lower().lstrip(".") for token in _collect("ext")}
 
         try:
-            limit = int(query.get("limit", "500"))
+            limit = int(query.get("limit", str(DEFAULT_RECORDINGS_LIMIT)))
         except ValueError:
-            limit = 500
-        limit = max(1, min(1000, limit))
+            limit = DEFAULT_RECORDINGS_LIMIT
+        limit = max(1, min(MAX_RECORDINGS_LIMIT, limit))
 
         try:
             offset = int(query.get("offset", "0"))
@@ -571,6 +790,101 @@ def build_app() -> web.Application:
     async def config_snapshot(_: web.Request) -> web.Response:
         return web.json_response(cfg)
 
+    async def services_list(request: web.Request) -> web.Response:
+        entries = request.app.get(SERVICE_ENTRIES_KEY, [])
+        auto_restart = request.app.get(AUTO_RESTART_KEY, set())
+        if not entries:
+            return web.json_response({"services": [], "updated_at": time.time()})
+        results = await asyncio.gather(
+            *(_collect_service_state(entry, auto_restart) for entry in entries)
+        )
+        return web.json_response({"services": results, "updated_at": time.time()})
+
+    async def service_action(request: web.Request) -> web.Response:
+        entries = request.app.get(SERVICE_ENTRIES_KEY, [])
+        auto_restart = request.app.get(AUTO_RESTART_KEY, set())
+        entry_map = {item["unit"]: item for item in entries}
+
+        unit = request.match_info.get("unit", "")
+        if unit not in entry_map:
+            raise web.HTTPNotFound(reason="Unknown service")
+
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        action = str(data.get("action", "")).strip().lower()
+        if action not in {"start", "stop", "reload", "restart"}:
+            raise web.HTTPBadRequest(reason="Unsupported action")
+
+        response: dict[str, Any] = {
+            "unit": unit,
+            "requested_action": action,
+        }
+
+        executed_action = action
+        stdout_text = ""
+        stderr_text = ""
+
+        if unit in auto_restart and action in {"stop", "reload"}:
+            scheduled_actions = ["reload", "restart"] if action == "reload" else ["restart"]
+            _enqueue_service_actions(unit, scheduled_actions, delay=0.5)
+            executed_action = "restart"
+            response.update(
+                {
+                    "auto_restart": True,
+                    "executed_action": executed_action,
+                    "scheduled_actions": scheduled_actions,
+                    "message": "Scheduled restart to keep dashboard reachable.",
+                    "ok": True,
+                }
+            )
+        else:
+            code, stdout_text, stderr_text = await _run_systemctl([action, unit])
+            fallback_triggered = False
+            if action == "reload" and code != 0:
+                fallback_triggered = True
+                fallback_code, fallback_stdout, fallback_stderr = await _run_systemctl(
+                    ["restart", unit]
+                )
+                executed_action = "restart"
+                response["fallback_action"] = "restart"
+                if fallback_code == 0:
+                    code = fallback_code
+                    stdout_text = fallback_stdout
+                    stderr_text = fallback_stderr
+                else:
+                    stderr_primary = stderr_text.strip()
+                    stderr_secondary = fallback_stderr.strip()
+                    stderr_text = (
+                        f"{stderr_primary}\n{stderr_secondary}"
+                        if stderr_primary and stderr_secondary
+                        else stderr_secondary or stderr_primary
+                    )
+                    stdout_text = stdout_text or fallback_stdout
+                    code = fallback_code
+
+            ok = code == 0
+            message = stderr_text.strip() or stdout_text.strip()
+            response.update(
+                {
+                    "auto_restart": unit in auto_restart,
+                    "executed_action": executed_action,
+                    "stdout": stdout_text.strip(),
+                    "stderr": stderr_text.strip(),
+                    "ok": ok,
+                }
+            )
+            if fallback_triggered and not message:
+                response["message"] = "Reload unsupported; restarted instead."
+            elif message:
+                response["message"] = message
+
+        status = await _collect_service_state(entry_map[unit], auto_restart)
+        response["status"] = status
+        return web.json_response(response)
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -623,6 +937,8 @@ def build_app() -> web.Application:
     app.router.add_post("/api/recordings/remove", recordings_delete)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
+    app.router.add_get("/api/services", services_list)
+    app.router.add_post("/api/services/{unit}/action", service_action)
 
     # Control + stats
     app.router.add_get("/hls/start", hls_start)

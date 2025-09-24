@@ -125,3 +125,22 @@ logging:
   # Developer-mode verbose logging (equivalent to setting DEV=1 in the environment).
   # When true, emits per-second debug lines from the segmenter.
   dev_mode: true
+
+dashboard:
+  # Services exposed through the dashboard controls card. Each entry may include a
+  # friendly label and optional description for the UI. Units must be resolvable by
+  # systemd on the host.
+  services:
+    - unit: "voice-recorder.service"
+      label: "Recorder"
+      description: "Segments microphone input into individual events."
+    - unit: "web-streamer.service"
+      label: "Web UI"
+      description: "Serves the dashboard and HLS live stream."
+    - unit: "dropbox.service"
+      label: "Dropbox ingest"
+      description: "Imports audio dropped into the Dropbox directory."
+
+  # Unit that should be restarted automatically when stopped or reloaded through
+  # the dashboard to keep the management interface reachable.
+  web_service: "web-streamer.service"

@@ -102,6 +102,63 @@ def test_recordings_listing_filters(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_pagination(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240110"
+        day_dir.mkdir()
+
+        base_epoch = 1_700_100_000
+        for idx in range(12):
+            file = day_dir / f"{idx:02d}.opus"
+            file.write_bytes(b"data")
+            _write_waveform_stub(file.with_suffix(file.suffix + ".waveform.json"))
+            os.utime(file, (base_epoch + idx, base_epoch + idx))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["limit"] == web_streamer.DEFAULT_RECORDINGS_LIMIT
+            assert payload["offset"] == 0
+            assert payload["total"] == 12
+
+            first_resp = await client.get("/api/recordings?limit=5")
+            first_page = await first_resp.json()
+            assert first_page["limit"] == 5
+            assert first_page["offset"] == 0
+            assert [item["name"] for item in first_page["items"]] == [
+                "11",
+                "10",
+                "09",
+                "08",
+                "07",
+            ]
+
+            second_resp = await client.get("/api/recordings?limit=5&offset=5")
+            second_page = await second_resp.json()
+            assert second_page["offset"] == 5
+            assert [item["name"] for item in second_page["items"]] == [
+                "06",
+                "05",
+                "04",
+                "03",
+                "02",
+            ]
+
+            third_resp = await client.get("/api/recordings?limit=5&offset=10")
+            third_page = await third_resp.json()
+            assert third_page["offset"] == 10
+            assert [item["name"] for item in third_page["items"]] == ["01", "00"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recording_start_epoch_in_payload(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"
@@ -158,6 +215,134 @@ def test_delete_recording(dashboard_env):
             payload = await resp.json()
             assert payload["deleted"] == []
             assert payload["errors"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_services_listing_reports_status(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Recorder",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+            ),
+            "web-streamer.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Web UI",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+            ),
+            "dropbox.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "disabled",
+                "Dropbox",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+            ),
+        }
+
+        async def fake_systemctl(args):
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = "\n".join(show_map.get(unit, ("not-found", "", "", "", "", "no", "no", "no", "no")))
+                return 0, f"{values}\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            payload = await resp.json()
+            services = payload.get("services", [])
+            assert isinstance(services, list) and services, "Expected services in payload"
+            recorder = next((item for item in services if item["unit"] == "voice-recorder.service"), None)
+            assert recorder is not None
+            assert recorder["status_text"].startswith("Active")
+            dropbox = next((item for item in services if item["unit"] == "dropbox.service"), None)
+            assert dropbox is not None
+            assert dropbox["status_text"].lower() == "inactive (dead)"
+            assert dropbox["available"] is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_service_action_auto_restart(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "web-streamer.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Web UI",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+            )
+        }
+
+        async def fake_systemctl(args):
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = "\n".join(show_map.get(unit, ("loaded", "inactive", "dead", "disabled", "", "yes", "yes", "no", "yes")))
+                return 0, f"{values}\n", ""
+            return 0, "", ""
+
+        scheduled: list[tuple[str, list[str], float]] = []
+
+        def fake_enqueue(unit: str, actions, delay: float = 0.5) -> None:
+            scheduled.append((unit, list(actions), delay))
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(web_streamer, "_enqueue_service_actions", fake_enqueue)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/services/web-streamer.service/action",
+                json={"action": "stop"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["requested_action"] == "stop"
+            assert payload["executed_action"] == "restart"
+            assert payload["ok"] is True
+            assert payload.get("auto_restart") is True
+            assert payload.get("scheduled_actions") == ["restart"]
+            assert scheduled and scheduled[0][0] == "web-streamer.service"
+            assert scheduled[0][1] == ["restart"]
+            assert scheduled[0][2] == pytest.approx(0.5, rel=0, abs=1e-6)
+            status = payload.get("status", {})
+            assert status.get("unit") == "web-streamer.service"
         finally:
             await client.close()
             await server.close()
