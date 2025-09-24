@@ -248,6 +248,15 @@ dashboard:
     - unit: "web-streamer.service"
       label: "Web UI"
       description: "Serves the dashboard and HLS live stream."
+    - unit: "dropbox.service"
+      label: "Dropbox ingest"
+      description: "Imports audio dropped into the Dropbox directory."
+    - unit: "tricorder-auto-update.service"
+      label: "Auto updater"
+      description: "Runs scheduled self-update checks."
+    - unit: "tmpfs-guard.service"
+      label: "Tmpfs guard"
+      description: "Prunes tmpfs staging directories on a timer."
   web_service: "web-streamer.service"
 ```
 
@@ -257,6 +266,8 @@ Units listed in `dashboard.web_service` are automatically restarted when a stop 
 - `DASHBOARD_WEB_SERVICE="web-streamer.service"`
 
 Entries are separated by semicolons; optional `|label|description` segments override the UI text for each unit.
+
+Services that are triggered by timers or path units now surface their related units directly in the dashboard. For example, `dropbox.service` shows the state of `dropbox.path`, and the auto-updater exposes its scheduling timer so "Waiting" reflects an active watcher instead of a dead service.
 
 ---
 
