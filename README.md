@@ -33,28 +33,28 @@ and a literal description of this project’s **three core recording functions**
 
 ```mermaid
 graph TD
-    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py]
-    B -->|frames| C["TimelineRecorder (segmenter.py)"]
-    C -->|tmp WAV| D[encode_and_store.sh]
-    D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"]
+    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py];
+    B -->|frames| C["TimelineRecorder (segmenter.py)"];
+    C -->|tmp WAV| D[encode_and_store.sh];
+    D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"];
 
-    B -->|frames| H["HLSTee (hls_mux.py)"]
-    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"]
-    I -->|static files| J["web_streamer.py + webui"]
-    J -->|HTTP (dashboard + APIs)| K[Browsers / Clients]
-    J -->|encoder control| H
+    B -->|frames| H["HLSTee (hls_mux.py)"];
+    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"];
+    I -->|static files| J["web_streamer.py + webui"];
+    J -->|HTTP: dashboard + APIs| K[Browsers / Clients];
+    J -->|encoder control| H;
 
     subgraph "Dropbox ingest"
-        F["Incoming file (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py]
-        G --> C
+        F["Incoming file (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py];
+        G --> C;
     end
 
     subgraph "Background services"
-        SM_voice_recorder[voice-recorder.service] --> B
-        SM_web_streamer[web-streamer.service] --> J
-        SM_dropbox[dropbox.path + dropbox.service] --> G
-        SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E
-        SM_updater[tricorder-auto-update.timer + service] --> D
+        SM_voice_recorder[voice-recorder.service] --> B;
+        SM_web_streamer[web-streamer.service] --> J;
+        SM_dropbox[dropbox.path + dropbox.service] --> G;
+        SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E;
+        SM_updater[tricorder-auto-update.timer + service] --> D;
     end
 ```
 
