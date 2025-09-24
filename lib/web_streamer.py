@@ -440,13 +440,14 @@ def build_app() -> web.Application:
     app = web.Application()
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
 
-    tmp_root = os.environ.get("TRICORDER_TMP", "/apps/tricorder/tmp")
+    cfg = get_cfg()
+    default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
+    tmp_root = os.environ.get("TRICORDER_TMP", default_tmp)
+
     hls_dir = os.path.join(tmp_root, "hls")
     os.makedirs(hls_dir, exist_ok=True)
     controller.set_state_path(os.path.join(hls_dir, "controller_state.json"), persist=True)
     controller.refresh_from_state()
-
-    cfg = get_cfg()
     recordings_root = Path(cfg["paths"]["recordings_dir"])
     try:
         recordings_root.mkdir(parents=True, exist_ok=True)
