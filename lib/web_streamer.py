@@ -331,11 +331,35 @@ async def _run_systemctl(args: Sequence[str]) -> tuple[int, str, str]:
 
 
 def _parse_show_output(payload: str, properties: Sequence[str]) -> dict[str, str]:
+    """Parse `systemctl show` output for a known set of properties.
+
+    Newer systemd releases support ``--value`` which yields newline-delimited
+    values that align with the requested properties. Older builds (and some
+    downstream patches) always emit ``KEY=VALUE`` pairs regardless of
+    ``--value``. We accept both forms to keep deployments on Raspberry Pi OS
+    stable even if the local systemd version diverges from the test fixture.
+    """
+
+    result: dict[str, str] = {prop: "" for prop in properties}
+
     lines = payload.splitlines()
-    result: dict[str, str] = {}
-    for idx, key in enumerate(properties):
-        value = lines[idx].strip() if idx < len(lines) else ""
-        result[key] = value
+    for line in lines:
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in result:
+            result[key] = value.strip()
+
+    # Fallback to positional parsing when systemctl omits property names.
+    if any(not result[prop] for prop in properties):
+        values = [line.strip() for line in lines if line.strip()]
+        for idx, key in enumerate(properties):
+            if result[key]:
+                continue
+            if idx < len(values):
+                result[key] = values[idx]
+
     return result
 
 
@@ -363,7 +387,6 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
         "show",
         unit,
         f"--property={','.join(_SYSTEMCTL_PROPERTIES)}",
-        "--value",
     ])
     if code != 0:
         error = stderr.strip() or stdout.strip() or f"systemctl exited with {code}"

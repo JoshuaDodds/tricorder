@@ -362,24 +362,26 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
         async def fake_systemctl(args):
             if args and args[0] == "show" and len(args) >= 2:
                 unit = args[1]
-                values = "\n".join(
-                    show_map.get(
-                        unit,
-                        (
-                            "not-found",
-                            "",
-                            "",
-                            "",
-                            "",
-                            "no",
-                            "no",
-                            "no",
-                            "no",
-                            "",
-                        ),
-                    )
+                values = show_map.get(
+                    unit,
+                    (
+                        "not-found",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "no",
+                        "no",
+                        "no",
+                        "no",
+                        "",
+                    ),
                 )
-                return 0, f"{values}\n", ""
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
             return 0, "", ""
 
         monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
@@ -442,14 +444,33 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
                 "yes",
                 "no",
                 "yes",
+                "",
             )
         }
 
         async def fake_systemctl(args):
             if args and args[0] == "show" and len(args) >= 2:
                 unit = args[1]
-                values = "\n".join(show_map.get(unit, ("loaded", "inactive", "dead", "disabled", "", "yes", "yes", "no", "yes")))
-                return 0, f"{values}\n", ""
+                values = show_map.get(
+                    unit,
+                    (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "yes",
+                        "yes",
+                        "no",
+                        "yes",
+                        "",
+                    ),
+                )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
             return 0, "", ""
 
         scheduled: list[tuple[str, list[str], float]] = []
