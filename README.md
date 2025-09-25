@@ -278,10 +278,15 @@ Services that are triggered by timers or path units now surface their related un
 
 Set `notifications.enabled` to `true` to emit callbacks after each recorded event. Two delivery methods are supported:
 
-- **Webhooks** – configure `notifications.webhook.url` (and optional headers/method) to receive a JSON payload containing the event metadata (`etype`, `trigger_rms`, duration, etc.). This is useful for home-automation bridges that react to HTTP POSTs.
+- **Webhooks** – configure `notifications.webhook.url` (and optional headers/method) to receive a JSON payload containing the event metadata (`etype`, `trigger_rms`, duration, etc.). Leaving the URL blank skips webhook delivery entirely so email-only installs do not raise errors.
 - **Email** – supply SMTP credentials under `notifications.email`. A templated subject/body is rendered with the event fields, enabling simple alert emails for high-priority clips.
 
-Use `notifications.allowed_event_types` (e.g., `["Human", "Both"]`) and `notifications.min_trigger_rms` to filter which events should notify downstream systems.
+Common tunables include:
+
+- `notifications.allowed_event_types` – restrict alerts to specific event classifications (e.g., `["Human", "Both"]`).
+- `notifications.min_trigger_rms` – only notify on clips that exceed the configured RMS threshold.
+- `notifications.webhook.headers` / `method` / `timeout_sec` – customize webhook POST requests for downstream services.
+- `notifications.email.subject_template` / `body_template` – adjust the rendered message content for email delivery.
 
 ---
 
