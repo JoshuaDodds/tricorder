@@ -32,9 +32,12 @@ import contextlib
 import functools
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import wave
@@ -52,6 +55,7 @@ from aiohttp.web import AppKey
 from lib.hls_controller import controller
 from lib import webui
 from lib.config import get_cfg
+from lib.waveform_cache import generate_waveform
 
 
 @functools.lru_cache(maxsize=1024)
@@ -575,6 +579,11 @@ def build_app() -> web.Application:
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
     tmp_root = os.environ.get("TRICORDER_TMP", default_tmp)
 
+    try:
+        os.makedirs(tmp_root, exist_ok=True)
+    except OSError:
+        pass
+
     hls_dir = os.path.join(tmp_root, "hls")
     os.makedirs(hls_dir, exist_ok=True)
     controller.set_state_path(os.path.join(hls_dir, "controller_state.json"), persist=True)
@@ -601,6 +610,244 @@ def build_app() -> web.Application:
         recordings_root_resolved = recordings_root.resolve()
     except FileNotFoundError:
         recordings_root_resolved = recordings_root
+
+    clip_safe_pattern = re.compile(r"[^A-Za-z0-9._-]+")
+    MIN_CLIP_DURATION_SECONDS = 0.05
+
+    class ClipError(Exception):
+        """Raised when an audio clip cannot be produced."""
+
+    def _format_timecode_slug(seconds: float) -> str:
+        total_ms = max(0, int(round(seconds * 1000)))
+        hours, remainder = divmod(total_ms, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        secs, millis = divmod(remainder, 1000)
+        if hours > 0:
+            return f"{hours:02d}{minutes:02d}{secs:02d}{millis:03d}"
+        return f"{minutes:02d}{secs:02d}{millis:03d}"
+
+    def _sanitize_clip_name(raw: str | None, fallback: str) -> str:
+        candidate = (raw or "").strip()
+        candidate = clip_safe_pattern.sub("_", candidate)
+        candidate = candidate.strip("._-")
+        if not candidate:
+            candidate = clip_safe_pattern.sub("_", fallback.strip())
+            candidate = candidate.strip("._-")
+        if not candidate:
+            candidate = "clip"
+        if len(candidate) > 120:
+            candidate = candidate[:120].rstrip("._-")
+        if not candidate:
+            candidate = "clip"
+        return candidate
+
+    def _default_clip_name(source: Path, start_seconds: float, end_seconds: float) -> str:
+        base = source.stem or "clip"
+        start_slug = _format_timecode_slug(start_seconds)
+        end_slug = _format_timecode_slug(end_seconds)
+        return f"{base}_{start_slug}-{end_slug}"
+
+    def _to_float(value: object) -> float | None:
+        if isinstance(value, (int, float)):
+            if math.isfinite(float(value)):
+                return float(value)
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = float(text)
+            except ValueError:
+                return None
+            if math.isfinite(parsed):
+                return parsed
+        return None
+
+    def _create_clip_sync(
+        source_rel_path: str,
+        start_seconds: float,
+        end_seconds: float,
+        clip_name: str | None,
+        source_start_epoch: float | None,
+    ) -> dict[str, object]:
+        if not source_rel_path:
+            raise ClipError("source path is required")
+
+        rel = source_rel_path.strip().strip("/")
+        if not rel:
+            raise ClipError("source path is required")
+
+        candidate = recordings_root / rel
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError as exc:
+            raise ClipError("source recording not found") from exc
+
+        try:
+            resolved.relative_to(recordings_root_resolved)
+        except ValueError as exc:
+            raise ClipError("invalid source path") from exc
+
+        if not resolved.is_file():
+            raise ClipError("source recording not found")
+
+        duration = float(end_seconds) - float(start_seconds)
+        if not math.isfinite(duration) or duration <= MIN_CLIP_DURATION_SECONDS:
+            raise ClipError("clip range is too short")
+
+        if float(start_seconds) < 0:
+            raise ClipError("start time must be non-negative")
+
+        try:
+            source_stat = resolved.stat()
+        except OSError as exc:
+            raise ClipError("unable to stat source recording") from exc
+
+        if source_stat.st_size <= 0:
+            raise ClipError("source recording is empty")
+
+        target_dir = resolved.parent
+        default_name = _default_clip_name(resolved, float(start_seconds), float(end_seconds))
+        base_name = _sanitize_clip_name(clip_name, default_name)
+
+        attempt = 1
+        final_path = target_dir / f"{base_name}.opus"
+        while final_path.exists():
+            attempt += 1
+            if attempt > 9999:
+                raise ClipError("unable to allocate unique filename")
+            final_path = target_dir / f"{base_name}_{attempt:02d}.opus"
+
+        final_waveform = final_path.with_suffix(final_path.suffix + ".waveform.json")
+
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ClipError("unable to create destination directory") from exc
+
+        try:
+            tmp_dir = tempfile.TemporaryDirectory(prefix="clip_", dir=tmp_root)
+        except Exception as exc:  # pragma: no cover - tempdir failures are unexpected
+            raise ClipError("unable to allocate temporary workspace") from exc
+
+        with tmp_dir as tmp_name:
+            tmp_root_path = Path(tmp_name)
+            tmp_wav = tmp_root_path / "clip.wav"
+            tmp_opus = tmp_root_path / "clip.opus"
+            tmp_waveform = tmp_root_path / "clip.waveform.json"
+
+            encode_duration = f"{duration:.6f}".rstrip("0").rstrip(".")
+            start_offset = f"{float(start_seconds):.6f}".rstrip("0").rstrip(".")
+
+            decode_cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                start_offset,
+                "-i",
+                str(resolved),
+                "-t",
+                encode_duration,
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+                "-sample_fmt",
+                "s16",
+                str(tmp_wav),
+            ]
+
+            try:
+                subprocess.run(decode_cmd, check=True)
+            except FileNotFoundError as exc:
+                raise ClipError("ffmpeg is not available") from exc
+            except subprocess.SubprocessError as exc:
+                raise ClipError("ffmpeg failed while decoding source") from exc
+
+            encode_cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(tmp_wav),
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+                "-sample_fmt",
+                "s16",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "48k",
+                "-vbr",
+                "on",
+                "-application",
+                "audio",
+                "-frame_duration",
+                "20",
+                "-threads",
+                "1",
+                str(tmp_opus),
+            ]
+
+            try:
+                subprocess.run(encode_cmd, check=True)
+            except FileNotFoundError as exc:
+                raise ClipError("ffmpeg is not available") from exc
+            except subprocess.SubprocessError as exc:
+                raise ClipError("ffmpeg failed while encoding clip") from exc
+
+            try:
+                generate_waveform(tmp_wav, tmp_waveform)
+            except Exception as exc:
+                raise ClipError("waveform generation failed") from exc
+
+            try:
+                shutil.move(str(tmp_opus), str(final_path))
+                shutil.move(str(tmp_waveform), str(final_waveform))
+            except Exception as exc:
+                raise ClipError("unable to store generated clip") from exc
+
+        clip_start_epoch = None
+        if isinstance(source_start_epoch, (int, float)) and source_start_epoch > 0:
+            clip_start_epoch = float(source_start_epoch) + float(start_seconds)
+        if not clip_start_epoch and hasattr(source_stat, "st_mtime"):
+            base_mtime = getattr(source_stat, "st_mtime", time.time())
+            clip_start_epoch = float(base_mtime) + float(start_seconds)
+
+        if clip_start_epoch and clip_start_epoch > 0:
+            try:
+                os.utime(final_path, (clip_start_epoch, clip_start_epoch))
+            except OSError:
+                pass
+
+        try:
+            rel_path = final_path.relative_to(recordings_root_resolved)
+        except ValueError:
+            try:
+                rel_path = final_path.relative_to(recordings_root)
+            except ValueError as exc:  # pragma: no cover - should not happen
+                raise ClipError("unexpected destination path") from exc
+
+        rel_posix = rel_path.as_posix()
+        day = rel_path.parts[0] if rel_path.parts else ""
+
+        payload: dict[str, object] = {
+            "path": rel_posix,
+            "name": final_path.stem,
+            "duration_seconds": duration,
+            "day": day,
+        }
+        if clip_start_epoch and clip_start_epoch > 0:
+            payload["start_epoch"] = clip_start_epoch
+        return payload
 
     template_defaults = {
         "page_title": "Tricorder HLS Stream",
@@ -897,6 +1144,50 @@ def build_app() -> web.Application:
 
         return web.json_response({"deleted": deleted, "errors": errors})
 
+    async def recordings_clip(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        source_path = data.get("source_path")
+        if not isinstance(source_path, str) or not source_path.strip():
+            raise web.HTTPBadRequest(reason="source_path must be a string")
+
+        start_value = _to_float(data.get("start_seconds"))
+        end_value = _to_float(data.get("end_seconds"))
+
+        if start_value is None or end_value is None:
+            raise web.HTTPBadRequest(reason="start_seconds and end_seconds must be numbers")
+        if end_value <= start_value:
+            raise web.HTTPBadRequest(reason="end_seconds must be greater than start_seconds")
+
+        name_value = data.get("clip_name")
+        clip_name = str(name_value) if isinstance(name_value, str) else None
+
+        source_start_epoch = _to_float(data.get("source_start_epoch"))
+
+        loop = asyncio.get_running_loop()
+        try:
+            payload = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    _create_clip_sync,
+                    source_path,
+                    start_value,
+                    end_value,
+                    clip_name,
+                    source_start_epoch,
+                ),
+            )
+        except ClipError as exc:
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - unexpected failures
+            log.exception("Unexpected error while creating clip for %s", source_path)
+            raise web.HTTPInternalServerError(reason="unable to create clip") from exc
+
+        return web.json_response(payload)
+
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
         if not rel:
@@ -1070,6 +1361,7 @@ def build_app() -> web.Application:
     app.router.add_get("/api/recordings", recordings_api)
     app.router.add_post("/api/recordings/delete", recordings_delete)
     app.router.add_post("/api/recordings/remove", recordings_delete)
+    app.router.add_post("/api/recordings/clip", recordings_clip)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/services", services_list)

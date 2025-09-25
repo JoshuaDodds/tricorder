@@ -273,6 +273,16 @@ Entries are separated by semicolons; optional `|label|description` segments over
 
 Services that are triggered by timers or path units now surface their related units directly in the dashboard. For example, `dropbox.service` shows the state of `dropbox.path`, and the auto-updater exposes its scheduling timer so "Waiting" reflects an active watcher instead of a dead service.
 
+### Dashboard clip editor
+
+Select any recording in the dashboard preview pane to open the new **Clip editor**. The inline tool lets you trim the beginning/end of a take or extract a sub-clip without leaving the browser:
+
+- Scrub the waveform or audio player, then use **Set from playhead** to capture precise start/end times. Times may also be entered manually as `MM:SS.mmm` (hours supported).
+- Adjust the generated clip name or supply your own; invalid characters are replaced automatically to match on-device storage rules.
+- Click **Save clip** to render a new `.opus` file and waveform sidecar via the existing ffmpeg/Opus pipeline. The new artifact appears alongside the original recording so you can review or delete either copy immediately.
+
+Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and never overwrite the source file.
+
 ---
 
 ## Testing
