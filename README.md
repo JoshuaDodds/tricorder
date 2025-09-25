@@ -231,6 +231,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
+- `notifications` – optional webhook/email alerts when events finish recording.
 
 ---
 
@@ -272,6 +273,15 @@ Units listed in `dashboard.web_service` are automatically restarted when a stop 
 Entries are separated by semicolons; optional `|label|description` segments override the UI text for each unit.
 
 Services that are triggered by timers or path units now surface their related units directly in the dashboard. For example, `dropbox.service` shows the state of `dropbox.path`, and the auto-updater exposes its scheduling timer so "Waiting" reflects an active watcher instead of a dead service.
+
+### Event notifications
+
+Set `notifications.enabled` to `true` to emit callbacks after each recorded event. Two delivery methods are supported:
+
+- **Webhooks** – configure `notifications.webhook.url` (and optional headers/method) to receive a JSON payload containing the event metadata (`etype`, `trigger_rms`, duration, etc.). This is useful for home-automation bridges that react to HTTP POSTs.
+- **Email** – supply SMTP credentials under `notifications.email`. A templated subject/body is rendered with the event fields, enabling simple alert emails for high-priority clips.
+
+Use `notifications.allowed_event_types` (e.g., `["Human", "Both"]`) and `notifications.min_trigger_rms` to filter which events should notify downstream systems.
 
 ---
 
