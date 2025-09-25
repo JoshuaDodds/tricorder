@@ -102,6 +102,42 @@ def test_recordings_listing_filters(dashboard_env):
     asyncio.run(runner())
 
 
+def test_dashboard_enables_cors_for_remote_requests(monkeypatch, dashboard_env, tmp_path):
+    async def runner():
+        config_path = tmp_path / "remote_dashboard.yaml"
+        config_path.write_text("dashboard:\n  api_base: 'https://recorder.example'\n", encoding="utf-8")
+        monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+        monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            origin = "https://dashboard.example"
+            options_resp = await client.options(
+                "/api/recordings",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            assert options_resp.status == 204
+            assert options_resp.headers.get("Access-Control-Allow-Origin") == "*"
+            allow_methods = options_resp.headers.get("Access-Control-Allow-Methods", "")
+            assert "GET" in allow_methods and "POST" in allow_methods
+            allow_headers = options_resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Content-Type" in allow_headers
+
+            get_resp = await client.get("/api/recordings", headers={"Origin": origin})
+            assert get_resp.status == 200
+            assert get_resp.headers.get("Access-Control-Allow-Origin") == "*"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_pagination(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240110"

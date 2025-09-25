@@ -517,10 +517,36 @@ def _enqueue_service_actions(
 
 def build_app() -> web.Application:
     log = logging.getLogger("web_streamer")
-    app = web.Application()
+    cfg = get_cfg()
+    dashboard_cfg = cfg.get("dashboard", {})
+    api_base_raw = dashboard_cfg.get("api_base", "")
+    dashboard_api_base = api_base_raw.strip() if isinstance(api_base_raw, str) else ""
+    cors_enabled = bool(dashboard_api_base)
+
+    middlewares: list[Any] = []
+
+    if cors_enabled:
+
+        @web.middleware
+        async def _cors_middleware(request: web.Request, handler):
+            if request.method == "OPTIONS":
+                response = web.Response(status=204)
+            else:
+                response = await handler(request)
+
+            if request.headers.get("Origin"):
+                response.headers.setdefault("Access-Control-Allow-Origin", "*")
+                response.headers.setdefault("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+                response.headers.setdefault("Access-Control-Allow-Headers", "Content-Type")
+                response.headers.setdefault("Access-Control-Max-Age", "86400")
+
+            return response
+
+        middlewares.append(_cors_middleware)
+
+    app = web.Application(middlewares=middlewares)
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
 
-    cfg = get_cfg()
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
     tmp_root = os.environ.get("TRICORDER_TMP", default_tmp)
 
@@ -550,10 +576,6 @@ def build_app() -> web.Application:
         recordings_root_resolved = recordings_root.resolve()
     except FileNotFoundError:
         recordings_root_resolved = recordings_root
-
-    dashboard_cfg = cfg.get("dashboard", {})
-    api_base_raw = dashboard_cfg.get("api_base", "")
-    dashboard_api_base = api_base_raw.strip() if isinstance(api_base_raw, str) else ""
 
     template_defaults = {
         "page_title": "Tricorder HLS Stream",
