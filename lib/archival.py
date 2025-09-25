@@ -69,6 +69,39 @@ class _RsyncUploader(_ArchivalPlugin):
             ssh_cmd.extend(["-i", self.ssh_identity])
         ssh_cmd.extend(self.ssh_options)
         remote_shell = shlex.join(ssh_cmd)
+
+        host = None
+        base_path = self.destination
+        if ":" in self.destination:
+            host, base_path = self.destination.split(":", 1)
+
+        remote_dir = base_path.rstrip("/")
+        relative_parent = relative.parent.as_posix()
+        if relative_parent and relative_parent != ".":
+            remote_dir = "/".join(part for part in (remote_dir, relative_parent) if part)
+        remote_dir = remote_dir or "."
+
+        if host:
+            mkdir_cmd = [*ssh_cmd, host, "mkdir", "-p", remote_dir]
+            try:
+                subprocess.run(mkdir_cmd, check=True)
+            except FileNotFoundError:
+                print("[archival] ssh not available", flush=True)
+                return
+            except subprocess.CalledProcessError as exc:
+                print(f"[archival] failed to prepare remote directory {host}:{remote_dir} ({exc.returncode})", flush=True)
+                if exc.stdout:
+                    print(exc.stdout, flush=True)
+                if exc.stderr:
+                    print(exc.stderr, flush=True)
+                return
+        else:
+            try:
+                Path(remote_dir).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"[archival] failed to prepare local directory {remote_dir}: {exc}", flush=True)
+                return
+
         cmd.extend(["-e", remote_shell, "--", str(path), remote_path])
 
         try:
