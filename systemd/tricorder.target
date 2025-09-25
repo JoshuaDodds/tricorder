@@ -1,4 +1,4 @@
 [Unit]
 Description=Tricorder Service Group
-Requires=voice-recorder.service web-streamer.service dropbox.service tmpfs-guard.service
+Requires=voice-recorder.service web-streamer.service
 Wants=tricorder-auto-update.timer tmpfs-guard.timer dropbox.path
