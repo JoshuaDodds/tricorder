@@ -104,7 +104,7 @@ Visit `http://<device>:8080/` for the dashboard or `http://<device>:8080/hls` fo
 
 ### Remote dashboard deployments
 
-When the static dashboard is hosted separately from the recorder APIs (for example via a CDN or another web server), set `dashboard.api_base` in `config.yaml` to the origin of the recorder instance (e.g. `https://recorder.local:8080`). The template publishes this value as `window.TRICORDER_API_BASE`, which `lib/webui/static/js/dashboard.js` uses for all API, HLS, and recording requests. Leaving the field blank preserves the default same-origin behavior.
+When the static dashboard is hosted separately from the recorder APIs (for example via a CDN or another web server), set `dashboard.api_base` in `config.yaml` to the origin of the recorder instance (e.g. `https://recorder.local:8080`). The template publishes this value as `window.TRICORDER_API_BASE`, which `lib/webui/static/js/dashboard.js` uses for all API, HLS, and recording requests. When this override is set the web streamer automatically serves permissive CORS headers (including responses to `OPTIONS` preflight requests) so remote dashboards can call the JSON and HLS endpoints directly. Leaving the field blank preserves the default same-origin behavior.
 
 ---
 

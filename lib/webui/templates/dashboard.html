@@ -6,11 +6,11 @@
     <title>{{ page_title }}</title>
     <link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}" />
     <script>
-      window.TRICORDER_API_BASE = {{ api_base|tojson }};
+      window.TRICORDER_API_BASE = {{ api_base | default('', true) | tojson }};
     </script>
     <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
   </head>
-  <body data-tricorder-api-base="{{ api_base }}">
+  <body data-tricorder-api-base="{{ api_base | default('', true) }}">
     <div class="app-shell">
       <header class="app-header">
         <div class="titles">
