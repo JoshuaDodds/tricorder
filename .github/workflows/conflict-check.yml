@@ -37,14 +37,6 @@ jobs:
           # Fetch all history so merges can be tested properly
           fetch-depth: 0
 
-      - name: Install GitHub CLI
-        # The `cli/gh-action` installs the gh CLI and authenticates it using the provided token.
-        uses: cli/gh-action@v2
-        with:
-          version: latest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Detect conflicts and comment on PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
