@@ -269,7 +269,7 @@ class AdaptiveRmsController:
         if self.enabled:
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
-        self.debug = DEBUG_VERBOSE
+        self.debug = True  # todo: set to DEBUG_VERBOSE when done testing
 
     @property
     def threshold_linear(self) -> int:
