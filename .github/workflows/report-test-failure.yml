@@ -2,7 +2,7 @@ name: Report Test Failures
 
 on:
   workflow_run:
-    workflows: ["CI", "Test", "Build"] # replace with your actual workflow names
+    workflows: ["CI", "Test", "Build"] # change to your actual workflow names
     types:
       - completed
 
@@ -17,23 +17,36 @@ jobs:
 
     steps:
       - name: Download workflow logs
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const run_id = context.payload.workflow_run.id
-            const { data } = await github.request(
-              `GET /repos/${context.repo.owner}/${context.repo.repo}/actions/runs/${run_id}/logs`
-            )
-            core.setOutput("log_url", data.url)
+        run: |
+          curl -sSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/logs" \
+            -o logs.zip
+
+      - name: Extract logs
+        run: unzip -q logs.zip -d logs
+
+      - name: Collect last 100 lines of failed logs
+        id: collect
+        run: |
+          mkdir -p snippets
+          # Grab the most recent log file (last modified = last step executed)
+          failed_log=$(ls -t logs/**/*.txt | head -n 1)
+          echo "Using log file: $failed_log"
+
+          tail -n 100 "$failed_log" > snippets/failure_snippet.txt
+
+          echo "snippet<<EOF" >> $GITHUB_OUTPUT
+          cat snippets/failure_snippet.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Post comment on PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LOG_URL: ${{ steps.github-script.outputs.log_url }}
+          SNIPPET: ${{ steps.collect.outputs.snippet }}
         run: |
           set -e
 
-          # Find the PR(s) associated with this workflow run
           pr_numbers=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/pulls --jq '.[].number')
 
           if [ -z "$pr_numbers" ]; then
@@ -42,6 +55,6 @@ jobs:
           fi
 
           for pr in $pr_numbers; do
-            body="@codex we have a test failure\n\nLogs: [Download here]($LOG_URL)"
+            body="@codex we have a test failure\n\n<details><summary>Last 100 lines of failure log</summary>\n\n\`\`\`\n$SNIPPET\n\`\`\`\n</details>"
             gh api repos/${{ github.repository }}/issues/$pr/comments -f body="$body"
           done
