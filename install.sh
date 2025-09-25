@@ -189,9 +189,12 @@ else
   say "DEV=1: skipping systemctl enable/start"
 fi
 
-say "Reloading systemd & webserver..."
+say "Reloading systemd & and voice-recorder if running..."
 sudo systemctl daemon-reload || true
 sudo systemctl restart web-streamer.service || true
 
+if systemctl is-active --quiet voice-recorder.service; then
+  sudo systemctl restart voice-recorder.service || true
+fi
 
 say "Install complete"
