@@ -102,6 +102,10 @@ python -m lib.web_streamer --host 0.0.0.0 --port 8080
 
 Visit `http://<device>:8080/` for the dashboard or `http://<device>:8080/hls` for the legacy HLS page. During development `python main.py` launches the live recorder and dashboard together, automatically stopping the systemd service while dev mode is active.
 
+### Remote dashboard deployments
+
+When the static dashboard is hosted separately from the recorder APIs (for example via a CDN or another web server), set `dashboard.api_base` in `config.yaml` to the origin of the recorder instance (e.g. `https://recorder.local:8080`). The template publishes this value as `window.TRICORDER_API_BASE`, which `lib/webui/static/js/dashboard.js` uses for all API, HLS, and recording requests. Leaving the field blank preserves the default same-origin behavior.
+
 ---
 
 ## Live HLS streaming

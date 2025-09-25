@@ -127,6 +127,10 @@ logging:
   dev_mode: true
 
 dashboard:
+  # Override the base URL used by the dashboard when making API and HLS requests.
+  # Useful when the static dashboard is hosted separately from the recorder.
+  # Example: "https://recorder.local:8080". Leave blank to use the current origin.
+  api_base: ""
   # Services exposed through the dashboard controls card. Each entry may include a
   # friendly label and optional description for the UI. Units must be resolvable by
   # systemd on the host.

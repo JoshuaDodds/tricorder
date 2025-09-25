@@ -5,9 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ page_title }}</title>
     <link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}" />
+    <script>
+      window.TRICORDER_API_BASE = {{ api_base|tojson }};
+    </script>
     <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
   </head>
-  <body>
+  <body data-tricorder-api-base="{{ api_base }}">
     <div class="app-shell">
       <header class="app-header">
         <div class="titles">

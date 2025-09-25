@@ -551,6 +551,10 @@ def build_app() -> web.Application:
     except FileNotFoundError:
         recordings_root_resolved = recordings_root
 
+    dashboard_cfg = cfg.get("dashboard", {})
+    api_base_raw = dashboard_cfg.get("api_base", "")
+    dashboard_api_base = api_base_raw.strip() if isinstance(api_base_raw, str) else ""
+
     template_defaults = {
         "page_title": "Tricorder HLS Stream",
         "heading": "HLS Audio Stream",
@@ -575,6 +579,7 @@ def build_app() -> web.Application:
         html = webui.render_template(
             "dashboard.html",
             page_title="Tricorder Dashboard",
+            api_base=dashboard_api_base,
         )
         return web.Response(text=html, content_type="text/html")
 
