@@ -84,7 +84,7 @@ segmenter:
 adaptive_rms:
   # Enable adaptive thresholding to track background RMS levels. When false, the fixed
   # segmenter.rms_threshold is used.
-  enabled: false
+  enabled: true
 
   # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
   min_thresh: 0.01
@@ -141,15 +141,9 @@ dashboard:
     - unit: "web-streamer.service"
       label: "Web UI"
       description: "Serves the dashboard and HLS live stream."
-    - unit: "dropbox.service"
-      label: "Dropbox ingest"
-      description: "Imports audio dropped into the Dropbox directory."
-    - unit: "tricorder-auto-update.service"
+    - unit: "tricorder-auto-update.timer"
       label: "Auto updater"
       description: "Runs scheduled self-update checks."
-    - unit: "tmpfs-guard.service"
-      label: "Tmpfs guard"
-      description: "Prunes tmpfs recordings staging area on a timer."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.
