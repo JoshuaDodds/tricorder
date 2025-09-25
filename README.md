@@ -87,7 +87,7 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 
 - Live recorder status and listener counts with encoder start/stop controls.
 - Recording browser with search, day filtering, pagination, and bulk deletion.
-- Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
+- Audio preview player with waveform visualization, trigger/release markers, and custom color-coded event tags with optional notes plus timeline scrubbing.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.

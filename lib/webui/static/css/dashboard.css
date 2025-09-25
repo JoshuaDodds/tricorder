@@ -701,6 +701,53 @@ button.small {
   box-shadow: 0 0 10px rgba(251, 191, 36, 0.25);
 }
 
+.waveform-tag-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.waveform-tag-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--tag-marker-color, rgba(59, 130, 246, 0.85));
+  box-shadow: 0 0 12px var(--tag-marker-color, rgba(59, 130, 246, 0.45));
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.waveform-tag-marker span {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translate(-50%, 40%);
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.4rem;
+  background: rgba(15, 23, 42, 0.82);
+  color: var(--text);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.45);
+}
+
+.waveform-tag-markers[data-visible="true"] .waveform-tag-marker {
+  opacity: 0.85;
+}
+
+.waveform-tag-markers[data-visible="true"] .waveform-tag-marker span {
+  opacity: 0.85;
+}
+
 .waveform-container[data-ready="true"] .waveform-cursor {
   opacity: 1;
 }
@@ -713,6 +760,194 @@ button.small {
   border: 1px dashed rgba(148, 163, 184, 0.35);
   padding: 1.5rem 1rem;
   background: rgba(15, 23, 42, 0.25);
+}
+
+.waveform-tags {
+  margin-top: 1.25rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.35);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.waveform-tags-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.waveform-tags-header span {
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.waveform-tags-empty {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  border-radius: 0.75rem;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  padding: 0.85rem 0.75rem;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.waveform-tags-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.waveform-tag-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.85rem;
+  background: rgba(15, 23, 42, 0.28);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.waveform-tag-swatch {
+  width: 0.6rem;
+  border-radius: 999px;
+  height: 100%;
+  background: var(--tag-color, var(--primary));
+  box-shadow: 0 0 18px var(--tag-color, rgba(56, 189, 248, 0.45));
+}
+
+.waveform-tag-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.waveform-tag-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.waveform-tag-title span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.waveform-tag-label {
+  font-size: 0.95rem;
+}
+
+.waveform-tag-time {
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", "Courier New", monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.waveform-tag-note {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: pre-line;
+}
+
+.waveform-tag-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+.waveform-tag-actions button {
+  width: max-content;
+}
+
+.tag-modal-timestamp {
+  margin: 0;
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", "Courier New", monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.tag-modal-error {
+  min-height: 1.2rem;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--danger);
+}
+
+.tag-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.tag-modal-color-group {
+  margin-bottom: 0;
+}
+
+.tag-modal-color-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.tag-modal-color-controls input[type="color"] {
+  appearance: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: none;
+  border-radius: 0.75rem;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.35), 0 0 0 4px rgba(15, 23, 42, 0.65);
+  transition: box-shadow 0.2s ease;
+}
+
+.tag-modal-color-controls input[type="color"]:focus {
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.85), 0 0 0 4px rgba(56, 189, 248, 0.2);
+  outline: none;
+}
+
+.tag-modal-color-controls input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+  border-radius: inherit;
+}
+
+.tag-modal-color-controls input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: inherit;
+}
+
+.tag-modal-color-controls input[type="color"]::-moz-color-swatch {
+  border: none;
+  border-radius: inherit;
+}
+
+.tag-modal-color-value {
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", "Courier New", monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+}
+
+.tag-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .table-card {

@@ -2,6 +2,7 @@ import asyncio
 import os
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -195,6 +196,104 @@ def test_recordings_pagination(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recording_tags_roundtrip(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240201"
+        day_dir.mkdir()
+
+        recording = day_dir / "event.opus"
+        recording.write_bytes(b"data")
+        waveform = recording.with_suffix(recording.suffix + ".waveform.json")
+        _write_waveform_stub(waveform, duration=5.0)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            initial_resp = await client.get("/api/recordings")
+            assert initial_resp.status == 200
+            initial_payload = await initial_resp.json()
+            assert initial_payload["items"], "Expected at least one recording"
+            match = next(
+                (item for item in initial_payload["items"] if item["path"] == "20240201/event.opus"),
+                None,
+            )
+            assert match is not None
+            assert match.get("tags") == []
+
+            post_payload = {
+                "path": "20240201/event.opus",
+                "tags": [
+                    {
+                        "label": "Doorbell",
+                        "note": "Visitor at the door",
+                        "offset_seconds": 1.25,
+                        "color": "#F97316",
+                    },
+                    {
+                        "label": "",
+                        "note": "Conversation",
+                        "offset_seconds": "2.75",
+                        "color": "#abc",
+                    },
+                    {
+                        "label": "Ignore",
+                        "note": "",
+                        "offset_seconds": -1,
+                    },
+                    {
+                        "label": "",
+                        "note": "",
+                        "offset_seconds": 3.0,
+                    },
+                ],
+            }
+
+            save_resp = await client.post("/api/recordings/tags", json=post_payload)
+            assert save_resp.status == 200
+            saved = await save_resp.json()
+            assert saved["path"] == "20240201/event.opus"
+            assert len(saved["tags"]) == 2
+            assert saved["tags"][0]["label"] == "Doorbell"
+            assert saved["tags"][0]["note"] == "Visitor at the door"
+            assert saved["tags"][0]["offset_seconds"] == pytest.approx(1.25, rel=0, abs=1e-6)
+            assert saved["tags"][0]["color"] == "#f97316"
+            assert saved["tags"][1]["note"] == "Conversation"
+            assert saved["tags"][1]["offset_seconds"] == pytest.approx(2.75, rel=0, abs=1e-6)
+            assert saved["tags"][1]["color"] == "#aabbcc"
+            assert isinstance(saved.get("updated_at"), (int, float))
+
+            tags_sidecar = recording.with_suffix(recording.suffix + ".tags.json")
+            assert tags_sidecar.exists()
+            stored = json.loads(tags_sidecar.read_text(encoding="utf-8"))
+            assert stored["version"] == 1
+            assert len(stored["tags"]) == 2
+
+            followup_resp = await client.get("/api/recordings")
+            assert followup_resp.status == 200
+            followup_payload = await followup_resp.json()
+            updated = next(
+                (item for item in followup_payload["items"] if item["path"] == "20240201/event.opus"),
+                None,
+            )
+            assert updated is not None
+            assert len(updated["tags"]) == 2
+            assert updated["tags"][0]["label"] == "Doorbell"
+            assert updated["tags"][1]["note"] == "Conversation"
+
+            clear_resp = await client.post("/api/recordings/tags", json={"path": "20240201/event.opus", "tags": []})
+            assert clear_resp.status == 200
+            cleared = await clear_resp.json()
+            assert cleared["tags"] == []
+            assert cleared["updated_at"] is None
+            assert not tags_sidecar.exists()
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recording_start_epoch_in_payload(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"
@@ -239,12 +338,26 @@ def test_delete_recording(dashboard_env):
         client, server = await _start_client(app)
 
         try:
+            create_tags = await client.post(
+                "/api/recordings/tags",
+                json={
+                    "path": "20240103/delete-me.opus",
+                    "tags": [
+                        {"label": "Start", "note": "", "offset_seconds": 0.5, "color": "#38bdf8"}
+                    ],
+                },
+            )
+            assert create_tags.status == 200
+            tags_file = target.with_suffix(target.suffix + ".tags.json")
+            assert tags_file.exists()
+
             resp = await client.post("/api/recordings/delete", json={"items": ["20240103/delete-me.opus"]})
             assert resp.status == 200
             payload = await resp.json()
             assert payload["deleted"] == ["20240103/delete-me.opus"]
             assert not target.exists()
             assert not waveform.exists()
+            assert not tags_file.exists()
 
             resp = await client.post("/api/recordings/delete", json={"items": ["../outside"]})
             assert resp.status == 200

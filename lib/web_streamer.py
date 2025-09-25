@@ -33,10 +33,12 @@ import functools
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
+import uuid
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +47,7 @@ from typing import Any, Iterable, Sequence
 
 DEFAULT_RECORDINGS_LIMIT = 200
 MAX_RECORDINGS_LIMIT = 1000
+TAG_SIDECAR_SUFFIX = ".tags.json"
 
 from aiohttp import web
 from aiohttp.web import AppKey
@@ -112,6 +115,148 @@ def _probe_duration(path: Path, stat: os.stat_result) -> float | None:
         mtime_ns = int(stat.st_mtime * 1_000_000_000)
     size_bytes = int(getattr(stat, "st_size", 0) or 0)
     return _probe_duration_cached(str(path), int(mtime_ns), size_bytes)
+
+
+_TAG_COLOR_RE = re.compile(r"#[0-9a-f]{6}$")
+
+
+def _tags_sidecar_path(recording_path: Path) -> Path:
+    return recording_path.with_suffix(recording_path.suffix + TAG_SIDECAR_SUFFIX)
+
+
+def _normalize_tag_color(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if not candidate:
+        return None
+    if candidate.startswith("#") and len(candidate) == 4:
+        shorthand = candidate[1:]
+        if all(char in "0123456789abcdef" for char in shorthand):
+            candidate = "#" + "".join(char * 2 for char in shorthand)
+    if not candidate.startswith("#"):
+        return None
+    if not _TAG_COLOR_RE.match(candidate):
+        return None
+    return candidate
+
+
+def _normalize_tag_entry(raw: object) -> dict[str, object] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    offset = raw.get("offset_seconds")
+    try:
+        offset_seconds = float(offset)
+    except (TypeError, ValueError):
+        return None
+    if offset_seconds < 0:
+        return None
+
+    label_raw = raw.get("label", "")
+    note_raw = raw.get("note", "")
+    label = str(label_raw if label_raw is not None else "").strip()
+    note = str(note_raw if note_raw is not None else "").strip()
+    if not label and not note:
+        return None
+
+    tag_id_raw = raw.get("id")
+    tag_id = str(tag_id_raw if tag_id_raw is not None else "").strip()
+    if not tag_id:
+        tag_id = uuid.uuid4().hex
+
+    color = _normalize_tag_color(raw.get("color"))
+
+    return {
+        "id": tag_id,
+        "label": label,
+        "note": note,
+        "offset_seconds": offset_seconds,
+        "color": color,
+    }
+
+
+def _read_tags_sidecar(recording_path: Path) -> tuple[list[dict[str, object]], float | None]:
+    tags_path = _tags_sidecar_path(recording_path)
+    try:
+        with tags_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return [], None
+    except (OSError, json.JSONDecodeError):
+        return [], None
+
+    if not isinstance(payload, dict):
+        return [], None
+
+    raw_tags = payload.get("tags")
+    if not isinstance(raw_tags, list):
+        return [], None
+
+    normalized: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    for raw in raw_tags:
+        tag = _normalize_tag_entry(raw)
+        if not tag:
+            continue
+        if tag["id"] in seen_ids:
+            tag["id"] = uuid.uuid4().hex
+        seen_ids.add(tag["id"])
+        normalized.append(tag)
+
+    normalized.sort(key=lambda item: float(item.get("offset_seconds", 0.0)))
+
+    updated_at = payload.get("updated_at")
+    if isinstance(updated_at, (int, float)):
+        updated = float(updated_at)
+    else:
+        try:
+            updated = float(tags_path.stat().st_mtime)
+        except OSError:
+            updated = None
+
+    return normalized, updated
+
+
+def _serialize_tags(tags: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for tag in tags:
+        if not isinstance(tag, dict):
+            continue
+        tag_id = str(tag.get("id", ""))
+        label = str(tag.get("label", ""))
+        note = str(tag.get("note", ""))
+        try:
+            offset_seconds = float(tag.get("offset_seconds", 0.0))
+        except (TypeError, ValueError):
+            continue
+        entry: dict[str, object] = {
+            "id": tag_id,
+            "label": label,
+            "note": note,
+            "offset_seconds": offset_seconds,
+        }
+        color = tag.get("color")
+        normalized_color = _normalize_tag_color(color)
+        if normalized_color:
+            entry["color"] = normalized_color
+        serialized.append(entry)
+    return serialized
+
+
+def _write_tags_sidecar(
+    recording_path: Path, tags: Sequence[dict[str, object]]
+) -> tuple[list[dict[str, object]], float]:
+    tags_path = _tags_sidecar_path(recording_path)
+    tags_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = _serialize_tags(tags)
+    timestamp = time.time()
+    payload = {"version": 1, "tags": serialized, "updated_at": timestamp}
+    tmp_path = tags_path.with_suffix(tags_path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp_path, tags_path)
+    return serialized, timestamp
 
 
 def _scan_recordings_worker(
@@ -197,6 +342,8 @@ def _scan_recordings_worker(
 
         size_bytes = stat.st_size
         total_bytes += size_bytes
+        tags, tags_updated_at = _read_tags_sidecar(path)
+
         entries.append(
             {
                 "name": path.stem,
@@ -210,6 +357,8 @@ def _scan_recordings_worker(
                 "waveform_path": waveform_rel.as_posix(),
                 "start_epoch": start_epoch,
                 "started_at": started_at_iso,
+                "tags": tags,
+                "tags_updated_at": tags_updated_at,
             }
         )
 
@@ -797,6 +946,12 @@ def build_app() -> web.Application:
                     if isinstance(entry.get("started_at"), str)
                     else ""
                 ),
+                "tags": _serialize_tags(entry.get("tags", [])),
+                "tags_updated_at": (
+                    float(entry.get("tags_updated_at", 0.0))
+                    if isinstance(entry.get("tags_updated_at"), (int, float))
+                    else None
+                ),
             }
             for entry in window
         ]
@@ -876,6 +1031,13 @@ def build_app() -> web.Application:
                     pass
                 except OSError:
                     pass
+                tags_sidecar = resolved.with_suffix(resolved.suffix + TAG_SIDECAR_SUFFIX)
+                try:
+                    tags_sidecar.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
             except Exception as exc:
                 errors.append({"item": rel, "error": str(exc)})
                 continue
@@ -896,6 +1058,70 @@ def build_app() -> web.Application:
                 break
 
         return web.json_response({"deleted": deleted, "errors": errors})
+
+    async def recordings_tags_update(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        raw_path = data.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise web.HTTPBadRequest(reason="'path' must be a non-empty string")
+
+        rel = raw_path.strip().strip("/")
+        candidate = recordings_root / rel
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound(reason="Recording not found") from exc
+        except Exception as exc:  # pragma: no cover - unexpected resolution errors
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+
+        try:
+            resolved.relative_to(recordings_root_resolved)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(reason="outside recordings directory") from exc
+
+        if not resolved.is_file():
+            raise web.HTTPNotFound(reason="Recording not found")
+
+        raw_tags = data.get("tags", [])
+        if not isinstance(raw_tags, list):
+            raise web.HTTPBadRequest(reason="'tags' must be a list")
+
+        normalized: list[dict[str, object]] = []
+        seen_ids: set[str] = set()
+        for raw_tag in raw_tags:
+            tag = _normalize_tag_entry(raw_tag)
+            if not tag:
+                continue
+            if tag["id"] in seen_ids:
+                tag["id"] = uuid.uuid4().hex
+            seen_ids.add(tag["id"])
+            normalized.append(tag)
+
+        normalized.sort(key=lambda item: float(item.get("offset_seconds", 0.0)))
+
+        if normalized:
+            tags_payload, updated_at = _write_tags_sidecar(resolved, normalized)
+        else:
+            tags_payload = []
+            updated_at = None
+            tags_path = _tags_sidecar_path(resolved)
+            try:
+                tags_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+        response_payload = {
+            "path": rel.replace(os.sep, "/"),
+            "tags": tags_payload,
+            "updated_at": updated_at,
+        }
+        return web.json_response(response_payload)
 
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
@@ -1070,6 +1296,7 @@ def build_app() -> web.Application:
     app.router.add_get("/api/recordings", recordings_api)
     app.router.add_post("/api/recordings/delete", recordings_delete)
     app.router.add_post("/api/recordings/remove", recordings_delete)
+    app.router.add_post("/api/recordings/tags", recordings_tags_update)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/services", services_list)

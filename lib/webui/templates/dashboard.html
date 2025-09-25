@@ -146,7 +146,23 @@
               >
                 <span>Release</span>
               </div>
+              <div
+                id="waveform-tag-markers"
+                class="waveform-tag-markers"
+                aria-hidden="true"
+                data-visible="false"
+              ></div>
               <div id="waveform-cursor" class="waveform-cursor" aria-hidden="true"></div>
+            </div>
+            <div id="waveform-tags" class="waveform-tags" hidden data-visible="false">
+              <div class="waveform-tags-header">
+                <span>Tags</span>
+                <button id="waveform-tag-add" class="ghost-button small" type="button">
+                  Add tag
+                </button>
+              </div>
+              <div id="waveform-tags-empty" class="waveform-tags-empty">No tags yet.</div>
+              <ul id="waveform-tags-list" class="waveform-tags-list"></ul>
             </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
           </div>
@@ -274,6 +290,53 @@
         <div class="confirm-actions">
           <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
           <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div
+      id="tag-modal"
+      class="confirm-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="tag-modal-dialog"
+        class="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tag-modal-title"
+        aria-describedby="tag-modal-timestamp tag-modal-error"
+        tabindex="-1"
+      >
+        <h2 id="tag-modal-title" class="confirm-title">Add tag</h2>
+        <p id="tag-modal-timestamp" class="tag-modal-timestamp">Position: --:--</p>
+        <div id="tag-modal-error" class="tag-modal-error" role="alert" aria-live="assertive"></div>
+        <form id="tag-modal-form" class="tag-modal-form">
+          <label class="input-group">
+            <span>Label</span>
+            <input id="tag-modal-label" type="text" autocomplete="off" maxlength="120" />
+          </label>
+          <label class="input-group">
+            <span>Note</span>
+            <textarea id="tag-modal-note" rows="3" maxlength="400"></textarea>
+          </label>
+          <label class="input-group tag-modal-color-group">
+            <span>Marker color</span>
+            <div class="tag-modal-color-controls">
+              <input id="tag-modal-color" type="color" value="#38bdf8" />
+              <span id="tag-modal-color-value" aria-live="polite">#38BDF8</span>
+            </div>
+          </label>
+        </form>
+        <div class="tag-modal-actions">
+          <button id="tag-modal-use-current" class="ghost-button small" type="button">
+            Use current position
+          </button>
+        </div>
+        <div class="confirm-actions">
+          <button id="tag-modal-save" class="primary-button" type="button">Save</button>
+          <button id="tag-modal-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
       </div>
     </div>
