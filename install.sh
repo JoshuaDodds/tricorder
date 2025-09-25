@@ -189,6 +189,8 @@ else
   say "DEV=1: skipping systemctl enable/start"
 fi
 
+say "Reloading systemd & webserver..."
+sudo systemctl restart web-streamer.service
 sudo systemctl daemon-reload
 
 say "Install complete"
