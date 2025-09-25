@@ -152,10 +152,22 @@
           </div>
         </div>
         <div class="card table-card">
-            <div class="filters-panel">
+            <div
+              id="filters-panel"
+              class="filters-panel"
+              data-state="expanded"
+              aria-hidden="false"
+            >
               <div class="filters-header">
                 <h3>Filters</h3>
                 <div class="filters-actions">
+                  <button
+                    id="filters-close"
+                    class="ghost-button small filters-close"
+                    type="button"
+                  >
+                    Close
+                  </button>
                   <button id="clear-filters" class="ghost-button small" type="button">Reset</button>
                   <button id="apply-filters" class="primary-button small" type="button">Apply</button>
                 </div>
@@ -178,7 +190,18 @@
               </div>
             </div>
             <div class="card-header">
-              <h2>Recent recordings</h2>
+              <div class="table-header-main">
+                <h2>Recent recordings</h2>
+                <button
+                  id="filters-toggle"
+                  class="ghost-button small filters-toggle"
+                  type="button"
+                  aria-expanded="true"
+                  aria-controls="filters-panel"
+                >
+                  Filters
+                </button>
+              </div>
               <div class="table-actions">
                 <button id="select-all" class="ghost-button small" type="button">Select all</button>
                 <button id="clear-selection" class="ghost-button small" type="button">Clear</button>
