@@ -190,7 +190,8 @@ else
 fi
 
 say "Reloading systemd & webserver..."
-sudo systemctl restart web-streamer.service || true
 sudo systemctl daemon-reload || true
+sudo systemctl restart web-streamer.service || true
+
 
 say "Install complete"
