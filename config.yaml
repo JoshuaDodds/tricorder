@@ -129,7 +129,9 @@ logging:
 dashboard:
   # Override the base URL used by the dashboard when making API and HLS requests.
   # Useful when the static dashboard is hosted separately from the recorder.
-  # Example: "https://recorder.local:8080". Leave blank to use the current origin.
+  # Example: "https://recorder.local:8080". When set, the web streamer enables
+  # CORS (Access-Control-Allow-Origin: *) so remote dashboards can call the API
+  # and HLS endpoints directly. Leave blank to use the current origin.
   api_base: "http://192.168.1.137:8080"
   # Services exposed through the dashboard controls card. Each entry may include a
   # friendly label and optional description for the UI. Units must be resolvable by
@@ -141,9 +143,21 @@ dashboard:
     - unit: "web-streamer.service"
       label: "Web UI"
       description: "Serves the dashboard and HLS live stream."
-    - unit: "tricorder-auto-update.timer"
+    - unit: "dropbox.service"
+      label: "Dropbox ingest"
+      description: "Moves finalized recordings into the Dropbox sync folder."
+    - unit: "tricorder-auto-update.service"
       label: "Auto updater"
+      description: "Manages Tricorder self-update checks."
+    - unit: "tricorder-auto-update.timer"
+      label: "Auto updater schedule"
       description: "Runs scheduled self-update checks."
+    - unit: "tmpfs-guard.service"
+      label: "Tmpfs guard"
+      description: "Maintains the tmpfs mount used for temporary files."
+    - unit: "tmpfs-guard.timer"
+      label: "Tmpfs guard schedule"
+      description: "Triggers periodic tmpfs maintenance."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.

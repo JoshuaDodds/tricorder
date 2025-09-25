@@ -4,14 +4,14 @@ import asyncio
 
 import pytest
 
-from lib.web_streamer import build_app
+import lib.web_streamer as web_streamer
 
 pytest_plugins = ("aiohttp.pytest_plugin",)
 
 
 @pytest.mark.asyncio
 async def test_dashboard_page_structure(aiohttp_client):
-    client = await aiohttp_client(build_app())
+    client = await aiohttp_client(web_streamer.build_app())
 
     response = await client.get("/")
     assert response.status == 200
@@ -25,7 +25,7 @@ async def test_dashboard_page_structure(aiohttp_client):
 
 @pytest.mark.asyncio
 async def test_hls_page_still_available(aiohttp_client):
-    client = await aiohttp_client(build_app())
+    client = await aiohttp_client(web_streamer.build_app())
 
     response = await client.get("/hls")
     assert response.status == 200
@@ -41,7 +41,7 @@ async def test_hls_page_still_available(aiohttp_client):
 
 @pytest.mark.asyncio
 async def test_web_streamer_static_assets_available(aiohttp_client):
-    client = await aiohttp_client(build_app())
+    client = await aiohttp_client(web_streamer.build_app())
 
     css_response = await client.get("/static/css/main.css")
     assert css_response.status == 200
@@ -63,7 +63,7 @@ async def test_hls_playlist_waits_for_segments(monkeypatch, tmp_path, aiohttp_cl
 
     monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
 
-    client = await aiohttp_client(build_app())
+    client = await aiohttp_client(web_streamer.build_app())
 
     playlist_path = tmp_path / "hls" / "live.m3u8"
     playlist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,3 +84,53 @@ async def test_hls_playlist_waits_for_segments(monkeypatch, tmp_path, aiohttp_cl
     assert response.headers.get("Cache-Control") == "no-store"
 
     await writer
+
+
+def test_parse_show_output_handles_blank_fields():
+    payload = "\n".join(
+        [
+            "LoadState=loaded",
+            "ActiveState=active",
+            "SubState=running",
+            "UnitFileState=enabled",
+            "Description=Recorder",
+            "CanStart=yes",
+            "CanStop=yes",
+            "CanReload=no",
+            "CanRestart=yes",
+            "TriggeredBy=",
+        ]
+    )
+
+    parsed = web_streamer._parse_show_output(payload, web_streamer._SYSTEMCTL_PROPERTIES)
+
+    assert parsed["LoadState"] == "loaded"
+    assert parsed["ActiveState"] == "active"
+    assert parsed["Description"] == "Recorder"
+    assert parsed["CanStart"] == "yes"
+    assert parsed["TriggeredBy"] == ""
+
+
+def test_parse_show_output_handles_value_only_payload():
+    payload = "\n".join(
+        [
+            "loaded",
+            "active",
+            "running",
+            "enabled",
+            "Recorder",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "",
+        ]
+    )
+
+    parsed = web_streamer._parse_show_output(payload, web_streamer._SYSTEMCTL_PROPERTIES)
+
+    assert parsed["LoadState"] == "loaded"
+    assert parsed["ActiveState"] == "active"
+    assert parsed["Description"] == "Recorder"
+    assert parsed["CanStart"] == "yes"
+    assert parsed["TriggeredBy"] == ""
