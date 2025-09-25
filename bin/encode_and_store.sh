@@ -56,6 +56,11 @@ if ! "$VENV/bin/python" -m lib.waveform_cache "$in_wav" "$waveform_file"; then
   exit 1
 fi
 
+transcript_file="${outfile}.transcript.json"
+if ! "$VENV/bin/python" -m lib.transcription "$in_wav" "$transcript_file" "$base"; then
+  echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
+fi
+
 echo "[encode] Wrote waveform $waveform_file"
 
 rm -f "$in_wav"

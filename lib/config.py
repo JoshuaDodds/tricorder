@@ -66,6 +66,15 @@ _DEFAULTS: Dict[str, Any] = {
         "allowed_ext": [".wav", ".opus", ".flac", ".mp3"],
         "ignore_suffixes": [".part", ".partial", ".tmp", ".incomplete", ".opdownload", ".crdownload"],
     },
+    "transcription": {
+        "enabled": False,
+        "engine": "vosk",
+        "types": ["Human"],
+        "vosk_model_path": "/apps/tricorder/models/vosk-small-en-us-0.15",
+        "target_sample_rate": 16000,
+        "include_words": True,
+        "max_alternatives": 0,
+    },
     "logging": {
         "dev_mode": False  # if True or ENV DEV=1, enable verbose debug
     },
@@ -131,6 +140,10 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         cfg.setdefault("paths", {})["tmp_dir"] = os.environ["TMP_DIR"]
     if "DROPBOX_DIR" in os.environ:
         cfg.setdefault("paths", {})["dropbox_dir"] = os.environ["DROPBOX_DIR"]
+    if "VOSK_MODEL_PATH" in os.environ:
+        value = os.environ["VOSK_MODEL_PATH"].strip()
+        if value:
+            cfg.setdefault("transcription", {})["vosk_model_path"] = value
     # Ingest tuning
     env_map = {
         "INGEST_STABLE_CHECKS": ("ingest", "stable_checks", int),
@@ -196,6 +209,22 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         value = os.environ["DASHBOARD_WEB_SERVICE"].strip()
         if value:
             cfg.setdefault("dashboard", {})["web_service"] = value
+
+    transcription_env = {
+        "TRANSCRIPTION_ENABLED": ("enabled", _parse_bool),
+        "TRANSCRIPTION_ENGINE": ("engine", str),
+        "TRANSCRIPTION_TYPES": ("types", lambda s: [token.strip() for token in s.split(",") if token.strip()]),
+        "TRANSCRIPTION_TARGET_RATE": ("target_sample_rate", int),
+        "TRANSCRIPTION_INCLUDE_WORDS": ("include_words", _parse_bool),
+        "TRANSCRIPTION_MAX_ALTERNATIVES": ("max_alternatives", int),
+    }
+
+    for env_key, (key, caster) in transcription_env.items():
+        if env_key in os.environ:
+            try:
+                cfg.setdefault("transcription", {})[key] = caster(os.environ[env_key])
+            except Exception:
+                pass
 
 def get_cfg() -> Dict[str, Any]:
     global _cfg_cache
