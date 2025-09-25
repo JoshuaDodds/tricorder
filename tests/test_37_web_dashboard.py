@@ -3,6 +3,7 @@ import os
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,7 @@ def test_recordings_search_matches_transcripts(dashboard_env):
         }
         transcript_path = file_path.with_suffix(file_path.suffix + ".transcript.json")
         transcript_path.write_text(json.dumps(transcript_payload), encoding="utf-8")
+        os.utime(transcript_path, (1_700_030_000, 1_700_030_000))
 
         app = web_streamer.build_app()
         client, server = await _start_client(app)
@@ -135,6 +137,14 @@ def test_recordings_search_matches_transcripts(dashboard_env):
             assert item["transcript_event_type"] == "Human"
             assert item["transcript_excerpt"].lower().startswith("zebra")
             assert item["transcript_path"].endswith(".transcript.json")
+            expected_updated = 1_700_030_000
+            assert item["transcript_updated"] == pytest.approx(
+                expected_updated, rel=0, abs=1e-6
+            )
+            expected_iso = datetime.fromtimestamp(
+                expected_updated, tz=timezone.utc
+            ).isoformat()
+            assert item["transcript_updated_iso"] == expected_iso
 
             miss = await client.get("/api/recordings?search=walrus")
             assert miss.status == 200
