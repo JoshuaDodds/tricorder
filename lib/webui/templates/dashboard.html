@@ -63,15 +63,25 @@
         </div>
       </header>
       <section class="status-bar">
-        <div class="stat">
+        <div class="stat stat-recordings">
           <span class="label">Recordings</span>
           <span class="value" id="recording-count">0</span>
         </div>
-        <div class="stat">
+        <div class="stat stat-selected">
           <span class="label">Selected</span>
           <span class="value" id="selected-count">0</span>
         </div>
-        <div class="stat storage-stat">
+        <div class="stat stat-selection-combined">
+          <div class="stat-combined-row">
+            <span class="label">Recordings</span>
+            <span class="value" id="recording-count-mobile">0</span>
+          </div>
+          <div class="stat-combined-row">
+            <span class="label">Selected</span>
+            <span class="value" id="selected-count-mobile">0</span>
+          </div>
+        </div>
+        <div class="stat storage-stat stat-storage">
           <span class="label">Storage</span>
           <span class="value" id="storage-usage-text">--</span>
           <div class="storage-progress">
@@ -79,7 +89,7 @@
           </div>
           <span class="hint" id="storage-hint">--</span>
         </div>
-        <div class="stat">
+        <div class="stat stat-last-updated">
           <span class="label">Last updated</span>
           <span class="value" id="last-updated">--</span>
         </div>

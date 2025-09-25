@@ -227,6 +227,24 @@ body {
   font-weight: 600;
 }
 
+.status-bar .stat-selection-combined {
+  display: none;
+  gap: 0.75rem;
+}
+
+.stat-combined-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.stat-combined-row + .stat-combined-row {
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+}
+
 .storage-progress {
   width: 100%;
   height: 0.45rem;
@@ -1441,7 +1459,28 @@ button.small {
   }
 
   .status-bar {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .status-bar .stat-recordings,
+  .status-bar .stat-selected {
+    display: none;
+  }
+
+  .status-bar .stat-selection-combined {
+    display: flex;
+    flex-direction: column;
+    order: 0;
+  }
+
+  .status-bar .stat-storage {
+    order: 10;
+  }
+
+  .status-bar .stat-last-updated {
+    order: 11;
   }
 
   .card {
@@ -1472,6 +1511,10 @@ button.small {
 
   .table-responsive {
     padding: 0 1.1rem 1.1rem;
+  }
+
+  .config-card {
+    display: none;
   }
 
   #recordings-table {
