@@ -74,7 +74,7 @@ class NotificationDispatcher:
         self.email_cfg = email_cfg or {}
         self.hostname = socket.gethostname()
 
-        self.webhook_url = str(self.webhook_cfg.get("url" or "")).strip()
+        self.webhook_url = str(self.webhook_cfg.get("url") or "").strip()
         self.webhook_method = (
             str(self.webhook_cfg.get("method", "POST")) or "POST"
         ).upper()
@@ -82,7 +82,7 @@ class NotificationDispatcher:
         self.webhook_timeout = float(self.webhook_cfg.get("timeout_sec", 5.0) or 5.0)
 
         self.email_recipients = _as_list(self.email_cfg.get("to"))
-        self.email_sender = str(self.email_cfg.get("from" or "")).strip()
+        self.email_sender = str(self.email_cfg.get("from") or "").strip()
 
     @staticmethod
     def _normalise_headers(headers: Any) -> dict[str, str]:
@@ -135,14 +135,14 @@ class NotificationDispatcher:
         if not (self.email_sender and self.email_recipients):
             return
 
-        smtp_host = str(self.email_cfg.get("smtp_host" or "")).strip()
+        smtp_host = str(self.email_cfg.get("smtp_host") or "").strip()
         if not smtp_host:
             return
 
         smtp_port = _as_int(self.email_cfg.get("smtp_port"), 587) or 587
         use_ssl = bool(self.email_cfg.get("use_ssl", False))
         use_tls = bool(self.email_cfg.get("use_tls", True))
-        username = str(self.email_cfg.get("username" or "")).strip()
+        username = str(self.email_cfg.get("username") or "").strip()
         password = self.email_cfg.get("password")
         timeout = float(self.email_cfg.get("timeout_sec", 10.0) or 10.0)
 
