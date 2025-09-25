@@ -200,6 +200,9 @@ class WebRTCBufferConsumer:
 
             if self._last_sequence == 0:
                 self._last_sequence = sequence
+                if loop.time() >= deadline:
+                    return None
+                await asyncio_sleep(poll_interval)
                 continue
 
             frames_available = sequence - self._last_sequence
