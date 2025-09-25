@@ -10,7 +10,10 @@
     </script>
     <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
   </head>
-  <body data-tricorder-api-base="{{ api_base | default('', true) }}">
+  <body
+    data-tricorder-api-base="{{ api_base | default('', true) }}"
+    data-tricorder-stream-mode="{{ stream_mode | default('hls', true) }}"
+  >
     <div class="app-shell">
       <header class="app-header">
         <div class="titles">

@@ -9,6 +9,7 @@ from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
 from lib.hls_controller import controller  # NEW
+from lib.webrtc_buffer import WebRTCBufferWriter
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -16,6 +17,10 @@ FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 STATE_POLL_INTERVAL = 1.0
+STREAM_MODE = str(cfg.get("streaming", {}).get("mode", "hls")).strip().lower() or "hls"
+if STREAM_MODE not in {"hls", "webrtc"}:
+    STREAM_MODE = "hls"
+WEBRTC_HISTORY_SECONDS = float(cfg.get("streaming", {}).get("webrtc_history_seconds", 8.0))
 
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
@@ -64,22 +69,45 @@ def main():
     stop_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
 
-    # Construct HLS encoder but do NOT start it; the web server starts/stops on demand.
-    hls_dir = os.path.join(cfg["paths"]["tmp_dir"], "hls")
-    os.makedirs(hls_dir, exist_ok=True)
-    hls = HLSTee(
-        out_dir=hls_dir,
-        sample_rate=SAMPLE_RATE,
-        channels=1,
-        bits_per_sample=16,
-        segment_time=2.0,
-        history_seconds=60,
-        bitrate="64k",
-    )
-    state_path = os.path.join(hls_dir, "controller_state.json")
-    controller.set_state_path(state_path, persist=True)
-    controller.attach(hls)
-    controller.refresh_from_state()
+    print(f"[live] streaming mode={STREAM_MODE}", flush=True)
+    publish_frame = None
+    hls = None
+    webrtc_writer = None
+
+    if STREAM_MODE == "hls":
+        # Construct HLS encoder but do NOT start it; the web server starts/stops on demand.
+        hls_dir = os.path.join(cfg["paths"]["tmp_dir"], "hls")
+        os.makedirs(hls_dir, exist_ok=True)
+        hls = HLSTee(
+            out_dir=hls_dir,
+            sample_rate=SAMPLE_RATE,
+            channels=1,
+            bits_per_sample=16,
+            segment_time=2.0,
+            history_seconds=60,
+            bitrate="64k",
+        )
+        state_path = os.path.join(hls_dir, "controller_state.json")
+        controller.set_state_path(state_path, persist=True)
+        controller.attach(hls)
+        controller.refresh_from_state()
+
+        def publish_frame(frame: bytes) -> None:
+            hls.feed(frame)
+
+    else:
+        webrtc_dir = os.path.join(cfg["paths"]["tmp_dir"], "webrtc")
+        os.makedirs(webrtc_dir, exist_ok=True)
+        webrtc_writer = WebRTCBufferWriter(
+            webrtc_dir,
+            sample_rate=SAMPLE_RATE,
+            frame_ms=FRAME_MS,
+            frame_bytes=FRAME_BYTES,
+            history_seconds=WEBRTC_HISTORY_SECONDS,
+        )
+
+        def publish_frame(frame: bytes) -> None:
+            webrtc_writer.feed(frame)
 
     while not stop_requested:
         p = None
@@ -108,7 +136,7 @@ def main():
 
             while not stop_requested:
                 now = time.monotonic()
-                if now >= next_state_poll:
+                if STREAM_MODE == "hls" and now >= next_state_poll:
                     controller.refresh_from_state()
                     next_state_poll = now + STATE_POLL_INTERVAL
                 chunk = p.stdout.read(CHUNK_BYTES)
@@ -118,8 +146,8 @@ def main():
 
                 while len(buf) >= FRAME_BYTES:
                     frame = bytes(buf[:FRAME_BYTES])
-                    # Always feed frames; HLSTee drops if not started.
-                    hls.feed(frame)
+                    # Always feed frames; sink drops if not started.
+                    publish_frame(frame)
                     rec.ingest(frame, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
@@ -145,10 +173,12 @@ def main():
             print(f"[live] loop error: {e!r}", flush=True)
         finally:
             try:
-                controller.refresh_from_state()
+                if STREAM_MODE == "hls":
+                    controller.refresh_from_state()
+                    if 'rec' in locals():
+                        # Ensure encoder is stopped when daemon exits/restarts.
+                        controller.stop_now()
                 if 'rec' in locals():
-                    # Ensure encoder is stopped when daemon exits/restarts.
-                    controller.stop_now()
                     rec.flush(frame_idx)
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
@@ -174,6 +204,8 @@ def main():
                     print("[live] USB device reset successful", flush=True)
                 time.sleep(3)
 
+    if webrtc_writer is not None:
+        webrtc_writer.close()
     print("[live] clean shutdown complete", flush=True)
 
 if __name__ == "__main__":

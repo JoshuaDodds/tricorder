@@ -10,7 +10,7 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 
 - Continuous audio capture with adaptive RMS tracking and configurable VAD aggressiveness.
 - Event segmentation with pre/post roll, asynchronous encoding, and automatic waveform sidecars for fast preview rendering.
-- Live HLS streaming that powers up only when listeners are present and tears down when idle.
+- Live audio streaming that can operate in traditional HLS mode or a lower-latency WebRTC mode, powering up only when listeners are present and tearing down when idle.
 - Web dashboard (aiohttp + Jinja) for monitoring recorder state, browsing recordings, previewing audio + waveform, deleting files, and inspecting configuration.
 - Dropbox-style ingest path for external recordings that reuses the segmentation + encoding pipeline.
 - Systemd-managed services and timers, including optional automatic updates driven by `tricorder_auto_update.sh`.
@@ -108,16 +108,23 @@ When the static dashboard is hosted separately from the recorder APIs (for examp
 
 ---
 
-## Live HLS streaming
+## Live streaming modes
 
-The live stream relies on `lib.hls_mux.HLSTee` to buffer recent audio frames and generate HLS segments only when listeners are connected:
+Tricorder supports two live streaming transports selectable via `streaming.mode` in `config.yaml`:
 
-- `/hls/start` increments the listener count and starts the encoder if idle.
-- `/hls/live.m3u8` blocks until the first segment exists and is served with `Cache-Control: no-store`.
-- `/hls/stop` decrements the listener count and schedules encoder shutdown after a cooldown.
-- `/hls/stats` exposes the current listener count and encoder status for dashboards or monitoring.
+- **`hls`** (default) – relies on `lib.hls_mux.HLSTee` to buffer recent audio frames and generate HLS segments only when listeners are connected. The web streamer exposes:
+  - `/hls/start` to increment the listener count and start the encoder if idle.
+  - `/hls/live.m3u8` which blocks until the first segment exists and is served with `Cache-Control: no-store`.
+  - `/hls/stop` to decrement the listener count and schedule encoder shutdown after a cooldown.
+  - `/hls/stats` reporting the current listener count and encoder status for dashboards or monitoring.
+  - Static artifacts under `/hls/` sourced from `<tmp_dir>/hls` (defaults to `/apps/tricorder/tmp/hls`). `ffmpeg` runs with `-hls_flags delete_segments` so disk usage stays bounded.
 
-HLS artifacts live under `<tmp_dir>/hls` (defaults to `/apps/tricorder/tmp/hls`). `ffmpeg` runs with `-hls_flags delete_segments` so disk usage stays bounded.
+- **`webrtc`** – enables a lower-latency audio stream backed by a shared PCM ring buffer (`lib/webrtc_buffer.py`). The web streamer coordinates peer connections through:
+  - `/webrtc/start` and `/webrtc/stop` to track dashboard sessions.
+  - `/webrtc/stats` to surface current listener counts.
+  - `/webrtc/offer` which accepts SDP offers from browsers and returns SDP answers produced by `lib/webrtc_stream.WebRTCManager`.
+
+When `streaming.mode` is set to `webrtc`, the dashboard automatically switches to WebRTC playback, and the legacy HLS page at `/hls` returns `404` to make the mode change explicit.
 
 ---
 
@@ -231,6 +238,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
+- `streaming` – select HLS vs WebRTC live streaming and configure the WebRTC buffer depth.
 
 ---
 
