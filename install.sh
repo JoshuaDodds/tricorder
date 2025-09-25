@@ -16,7 +16,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE=$VENV/lib/python$PY_VER/site-packages
 
-UNITS=(voice-recorder.service web-streamer.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer)
+UNITS=(voice-recorder.service web-streamer.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder.target)
 
 say(){ echo "[Tricorder] $*"; }
 
@@ -175,19 +175,16 @@ if [[ "${DEV:-0}" != "1" ]]; then
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
   for unit in voice-recorder.service web-streamer.service dropbox.service tmpfs-guard.service; do
-      sudo systemctl enable --now "$unit" || true
+      sudo systemctl enable "$unit" || true
   done
   for timer in tmpfs-guard.timer tricorder-auto-update.timer; do
-      sudo systemctl enable --now "$timer" || true
+      sudo systemctl enable "$timer" || true
   done
 
-  sudo systemctl start dropbox.path || true
+  sudo systemctl enable dropbox.path || true
+  sudo systemctl enable tricorder.target || true
 
-  if [[ -f systemd/tricorder.target ]]; then
-      cp -f systemd/tricorder.target "$SYSTEMD_DIR/tricorder.target" 2>/dev/null || true
-      chmod 644 "$SYSTEMD_DIR/tricorder.target" 2>/dev/null || true
-      sudo systemctl enable tricorder.target || true
-  fi
+  sudo systemctl restart tricorder.target || true
 
 else
   say "DEV=1: skipping systemctl enable/start"
