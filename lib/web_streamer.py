@@ -343,20 +343,22 @@ def _parse_show_output(payload: str, properties: Sequence[str]) -> dict[str, str
     result: dict[str, str] = {prop: "" for prop in properties}
 
     lines = payload.splitlines()
+
+    saw_key_value = False
     for line in lines:
         if "=" not in line:
             continue
+        saw_key_value = True
         key, value = line.split("=", 1)
         key = key.strip()
         if key in result:
             result[key] = value.strip()
 
-    # Fallback to positional parsing when systemctl omits property names.
-    if any(not result[prop] for prop in properties):
+    # Fallback to positional parsing only when systemctl omits property names
+    # entirely (older builds ignore ``--property=...`` and emit bare values).
+    if not saw_key_value:
         values = [line.strip() for line in lines if line.strip()]
         for idx, key in enumerate(properties):
-            if result[key]:
-                continue
             if idx < len(values):
                 result[key] = values[idx]
 
