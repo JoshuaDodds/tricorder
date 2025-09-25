@@ -174,7 +174,7 @@ fi
 if [[ "${DEV:-0}" != "1" ]]; then
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
-  for unit in voice-recorder.service web-streamer.service dropbox.service tmpfs-guard.service; do
+  for unit in voice-recorder.service web-streamer.service dropbox.service tmpfs-guard.service tricorder-auto-update.service; do
       sudo systemctl enable "$unit" || true
   done
   for timer in tmpfs-guard.timer tricorder-auto-update.timer; do
