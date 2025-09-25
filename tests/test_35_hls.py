@@ -34,6 +34,20 @@ def test_hlstee_restart_clears_stop_event(monkeypatch, tmp_path):
     tee.stop()
 
 
+def test_hlstee_stop_cleans_outputs(tmp_path):
+    tee = HLSTee(out_dir=str(tmp_path), sample_rate=48000)
+
+    playlist = tmp_path / "live.m3u8"
+    segment = tmp_path / "seg00001.ts"
+    playlist.write_text("#EXTM3U", encoding="utf-8")
+    segment.write_bytes(b"dummy")
+
+    tee.stop()
+
+    assert not playlist.exists()
+    assert not segment.exists()
+
+
 class DummyHLSTee:
     def __init__(self):
         self.started = 0
