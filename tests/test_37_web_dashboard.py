@@ -1,8 +1,9 @@
 import asyncio
-import os
-
+import io
 import json
+import os
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -234,6 +235,11 @@ def test_delete_recording(dashboard_env):
         target.write_bytes(b"data")
         waveform = target.with_suffix(target.suffix + ".waveform.json")
         _write_waveform_stub(waveform)
+        metadata_path = dashboard_env / ".recordings_metadata.json"
+        metadata_path.write_text(
+            json.dumps({"20240103/delete-me.opus": {"tags": ["keep"]}}),
+            encoding="utf-8",
+        )
 
         app = web_streamer.build_app()
         client, server = await _start_client(app)
@@ -245,12 +251,128 @@ def test_delete_recording(dashboard_env):
             assert payload["deleted"] == ["20240103/delete-me.opus"]
             assert not target.exists()
             assert not waveform.exists()
+            assert not metadata_path.exists()
 
             resp = await client.post("/api/recordings/delete", json={"items": ["../outside"]})
             assert resp.status == 200
             payload = await resp.json()
             assert payload["deleted"] == []
             assert payload["errors"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_archive_downloads_selected(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240104"
+        day_dir.mkdir()
+
+        for name in ("alpha.opus", "beta.opus"):
+            path = day_dir / name
+            path.write_bytes(b"data")
+            _write_waveform_stub(path.with_suffix(path.suffix + ".waveform.json"))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/recordings/archive",
+                json={
+                    "items": ["20240104/alpha.opus", "20240104/beta.opus"],
+                    "archive_name": "session-backup.zip",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "application/zip"
+            disposition = resp.headers.get("Content-Disposition", "")
+            assert "session-backup.zip" in disposition
+            payload = await resp.read()
+            archive = zipfile.ZipFile(io.BytesIO(payload))
+            assert sorted(archive.namelist()) == [
+                "20240104/alpha.opus",
+                "20240104/beta.opus",
+            ]
+            archive.close()
+
+            error_resp = await client.post(
+                "/api/recordings/archive", json={"items": ["missing-file.opus"]}
+            )
+            assert error_resp.status == 400
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_update_allows_rename_and_tags(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240106"
+        day_dir.mkdir()
+
+        original = day_dir / "alpha.opus"
+        original.write_bytes(b"data")
+        _write_waveform_stub(original.with_suffix(original.suffix + ".waveform.json"))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/recordings/update",
+                json={
+                    "items": [
+                        {
+                            "path": "20240106/alpha.opus",
+                            "new_name": "renamed",
+                            "tags": ["night", "alarm"],
+                        }
+                    ]
+                },
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert not payload["errors"]
+            assert payload["updated"][0]["renamed"] is True
+            assert payload["updated"][0]["tags_updated"] is True
+
+            renamed = day_dir / "renamed.opus"
+            assert renamed.exists()
+            assert not original.exists()
+            assert renamed.with_suffix(renamed.suffix + ".waveform.json").exists()
+
+            metadata_path = dashboard_env / ".recordings_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            assert metadata["20240106/renamed.opus"]["tags"] == ["night", "alarm"]
+
+            listing_resp = await client.get("/api/recordings")
+            listing = await listing_resp.json()
+            item = listing["items"][0]
+            assert item["path"] == "20240106/renamed.opus"
+            assert item["tags"] == ["night", "alarm"]
+
+            # Clearing tags should drop metadata file entirely.
+            clear_resp = await client.post(
+                "/api/recordings/update",
+                json={"items": [{"path": "20240106/renamed.opus", "tags": []}]},
+            )
+            assert clear_resp.status == 200
+            clear_payload = await clear_resp.json()
+            assert not clear_payload["errors"]
+            assert clear_payload["updated"][0]["tags_updated"] is True
+            assert not metadata_path.exists()
+
+            invalid_resp = await client.post(
+                "/api/recordings/update",
+                json={"items": [{"path": "20240106/renamed.opus", "new_name": "bad/name"}]},
+            )
+            invalid_payload = await invalid_resp.json()
+            assert invalid_resp.status == 200
+            assert invalid_payload["errors"]
         finally:
             await client.close()
             await server.close()

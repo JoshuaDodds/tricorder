@@ -182,6 +182,12 @@
               <div class="table-actions">
                 <button id="select-all" class="ghost-button small" type="button">Select all</button>
                 <button id="clear-selection" class="ghost-button small" type="button">Clear</button>
+                <button id="download-selected" class="ghost-button small" type="button" disabled>
+                  Download selected
+                </button>
+                <button id="edit-selected" class="ghost-button small" type="button" disabled>
+                  Edit selected
+                </button>
                 <button id="delete-selected" class="danger-button small" type="button" disabled>Delete selected</button>
               </div>
             </div>
@@ -228,6 +234,7 @@
                         <span aria-hidden="true" class="sort-indicator"></span>
                       </button>
                     </th>
+                    <th>Tags</th>
                     <th class="actions">Actions</th>
                   </tr>
                 </thead>
@@ -275,6 +282,40 @@
           <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
           <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
+      </div>
+    </div>
+    <div
+      id="bulk-edit-modal"
+      class="bulk-edit-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="bulk-edit-dialog"
+        class="bulk-edit-dialog card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bulk-edit-title"
+        aria-describedby="bulk-edit-description"
+        tabindex="-1"
+      >
+        <div class="card-header bulk-edit-header">
+          <div class="card-heading">
+            <h2 id="bulk-edit-title">Edit recordings</h2>
+            <p id="bulk-edit-description" class="card-subtitle">
+              Rename files and update tags. Leave fields unchanged to keep current values.
+            </p>
+          </div>
+          <button id="bulk-edit-close" class="ghost-button small" type="button">Close</button>
+        </div>
+        <form id="bulk-edit-form" class="bulk-edit-form">
+          <div id="bulk-edit-list" class="bulk-edit-list" role="region" aria-live="polite"></div>
+          <div class="bulk-edit-actions">
+            <button id="bulk-edit-apply" class="primary-button" type="submit">Save changes</button>
+            <button id="bulk-edit-cancel" class="ghost-button" type="button">Cancel</button>
+          </div>
+        </form>
       </div>
     </div>
     <div

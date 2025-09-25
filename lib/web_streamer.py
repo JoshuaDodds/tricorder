@@ -30,14 +30,18 @@ import argparse
 import asyncio
 import contextlib
 import functools
+import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import wave
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -45,6 +49,9 @@ from typing import Any, Iterable, Sequence
 
 DEFAULT_RECORDINGS_LIMIT = 200
 MAX_RECORDINGS_LIMIT = 1000
+METADATA_FILENAME = ".recordings_metadata.json"
+_TAG_PATTERN = re.compile(r"^[A-Za-z0-9 _\.-]{1,64}$")
+_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 from aiohttp import web
 from aiohttp.web import AppKey
@@ -114,6 +121,180 @@ def _probe_duration(path: Path, stat: os.stat_result) -> float | None:
     return _probe_duration_cached(str(path), int(mtime_ns), size_bytes)
 
 
+def _metadata_path(recordings_root: Path) -> Path:
+    return recordings_root / METADATA_FILENAME
+
+
+def _load_metadata(recordings_root: Path) -> dict[str, dict[str, object]]:
+    path = _metadata_path(recordings_root)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    result: dict[str, dict[str, object]] = {}
+
+    for raw_key, raw_value in payload.items():
+        if not isinstance(raw_key, str):
+            continue
+        rel = raw_key.strip().strip("/")
+        if not rel:
+            continue
+        if not isinstance(raw_value, dict):
+            continue
+        entry: dict[str, object] = {}
+        tags_value = raw_value.get("tags")
+        if isinstance(tags_value, list):
+            tags: list[str] = []
+            for tag in tags_value:
+                if isinstance(tag, str):
+                    trimmed = tag.strip()
+                    if trimmed:
+                        tags.append(trimmed)
+            if tags:
+                entry["tags"] = tags
+        if entry:
+            result[rel] = entry
+
+    return result
+
+
+def _save_metadata(recordings_root: Path, metadata: dict[str, dict[str, object]]) -> None:
+    path = _metadata_path(recordings_root)
+    serializable: dict[str, dict[str, object]] = {}
+
+    for raw_key, raw_value in metadata.items():
+        if not isinstance(raw_key, str):
+            continue
+        rel = raw_key.strip().strip("/")
+        if not rel:
+            continue
+        if not isinstance(raw_value, dict):
+            continue
+        entry: dict[str, object] = {}
+        tags_value = raw_value.get("tags")
+        if isinstance(tags_value, list):
+            tags: list[str] = []
+            for tag in tags_value:
+                if isinstance(tag, str):
+                    trimmed = tag.strip()
+                    if trimmed:
+                        tags.append(trimmed)
+            if tags:
+                entry["tags"] = tags
+        if entry:
+            serializable[rel] = entry
+
+    if not serializable:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError:
+            return
+        return
+
+    tmp_dir = path.parent
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=tmp_dir, prefix=".metadata", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(serializable, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp_name, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+def _normalize_tags(value: object) -> list[str] | None:
+    if value is None:
+        return None
+
+    raw_items: list[str] = []
+
+    if isinstance(value, str):
+        raw_items.extend(value.split(","))
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            if isinstance(item, str):
+                raw_items.extend(item.split(","))
+            else:
+                raise ValueError("tags must be strings")
+    else:
+        raise ValueError("tags must be a list of strings")
+
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    for raw in raw_items:
+        tag = raw.strip()
+        if not tag:
+            continue
+        if not _TAG_PATTERN.fullmatch(tag):
+            raise ValueError(f"invalid tag: {tag}")
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(tag)
+
+    return tags
+
+
+def _default_archive_name() -> str:
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    return f"recordings-{timestamp}.zip"
+
+
+def _normalize_archive_name(value: object) -> str:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate.lower().endswith(".zip"):
+            candidate = candidate[:-4]
+        candidate = candidate.replace(" ", "-")
+        candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+        candidate = candidate.strip("._- ")
+        if candidate:
+            if len(candidate) > 80:
+                candidate = candidate[:80]
+            return f"{candidate}.zip"
+    return _default_archive_name()
+
+
+def _normalize_new_name(value: object, current_stem: str, suffix: str) -> tuple[str, bool]:
+    if not isinstance(value, str):
+        return current_stem, False
+
+    candidate = value.strip()
+    if not candidate:
+        return current_stem, False
+
+    if suffix and candidate.lower().endswith(suffix.lower()):
+        candidate = candidate[: -len(suffix)]
+
+    candidate = candidate.strip()
+
+    if not candidate:
+        raise ValueError("new name must not be empty")
+
+    if any(sep in candidate for sep in ("/", "\\")):
+        raise ValueError("new name may not include path separators")
+
+    if not _NAME_PATTERN.fullmatch(candidate):
+        raise ValueError(
+            "new name must contain only letters, numbers, period, underscore, or hyphen"
+        )
+
+    return candidate, candidate != current_stem
+
+
 def _scan_recordings_worker(
     recordings_root: Path, allowed_ext: tuple[str, ...]
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
@@ -123,6 +304,8 @@ def _scan_recordings_worker(
     total_bytes = 0
     if not recordings_root.exists():
         return entries, [], [], 0
+
+    metadata = _load_metadata(recordings_root)
 
     for path in recordings_root.rglob("*"):
         if not path.is_file():
@@ -197,6 +380,12 @@ def _scan_recordings_worker(
 
         size_bytes = stat.st_size
         total_bytes += size_bytes
+        tags: list[str] = []
+        meta_entry = metadata.get(rel_posix)
+        if meta_entry and isinstance(meta_entry, dict):
+            tags_value = meta_entry.get("tags")
+            if isinstance(tags_value, list):
+                tags = [tag for tag in tags_value if isinstance(tag, str) and tag]
         entries.append(
             {
                 "name": path.stem,
@@ -210,6 +399,7 @@ def _scan_recordings_worker(
                 "waveform_path": waveform_rel.as_posix(),
                 "start_epoch": start_epoch,
                 "started_at": started_at_iso,
+                "tags": tags,
             }
         )
 
@@ -797,6 +987,11 @@ def build_app() -> web.Application:
                     if isinstance(entry.get("started_at"), str)
                     else ""
                 ),
+                "tags": [
+                    str(tag)
+                    for tag in entry.get("tags", [])
+                    if isinstance(tag, str) and tag
+                ],
             }
             for entry in window
         ]
@@ -895,7 +1090,276 @@ def build_app() -> web.Application:
                     break
                 break
 
+        if deleted:
+            metadata = _load_metadata(recordings_root)
+            removed = False
+            for rel in deleted:
+                if metadata.pop(rel, None) is not None:
+                    removed = True
+            if removed:
+                try:
+                    _save_metadata(recordings_root, metadata)
+                except Exception as exc:  # pragma: no cover - unexpected filesystem failure
+                    logging.getLogger("web_streamer").warning(
+                        "Failed to update metadata after deletion: %s", exc
+                    )
+
         return web.json_response({"deleted": deleted, "errors": errors})
+
+    async def recordings_archive(request: web.Request) -> web.StreamResponse:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        items = data.get("items")
+        if not isinstance(items, list) or not items:
+            return web.json_response(
+                {"errors": [{"item": "", "error": "'items' must be a non-empty list"}]},
+                status=400,
+            )
+
+        seen: set[str] = set()
+        selections: list[tuple[str, Path]] = []
+        errors: list[dict[str, str]] = []
+
+        for raw in items:
+            if not isinstance(raw, str) or not raw.strip():
+                errors.append({"item": str(raw), "error": "invalid path"})
+                continue
+            rel = raw.strip().strip("/")
+            if not rel or rel in seen:
+                continue
+            seen.add(rel)
+            candidate = recordings_root / rel
+            try:
+                resolved = candidate.resolve()
+            except FileNotFoundError:
+                errors.append({"item": rel, "error": "not found"})
+                continue
+            except Exception as exc:  # pragma: no cover - unexpected resolution errors
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+            try:
+                resolved.relative_to(recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "outside recordings directory"})
+                continue
+            if not resolved.is_file():
+                errors.append({"item": rel, "error": "not a file"})
+                continue
+            selections.append((rel.replace(os.sep, "/"), resolved))
+
+        if errors:
+            return web.json_response({"errors": errors}, status=400)
+
+        if not selections:
+            return web.json_response(
+                {"errors": [{"item": "", "error": "no valid recordings selected"}]},
+                status=400,
+            )
+
+        archive_name = _normalize_archive_name(data.get("archive_name"))
+
+        spool = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
+        try:
+            with zipfile.ZipFile(
+                spool,
+                mode="w",
+                compression=zipfile.ZIP_DEFLATED,
+                allowZip64=True,
+            ) as archive:
+                for rel_posix, resolved in selections:
+                    archive.write(resolved, arcname=rel_posix)
+
+            size = spool.seek(0, os.SEEK_END)
+            spool.seek(0)
+
+            response = web.StreamResponse(status=200)
+            response.content_type = "application/zip"
+            response.headers["Content-Disposition"] = f'attachment; filename="{archive_name}"'
+            response.headers["Cache-Control"] = "no-store"
+            if size >= 0:
+                response.content_length = size
+
+            await response.prepare(request)
+
+            try:
+                chunk = spool.read(64 * 1024)
+                while chunk:
+                    await response.write(chunk)
+                    chunk = spool.read(64 * 1024)
+            finally:
+                spool.close()
+
+            await response.write_eof()
+            return response
+        except FileNotFoundError:
+            spool.close()
+            return web.json_response(
+                {"errors": [{"item": "", "error": "recordings changed during archive"}]},
+                status=409,
+            )
+        except Exception:
+            spool.close()
+            raise
+
+    async def recordings_update(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise web.HTTPBadRequest(reason="'items' must be a list")
+        if not items:
+            return web.json_response(
+                {"updated": [], "errors": [{"item": "", "error": "no recordings provided"}]},
+                status=400,
+            )
+
+        metadata = _load_metadata(recordings_root)
+        metadata_changed = False
+        updates: list[dict[str, object]] = []
+        errors: list[dict[str, str]] = []
+        processed: set[str] = set()
+
+        for raw in items:
+            if not isinstance(raw, dict):
+                errors.append({"item": str(raw), "error": "invalid payload"})
+                continue
+
+            path_value = raw.get("path")
+            if not isinstance(path_value, str) or not path_value.strip():
+                errors.append({"item": str(path_value), "error": "invalid path"})
+                continue
+
+            rel = path_value.strip().strip("/")
+            if not rel or rel in processed:
+                continue
+            processed.add(rel)
+
+            candidate = recordings_root / rel
+            try:
+                resolved = candidate.resolve()
+            except FileNotFoundError:
+                errors.append({"item": rel, "error": "not found"})
+                continue
+            except Exception as exc:  # pragma: no cover - unexpected resolution errors
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            try:
+                resolved.relative_to(recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "outside recordings directory"})
+                continue
+
+            if not resolved.is_file():
+                errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            try:
+                normalized_name, rename_required = _normalize_new_name(
+                    raw.get("new_name"), resolved.stem, resolved.suffix
+                )
+            except ValueError as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            try:
+                normalized_tags = _normalize_tags(raw.get("tags"))
+            except ValueError as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            renamed = False
+            new_rel = rel
+
+            if rename_required:
+                target_path = resolved.with_name(f"{normalized_name}{resolved.suffix}")
+                try:
+                    target_path.relative_to(recordings_root_resolved)
+                except ValueError:
+                    errors.append({"item": rel, "error": "rename target outside recordings"})
+                    continue
+                if target_path.exists():
+                    errors.append({"item": rel, "error": "target already exists"})
+                    continue
+                try:
+                    resolved.rename(target_path)
+                except OSError as exc:
+                    errors.append({"item": rel, "error": f"rename failed: {exc}"})
+                    continue
+
+                waveform_source = resolved.with_suffix(resolved.suffix + ".waveform.json")
+                waveform_target = target_path.with_suffix(target_path.suffix + ".waveform.json")
+                try:
+                    waveform_source.rename(waveform_target)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    with contextlib.suppress(OSError):
+                        target_path.rename(resolved)
+                    errors.append({"item": rel, "error": f"waveform rename failed: {exc}"})
+                    continue
+
+                renamed = True
+                rel_path = target_path.relative_to(recordings_root)
+                new_rel = rel_path.as_posix()
+
+            if renamed:
+                previous_meta = metadata.pop(rel, {})
+            else:
+                previous_meta = metadata.get(rel, {})
+            if not isinstance(previous_meta, dict):
+                previous_meta = {}
+
+            current_meta = dict(previous_meta)
+            prev_tags = [
+                str(tag)
+                for tag in previous_meta.get("tags", [])
+                if isinstance(tag, str) and tag
+            ]
+            tags_updated = False
+            if normalized_tags is not None:
+                if normalized_tags:
+                    current_meta["tags"] = normalized_tags
+                else:
+                    current_meta.pop("tags", None)
+                tags_updated = prev_tags != current_meta.get("tags", [])
+
+            target_key = new_rel if renamed else rel
+            if current_meta:
+                metadata[target_key] = current_meta
+            else:
+                metadata.pop(target_key, None)
+
+            if renamed and (previous_meta or current_meta):
+                metadata_changed = True
+            if tags_updated:
+                metadata_changed = True
+
+            updates.append(
+                {
+                    "previous_path": rel,
+                    "path": new_rel,
+                    "renamed": renamed,
+                    "tags_updated": tags_updated,
+                }
+            )
+
+        if metadata_changed:
+            try:
+                _save_metadata(recordings_root, metadata)
+            except Exception as exc:  # pragma: no cover - filesystem failure
+                logging.getLogger("web_streamer").warning(
+                    "Failed to persist metadata updates: %s", exc
+                )
+                raise web.HTTPInternalServerError(reason="Unable to save metadata") from exc
+
+        return web.json_response({"updated": updates, "errors": errors})
 
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
@@ -1070,6 +1534,8 @@ def build_app() -> web.Application:
     app.router.add_get("/api/recordings", recordings_api)
     app.router.add_post("/api/recordings/delete", recordings_delete)
     app.router.add_post("/api/recordings/remove", recordings_delete)
+    app.router.add_post("/api/recordings/archive", recordings_archive)
+    app.router.add_post("/api/recordings/update", recordings_update)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/services", services_list)

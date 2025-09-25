@@ -86,7 +86,7 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 `lib/web_streamer.py` + `lib/webui` expose a dashboard at `/` with the following capabilities:
 
 - Live recorder status and listener counts with encoder start/stop controls.
-- Recording browser with search, day filtering, pagination, and bulk deletion.
+- Recording browser with search, day filtering, pagination, and bulk actions (download, rename/tag, delete).
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats`, etc.) consumed by the dashboard and available for automation.
