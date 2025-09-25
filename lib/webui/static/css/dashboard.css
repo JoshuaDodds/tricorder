@@ -568,12 +568,30 @@ button.small {
 
 .filters-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: minmax(220px, 2fr) minmax(180px, 1fr) minmax(120px, auto);
   gap: 1rem;
+  align-items: end;
 }
 
 .filters-grid .input-group {
   margin-bottom: 0;
+}
+
+.filters-grid .input-group input,
+.filters-grid .input-group select {
+  width: 100%;
+}
+
+#filter-limit {
+  max-width: 140px;
+  justify-self: end;
+  -moz-appearance: textfield;
+}
+
+#filter-limit::-webkit-outer-spin-button,
+#filter-limit::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .player-card[hidden] {
