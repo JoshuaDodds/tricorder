@@ -1,0 +1,86 @@
+name: Detect Merge Conflicts
+
+on:
+  # Run when the base branch (main) receives new commits. This ensures open PRs
+  # are re‑checked whenever another branch is merged into main.
+  push:
+    branches:
+      - main
+  # Also check when a PR is opened, reopened or updated to reflect changes in its
+  # head branch. This covers cases where the feature branch is rebased or force
+  # pushed.
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+# Grant write permissions to post comments on pull requests. Contents read
+# permission is required to checkout the repository.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-conflicts:
+    runs-on: ubuntu-latest
+    # Limit the workflow to one concurrent run. Subsequent runs are queued.
+    concurrency:
+      group: conflict-check
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch all history so merges can be tested properly
+          fetch-depth: 0
+
+      - name: Install GitHub CLI
+        # The `cli/gh-action` installs the gh CLI and authenticates it using the provided token.
+        uses: cli/gh-action@v2
+        with:
+          version: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect conflicts and comment on PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # List all open pull requests targeting main
+          pr_numbers=$(gh pr list --state open --base main --json number --jq '.[].number')
+          echo "Checking for conflicts in the following PRs: $pr_numbers"
+          for pr in $pr_numbers; do
+            # Get the head branch name of this PR
+            head_branch=$(gh pr view "$pr" --json headRefName --jq '.headRefName')
+            echo "\nPR #$pr (branch: $head_branch)"
+            # Fetch the latest changes for the head branch
+            git fetch origin "$head_branch"
+            git switch -C "pr-$pr" "origin/$head_branch"
+            # Fetch the latest main branch
+            git fetch origin main
+            # Attempt to merge main into the PR branch without committing
+            if git merge --no-commit --no-ff origin/main; then
+              echo "  No merge conflicts detected."
+              # Abort the merge to restore clean state
+              git merge --abort || true
+            else
+              echo "  Merge conflicts detected."
+              # Capture the list of files with merge conflicts
+              conflict_files=$(git diff --name-only --diff-filter=U)
+              # Format the list as markdown
+              formatted=""
+              while IFS= read -r file; do
+                formatted+="\n- ${file}"
+              done <<< "$conflict_files"
+              # Compose the comment body
+              body="@codex please fix these conflicts before we can merge this or test it\n\n**Conflicting files:**${formatted}"
+              # Post the comment on the pull request. The endpoint uses the PR number as the issue number.
+              gh api repos/${{ github.repository }}/issues/$pr/comments -f body="$body"
+              # Abort the merge to prevent interfering with subsequent iterations
+              git merge --abort
+            fi
+          done
