@@ -180,9 +180,15 @@ if [[ "${DEV:-0}" != "1" ]]; then
   for timer in tmpfs-guard.timer tricorder-auto-update.timer; do
       sudo systemctl enable --now "$timer" || true
   done
-  for unit in dropbox.path; do
-      sudo systemctl start "$unit" || true
-  done
+
+  sudo systemctl start dropbox.path || true
+
+  if [[ -f systemd/tricorder.target ]]; then
+      cp -f systemd/tricorder.target "$SYSTEMD_DIR/tricorder.target" 2>/dev/null || true
+      chmod 644 "$SYSTEMD_DIR/tricorder.target" 2>/dev/null || true
+      sudo systemctl enable tricorder.target || true
+  fi
+
 else
   say "DEV=1: skipping systemctl enable/start"
 fi
