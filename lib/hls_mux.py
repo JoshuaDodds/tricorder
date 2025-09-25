@@ -61,20 +61,10 @@ class HLSTee:
         # new thread. `stop()` leaves `_stop` set; clear it before spawning
         # another worker so `_run()` can proceed normally.
         self._stop.clear()
-        # clean stale files
-        for fn in os.listdir(self.out_dir):
-            if fn.endswith((".m3u8", ".ts")):
-                try:
-                    os.remove(os.path.join(self.out_dir, fn))
-                except Exception:
-                    pass
+        self._cleanup_outputs()
         self._t = threading.Thread(target=self._run, name="hls_mux", daemon=True)
         self._t.start()
         self._log.info("HLSTee started at %s", self.out_dir)
-
-    # Replace only the stop() method — everything else stays as-is.
-
-    # Replace only the stop() method — everything else stays as-is.
 
     def stop(self):
         """
@@ -91,53 +81,81 @@ class HLSTee:
         # Work on a local ref in case _run() respawns while we're stopping.
         proc = self._proc
         self._proc = None
+        log_generic_stop = True
+        try:
+            if not proc:
+                self._log.info("HLSTee stopped (no ffmpeg process)")
+                log_generic_stop = False
+                return
 
-        if not proc:
-            self._log.info("HLSTee stopped (no ffmpeg process)")
+            # Best-effort: close ffmpeg stdin so it can exit cleanly.
+            try:
+                if proc.stdin:
+                    try:
+                        proc.stdin.flush()
+                    except Exception as e:
+                        self._log.debug("ffmpeg stdin flush error: %r", e)
+                    try:
+                        proc.stdin.close()
+                    except Exception as e:
+                        self._log.debug("ffmpeg stdin close error: %r", e)
+            except Exception as e:
+                self._log.debug("ffmpeg stdin handling error: %r", e)
+
+            rc = proc.poll()
+            if rc is None:
+                # Try graceful terminate first.
+                try:
+                    proc.terminate()
+                    try:
+                        rc = proc.wait(timeout=1.5)
+                        self._log.info("ffmpeg terminated with rc=%s", rc)
+                    except subprocess.TimeoutExpired:
+                        self._log.warning("ffmpeg did not exit after SIGTERM; sending SIGKILL")
+                        try:
+                            proc.kill()
+                        except Exception as e:
+                            # Explicitly log kill() failure — do not swallow this.
+                            self._log.exception("ffmpeg kill() raised; process may remain: %r", e)
+                        else:
+                            try:
+                                rc = proc.wait(timeout=1.0)
+                                self._log.info("ffmpeg killed; rc=%s", rc)
+                            except subprocess.TimeoutExpired:
+                                # Extremely rare: kernel hasn't reaped yet or proc is unkillable (D state)
+                                self._log.error("ffmpeg still not reaped after SIGKILL; zombie risk")
+                except Exception as e:
+                    self._log.exception("Error during ffmpeg termination: %r", e)
+            else:
+                self._log.info("ffmpeg already exited rc=%s", rc)
+        finally:
+            try:
+                self._cleanup_outputs()
+            except Exception as exc:
+                self._log.debug("Failed to clean HLS outputs: %r", exc)
+            if log_generic_stop:
+                self._log.info("HLSTee stopped")
+
+    def _cleanup_outputs(self) -> None:
+        """Delete HLS playlists and segments from the output directory."""
+        try:
+            entries = os.listdir(self.out_dir)
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            self._log.debug("Unable to list HLS outputs: %r", exc)
             return
 
-        # Best-effort: close ffmpeg stdin so it can exit cleanly.
-        try:
-            if proc.stdin:
-                try:
-                    proc.stdin.flush()
-                except Exception as e:
-                    self._log.debug("ffmpeg stdin flush error: %r", e)
-                try:
-                    proc.stdin.close()
-                except Exception as e:
-                    self._log.debug("ffmpeg stdin close error: %r", e)
-        except Exception as e:
-            self._log.debug("ffmpeg stdin handling error: %r", e)
-
-        rc = proc.poll()
-        if rc is None:
-            # Try graceful terminate first.
+        for fn in entries:
+            if not fn.endswith((".m3u8", ".ts")):
+                continue
+            path = os.path.join(self.out_dir, fn)
             try:
-                proc.terminate()
-                try:
-                    rc = proc.wait(timeout=1.5)
-                    self._log.info("ffmpeg terminated with rc=%s", rc)
-                except subprocess.TimeoutExpired:
-                    self._log.warning("ffmpeg did not exit after SIGTERM; sending SIGKILL")
-                    try:
-                        proc.kill()
-                    except Exception as e:
-                        # Explicitly log kill() failure — do not swallow this.
-                        self._log.exception("ffmpeg kill() raised; process may remain: %r", e)
-                    else:
-                        try:
-                            rc = proc.wait(timeout=1.0)
-                            self._log.info("ffmpeg killed; rc=%s", rc)
-                        except subprocess.TimeoutExpired:
-                            # Extremely rare: kernel hasn't reaped yet or proc is unkillable (D state)
-                            self._log.error("ffmpeg still not reaped after SIGKILL; zombie risk")
-            except Exception as e:
-                self._log.exception("Error during ffmpeg termination: %r", e)
-        else:
-            self._log.info("ffmpeg already exited rc=%s", rc)
-
-        self._log.info("HLSTee stopped")
+                os.remove(path)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                self._log.debug("Unable to remove %s: %r", path, exc)
 
     def feed(self, pcm_bytes: bytes):
         if self._t is None:

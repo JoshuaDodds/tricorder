@@ -63,15 +63,25 @@
         </div>
       </header>
       <section class="status-bar">
-        <div class="stat">
+        <div class="stat stat-recordings">
           <span class="label">Recordings</span>
           <span class="value" id="recording-count">0</span>
         </div>
-        <div class="stat">
+        <div class="stat stat-selected">
           <span class="label">Selected</span>
           <span class="value" id="selected-count">0</span>
         </div>
-        <div class="stat storage-stat">
+        <div class="stat stat-selection-combined">
+          <div class="stat-combined-row">
+            <span class="label">Recordings</span>
+            <span class="value" id="recording-count-mobile">0</span>
+          </div>
+          <div class="stat-combined-row">
+            <span class="label">Selected</span>
+            <span class="value" id="selected-count-mobile">0</span>
+          </div>
+        </div>
+        <div class="stat storage-stat stat-storage">
           <span class="label">Storage</span>
           <span class="value" id="storage-usage-text">--</span>
           <div class="storage-progress">
@@ -79,7 +89,7 @@
           </div>
           <span class="hint" id="storage-hint">--</span>
         </div>
-        <div class="stat">
+        <div class="stat stat-last-updated">
           <span class="label">Last updated</span>
           <span class="value" id="last-updated">--</span>
         </div>
@@ -150,12 +160,121 @@
             </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
           </div>
+          <div
+            id="clipper-container"
+            class="clipper-container"
+            data-enabled="false"
+            data-available="false"
+          >
+            <div class="clipper-header">
+              <div class="clipper-heading">
+                <h3>Clip editor</h3>
+                <span
+                  id="clipper-status"
+                  class="clipper-status"
+                  aria-live="polite"
+                  aria-hidden="true"
+                ></span>
+              </div>
+              <button
+                id="clipper-toggle"
+                class="ghost-button small"
+                type="button"
+                aria-expanded="false"
+                aria-pressed="false"
+                aria-controls="clipper-section"
+              >
+                Enable clip editor
+              </button>
+            </div>
+            <div
+              id="clipper-summary"
+              class="clipper-summary"
+              role="status"
+              aria-live="polite"
+              aria-hidden="false"
+            >
+              Select a recording to use the clip editor.
+            </div>
+            <section
+              id="clipper-section"
+              class="clipper-section"
+              hidden
+              data-active="false"
+              aria-hidden="true"
+            >
+              <form id="clipper-form" class="clipper-form" novalidate autocomplete="off">
+                <div class="clipper-grid">
+                  <label class="input-group clipper-group">
+                    <span>Start</span>
+                    <div class="clipper-input-row">
+                      <input
+                        id="clipper-start"
+                        type="text"
+                        inputmode="decimal"
+                        placeholder="0:00.000"
+                        autocomplete="off"
+                      />
+                      <button id="clipper-set-start" class="ghost-button small" type="button">
+                        Set from playhead
+                      </button>
+                    </div>
+                  </label>
+                  <label class="input-group clipper-group">
+                    <span>End</span>
+                    <div class="clipper-input-row">
+                      <input
+                        id="clipper-end"
+                        type="text"
+                        inputmode="decimal"
+                        placeholder="0:00.000"
+                        autocomplete="off"
+                      />
+                      <button id="clipper-set-end" class="ghost-button small" type="button">
+                        Set from playhead
+                      </button>
+                    </div>
+                  </label>
+                  <label class="input-group clipper-group clipper-name-group">
+                    <span>Clip name</span>
+                    <input
+                      id="clipper-name"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="New clip name"
+                    />
+                  </label>
+                </div>
+                <div class="clipper-footer">
+                  <div id="clipper-length" class="clipper-length" role="status" aria-live="polite">
+                    --
+                  </div>
+                  <div class="clipper-buttons">
+                    <button id="clipper-reset" class="ghost-button small" type="button">Reset</button>
+                    <button id="clipper-submit" class="primary-button small" type="submit">Save clip</button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
         </div>
         <div class="card table-card">
-            <div class="filters-panel">
+            <div
+              id="filters-panel"
+              class="filters-panel"
+              data-state="expanded"
+              aria-hidden="false"
+            >
               <div class="filters-header">
                 <h3>Filters</h3>
                 <div class="filters-actions">
+                  <button
+                    id="filters-close"
+                    class="ghost-button small filters-close"
+                    type="button"
+                  >
+                    Close
+                  </button>
                   <button id="clear-filters" class="ghost-button small" type="button">Reset</button>
                   <button id="apply-filters" class="primary-button small" type="button">Apply</button>
                 </div>
@@ -178,7 +297,18 @@
               </div>
             </div>
             <div class="card-header">
-              <h2>Recent recordings</h2>
+              <div class="table-header-main">
+                <h2>Recent recordings</h2>
+                <button
+                  id="filters-toggle"
+                  class="ghost-button small filters-toggle"
+                  type="button"
+                  aria-expanded="true"
+                  aria-controls="filters-panel"
+                >
+                  Filters
+                </button>
+              </div>
               <div class="table-actions">
                 <button id="select-all" class="ghost-button small" type="button">Select all</button>
                 <button id="clear-selection" class="ghost-button small" type="button">Clear</button>
