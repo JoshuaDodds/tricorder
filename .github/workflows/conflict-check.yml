@@ -42,37 +42,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          # List all open pull requests targeting main
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+
           pr_numbers=$(gh pr list --state open --base main --json number --jq '.[].number')
           echo "Checking for conflicts in the following PRs: $pr_numbers"
+
           for pr in $pr_numbers; do
-            # Get the head branch name of this PR
-            head_branch=$(gh pr view "$pr" --json headRefName --jq '.headRefName')
-            echo "\nPR #$pr (branch: $head_branch)"
-            # Fetch the latest changes for the head branch
-            git fetch origin "$head_branch"
-            git switch -C "pr-$pr" "origin/$head_branch"
-            # Fetch the latest main branch
+            echo "\nPR #$pr"
+            # Always fetch from pull ref so fork PRs work too
+            git fetch origin "pull/$pr/head:pr-$pr"
+            git switch -C "pr-$pr" "pr-$pr"
             git fetch origin main
-            # Attempt to merge main into the PR branch without committing
+
             if git merge --no-commit --no-ff origin/main; then
               echo "  No merge conflicts detected."
-              # Abort the merge to restore clean state
               git merge --abort || true
             else
               echo "  Merge conflicts detected."
-              # Capture the list of files with merge conflicts
               conflict_files=$(git diff --name-only --diff-filter=U)
-              # Format the list as markdown
               formatted=""
               while IFS= read -r file; do
                 formatted+="\n- ${file}"
               done <<< "$conflict_files"
-              # Compose the comment body
               body="@codex please fix these conflicts before we can merge this or test it\n\n**Conflicting files:**${formatted}"
-              # Post the comment on the pull request. The endpoint uses the PR number as the issue number.
               gh api repos/${{ github.repository }}/issues/$pr/comments -f body="$body"
-              # Abort the merge to prevent interfering with subsequent iterations
-              git merge --abort
+              git merge --abort || true
             fi
           done
+
