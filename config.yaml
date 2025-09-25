@@ -40,6 +40,36 @@ paths:
   # Script used to encode and store finalized events. Must accept: <tmp_wav_path> <base_name>
   encoder_script: "/apps/tricorder/bin/encode_and_store.sh"
 
+archival:
+  # Enable automatic upload of freshly encoded recordings for off-device backups.
+  enabled: false
+
+  # Backend controls how files are transferred after encoding.
+  # Supported values:
+  #   - "network_share": copy to a mounted SMB/NFS path on the local filesystem.
+  #   - "rsync": stream files to a remote rsync/SSH endpoint.
+  backend: "network_share"
+
+  network_share:
+    # Destination root on the mounted share. Subdirectories mirror recordings_dir layout.
+    target_dir: "/mnt/archive/tricorder"
+
+  rsync:
+    # Remote destination in rsync syntax (user@host:/path). Required when backend == "rsync".
+    destination: "user@example.com:/srv/tricorder/archive"
+
+    # Optional SSH identity file. Leave blank to use the default SSH agent/keys.
+    ssh_identity: "/home/pi/.ssh/id_ed25519"
+
+    # Additional rsync CLI options. Defaults to ["-az"].
+    options: ["-az"]
+
+    # Extra SSH options appended to the remote shell command.
+    ssh_options: ["-oStrictHostKeyChecking=yes"]
+
+  # When true, upload waveform JSON sidecars alongside audio.
+  include_waveform_sidecars: false
+
 segmenter:
   # Pre-roll saved before trigger (milliseconds). Captures leading context (e.g., first spoken word).
   # Typical: 500–3000 ms. Higher uses more RAM/IO.

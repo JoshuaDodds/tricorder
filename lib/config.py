@@ -38,6 +38,18 @@ _DEFAULTS: Dict[str, Any] = {
         "ingest_work_dir": "/apps/tricorder/tmp/ingest",
         "encoder_script": "/apps/tricorder/bin/encode_and_store.sh",
     },
+    "archival": {
+        "enabled": False,
+        "backend": "network_share",
+        "network_share": {"target_dir": ""},
+        "rsync": {
+            "destination": "",
+            "options": ["-az"],
+            "ssh_identity": "",
+            "ssh_options": [],
+        },
+        "include_waveform_sidecars": False,
+    },
     "segmenter": {
         "pre_pad_ms": 2000,
         "post_pad_ms": 3000,
