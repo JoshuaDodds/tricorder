@@ -10,6 +10,7 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 
 - Continuous audio capture with adaptive RMS tracking and configurable VAD aggressiveness.
 - Event segmentation with pre/post roll, asynchronous encoding, and automatic waveform sidecars for fast preview rendering.
+- Optional offline speech-to-text transcripts for Human-tagged events with dashboard keyword search across recordings.
 - Live HLS streaming that powers up only when listeners are present and tears down when idle.
 - Web dashboard (aiohttp + Jinja) for monitoring recorder state, browsing recordings, previewing audio + waveform, deleting files, and inspecting configuration.
 - Dropbox-style ingest path for external recordings that reuses the segmentation + encoding pipeline.
@@ -58,7 +59,7 @@ graph TD
     end
 ```
 
-Waveform sidecars are produced via `lib.waveform_cache` during the encode step so the dashboard can render previews instantly. The same encoder pipeline is reused for live capture and for files dropped into the ingest directory.
+Waveform sidecars are produced via `lib.waveform_cache` during the encode step so the dashboard can render previews instantly. When speech transcription is enabled, `lib.transcription` stores a `.transcript.json` sidecar next to each audio file. The same encoder pipeline is reused for live capture and for files dropped into the ingest directory.
 
 ---
 
@@ -92,7 +93,19 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
-Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`).
+Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`). Transcript JSON files live next to each recording; the dashboard automatically includes transcript excerpts in the listings and search covers both filenames and transcript text.
+
+---
+
+## Speech-to-text transcripts
+
+`lib.transcription` provides an offline transcription pipeline that runs during the encode step. It relies on [Vosk](https://alphacephei.com/vosk/) and expects an unpacked model directory on disk (for example `vosk-model-small-en-us-0.15`). When `transcription.enabled` is set to `true` in `config.yaml`, the encoder will:
+
+1. Resample the captured WAV to the configured `transcription.target_sample_rate` (default 16&nbsp;kHz).
+2. Run the selected engine (currently Vosk) to produce a transcript and optional per-word timestamps.
+3. Write a sidecar `*.transcript.json` next to the Opus file alongside the waveform JSON.
+
+Transcripts default to Human-tagged events only; adjust `transcription.types` to include other event tags such as `Both` if desired. The web dashboard exposes `transcript_excerpt`, `transcript_path`, and timestamps through `/api/recordings`, and searches include transcript text in addition to filenames. Because Vosk models are not bundled with the project, download the desired language model separately and update `transcription.vosk_model_path` to point at the unpacked folder.
 
 ### Running locally
 
