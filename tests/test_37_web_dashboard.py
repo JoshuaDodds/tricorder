@@ -3,6 +3,8 @@ import os
 
 import json
 import time
+import shutil
+import wave
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,15 @@ def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
     target.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
+    frame_count = max(1, int(48000 * max(duration, 0)))
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(48000)
+        handle.writeframes(b"\x00\x00" * frame_count)
+
+
 def test_recordings_listing_filters(dashboard_env):
     async def runner():
         day_a = dashboard_env / "20240101"
@@ -95,6 +106,80 @@ def test_recordings_listing_filters(dashboard_env):
             resp = await client.get("/api/recordings?search=beta")
             search = await resp.json()
             assert [item["name"] for item in search["items"]] == ["beta"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240105"
+        day_dir.mkdir()
+
+        source = day_dir / "sample.wav"
+        _create_silent_wav(source, duration=2.0)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=2.0)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "source_path": "20240105/sample.wav",
+                "start_seconds": 0.25,
+                "end_seconds": 1.5,
+                "clip_name": "trimmed take",
+                "source_start_epoch": 1_700_000_000.0,
+            }
+            resp = await client.post("/api/recordings/clip", json=payload)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["path"].startswith("20240105/")
+            clip_file = dashboard_env / data["path"]
+            assert clip_file.exists()
+            assert clip_file.suffix == ".opus"
+            clip_waveform = clip_file.with_suffix(clip_file.suffix + ".waveform.json")
+            assert clip_waveform.exists()
+            assert clip_file.stat().st_size > 0
+            expected_start = payload["source_start_epoch"] + payload["start_seconds"]
+            assert clip_file.stat().st_mtime == pytest.approx(expected_start, abs=0.5)
+            waveform_payload = json.loads(clip_waveform.read_text())
+            assert waveform_payload.get("duration_seconds")
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_clip_endpoint_validates_range(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240106"
+        day_dir.mkdir()
+
+        source = day_dir / "invalid.wav"
+        _create_silent_wav(source, duration=1.0)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=1.0)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "source_path": "20240106/invalid.wav",
+                "start_seconds": 0.5,
+                "end_seconds": 0.25,
+            }
+            resp = await client.post("/api/recordings/clip", json=payload)
+            assert resp.status == 400
         finally:
             await client.close()
             await server.close()

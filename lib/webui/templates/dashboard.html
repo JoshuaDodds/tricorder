@@ -150,6 +150,70 @@
             </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
           </div>
+          <section
+            id="clipper-section"
+            class="clipper-section"
+            hidden
+            data-active="false"
+            aria-hidden="true"
+          >
+            <div class="clipper-header">
+              <h3>Clip editor</h3>
+              <span id="clipper-status" class="clipper-status" aria-live="polite"></span>
+            </div>
+            <form id="clipper-form" class="clipper-form" novalidate autocomplete="off">
+              <div class="clipper-grid">
+                <label class="input-group clipper-group">
+                  <span>Start</span>
+                  <div class="clipper-input-row">
+                    <input
+                      id="clipper-start"
+                      type="text"
+                      inputmode="decimal"
+                      placeholder="0:00.000"
+                      autocomplete="off"
+                    />
+                    <button id="clipper-set-start" class="ghost-button small" type="button">
+                      Set from playhead
+                    </button>
+                  </div>
+                </label>
+                <label class="input-group clipper-group">
+                  <span>End</span>
+                  <div class="clipper-input-row">
+                    <input
+                      id="clipper-end"
+                      type="text"
+                      inputmode="decimal"
+                      placeholder="0:00.000"
+                      autocomplete="off"
+                    />
+                    <button id="clipper-set-end" class="ghost-button small" type="button">
+                      Set from playhead
+                    </button>
+                  </div>
+                </label>
+                <label class="input-group clipper-group clipper-name-group">
+                  <span>Clip name</span>
+                  <input
+                    id="clipper-name"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="New clip name"
+                  />
+                </label>
+              </div>
+              <div class="clipper-footer">
+                <div id="clipper-length" class="clipper-length" role="status" aria-live="polite">
+                  --
+                </div>
+                <div class="clipper-buttons">
+                  <button id="clipper-reset" class="ghost-button small" type="button">Reset</button>
+                  <button id="clipper-submit" class="primary-button small" type="submit">Save clip</button>
+                </div>
+              </div>
+            </form>
+          </section>
         </div>
         <div class="card table-card">
             <div class="filters-panel">
