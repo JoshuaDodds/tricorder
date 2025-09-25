@@ -594,6 +594,21 @@ button.small {
   margin: 0;
 }
 
+@media (max-width: 900px) {
+  .filters-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .filters-grid .input-group {
+    width: 100%;
+  }
+
+  #filter-limit {
+    max-width: none;
+    justify-self: stretch;
+  }
+}
+
 .player-card[hidden] {
   display: none !important;
 }
