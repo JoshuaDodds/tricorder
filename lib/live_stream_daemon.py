@@ -169,9 +169,10 @@ def main():
                     print(f"[live] cleanup error: {e!r}", flush=True)
 
             if not stop_requested:
-                print("[live] arecord ended or device unavailable; retrying in 5s...", flush=True)
-                reset_usb()
-                time.sleep(5)
+                print("[live] arecord ended or device unavailable; retrying in 3s...", flush=True)
+                if reset_usb():
+                    print("[live] USB device reset successful", flush=True)
+                time.sleep(3)
 
     print("[live] clean shutdown complete", flush=True)
 

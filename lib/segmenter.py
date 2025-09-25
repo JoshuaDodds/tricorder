@@ -78,7 +78,7 @@ FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
 MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
 
 # Debug logging gate (DEV=1 or logging.dev_mode)
-DEBUG_VERBOSE = (os.getenv("DEV") == "1") or bool(cfg["logging"]["dev_mode"])
+DEBUG_VERBOSE = (cfg["logging"]["dev_mode"])
 
 try:
     if USE_RNNOISE:
@@ -249,7 +249,7 @@ class AdaptiveRmsController:
         frame_ms: int,
         initial_linear_threshold: int,
         cfg_section: dict[str, object] | None,
-        debug: bool,
+        debug: bool = True, # noqa: for future implementation
     ) -> None:
         section = cfg_section or {}
         self.enabled = bool(section.get("enabled", False))
@@ -269,7 +269,7 @@ class AdaptiveRmsController:
         if self.enabled:
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
-        self.debug = debug
+        self.debug = DEBUG_VERBOSE
 
     @property
     def threshold_linear(self) -> int:
@@ -466,7 +466,7 @@ class TimelineRecorder:
     @staticmethod
     def _denoise(samples: bytes) -> bytes:
         if USE_RNNOISE:
-            denoiser = rnnoise.RNNoise()
+            denoiser = rnnoise.RNNoise() # noqa: for future expansion
             frame_size = FRAME_BYTES
             out = bytearray()
             for i in range(0, len(samples), frame_size):
@@ -476,7 +476,7 @@ class TimelineRecorder:
             return bytes(out)
         elif USE_NOISEREDUCE:
             arr = np.frombuffer(samples, dtype=np.int16)
-            arr_denoised = nr.reduce_noise(y=arr, sr=SAMPLE_RATE)
+            arr_denoised = nr.reduce_noise(y=arr, sr=SAMPLE_RATE)  # noqa: for future expansion
             return arr_denoised.astype(np.int16).tobytes()
         return samples
 
