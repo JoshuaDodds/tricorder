@@ -32,6 +32,8 @@ jobs:
 
       - name: Collect snippets from failed jobs
         id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p snippets
           SNIPPET_FILE=snippets/failure_snippet.txt
@@ -49,7 +51,6 @@ jobs:
           for job in $failed_jobs; do
             echo "Processing failed job: $job"
 
-            # Try to find a matching log file
             log_file=$(find logs -type f -name "*.txt" -print0 \
               | xargs -0 grep -iIl "$job" \
               | head -n 1)
