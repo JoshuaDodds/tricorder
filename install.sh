@@ -189,4 +189,6 @@ else
   say "DEV=1: skipping systemctl enable/start"
 fi
 
+sudo systemctl daemon-reload
+
 say "Install complete"
