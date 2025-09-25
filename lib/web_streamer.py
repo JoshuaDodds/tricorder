@@ -331,11 +331,37 @@ async def _run_systemctl(args: Sequence[str]) -> tuple[int, str, str]:
 
 
 def _parse_show_output(payload: str, properties: Sequence[str]) -> dict[str, str]:
+    """Parse `systemctl show` output for a known set of properties.
+
+    Newer systemd releases support ``--value`` which yields newline-delimited
+    values that align with the requested properties. Older builds (and some
+    downstream patches) always emit ``KEY=VALUE`` pairs regardless of
+    ``--value``. We accept both forms to keep deployments on Raspberry Pi OS
+    stable even if the local systemd version diverges from the test fixture.
+    """
+
+    result: dict[str, str] = {prop: "" for prop in properties}
+
     lines = payload.splitlines()
-    result: dict[str, str] = {}
-    for idx, key in enumerate(properties):
-        value = lines[idx].strip() if idx < len(lines) else ""
-        result[key] = value
+
+    saw_key_value = False
+    for line in lines:
+        if "=" not in line:
+            continue
+        saw_key_value = True
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in result:
+            result[key] = value.strip()
+
+    # Fallback to positional parsing only when systemctl omits property names
+    # entirely (older builds ignore ``--property=...`` and emit bare values).
+    if not saw_key_value:
+        values = [line.strip() for line in lines if line.strip()]
+        for idx, key in enumerate(properties):
+            if idx < len(values):
+                result[key] = values[idx]
+
     return result
 
 
@@ -363,7 +389,6 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
         "show",
         unit,
         f"--property={','.join(_SYSTEMCTL_PROPERTIES)}",
-        "--value",
     ])
     if code != 0:
         error = stderr.strip() or stdout.strip() or f"systemctl exited with {code}"
@@ -517,10 +542,36 @@ def _enqueue_service_actions(
 
 def build_app() -> web.Application:
     log = logging.getLogger("web_streamer")
-    app = web.Application()
+    cfg = get_cfg()
+    dashboard_cfg = cfg.get("dashboard", {})
+    api_base_raw = dashboard_cfg.get("api_base", "")
+    dashboard_api_base = api_base_raw.strip() if isinstance(api_base_raw, str) else ""
+    cors_enabled = bool(dashboard_api_base)
+
+    middlewares: list[Any] = []
+
+    if cors_enabled:
+
+        @web.middleware
+        async def _cors_middleware(request: web.Request, handler):
+            if request.method == "OPTIONS":
+                response = web.Response(status=204)
+            else:
+                response = await handler(request)
+
+            if request.headers.get("Origin"):
+                response.headers.setdefault("Access-Control-Allow-Origin", "*")
+                response.headers.setdefault("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+                response.headers.setdefault("Access-Control-Allow-Headers", "Content-Type")
+                response.headers.setdefault("Access-Control-Max-Age", "86400")
+
+            return response
+
+        middlewares.append(_cors_middleware)
+
+    app = web.Application(middlewares=middlewares)
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
 
-    cfg = get_cfg()
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
     tmp_root = os.environ.get("TRICORDER_TMP", default_tmp)
 
@@ -575,6 +626,7 @@ def build_app() -> web.Application:
         html = webui.render_template(
             "dashboard.html",
             page_title="Tricorder Dashboard",
+            api_base=dashboard_api_base,
         )
         return web.Response(text=html, content_type="text/html")
 
