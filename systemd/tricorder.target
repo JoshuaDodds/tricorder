@@ -2,3 +2,6 @@
 Description=Tricorder Service Group
 Requires=voice-recorder.service web-streamer.service
 Wants=tricorder-auto-update.timer tmpfs-guard.timer dropbox.path
+
+[Install]
+WantedBy=multi-user.target

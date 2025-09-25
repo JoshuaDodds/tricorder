@@ -183,7 +183,6 @@ if [[ "${DEV:-0}" != "1" ]]; then
 
   sudo systemctl enable dropbox.path || true
   sudo systemctl enable tricorder.target || true
-
   sudo systemctl restart tricorder.target || true
 
 else
