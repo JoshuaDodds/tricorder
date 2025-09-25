@@ -302,6 +302,18 @@ body {
   margin-bottom: 1rem;
 }
 
+.table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.table-actions > * {
+  flex: 0 0 auto;
+}
+
 .card-heading {
   display: flex;
   flex-direction: column;
