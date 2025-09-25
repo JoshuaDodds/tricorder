@@ -829,9 +829,12 @@ def build_app() -> web.Application:
                 pass
 
         try:
-            rel_path = final_path.relative_to(recordings_root)
-        except ValueError as exc:  # pragma: no cover - should not happen
-            raise ClipError("unexpected destination path") from exc
+            rel_path = final_path.relative_to(recordings_root_resolved)
+        except ValueError:
+            try:
+                rel_path = final_path.relative_to(recordings_root)
+            except ValueError as exc:  # pragma: no cover - should not happen
+                raise ClipError("unexpected destination path") from exc
 
         rel_posix = rel_path.as_posix()
         day = rel_path.parts[0] if rel_path.parts else ""
