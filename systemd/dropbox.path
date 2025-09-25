@@ -1,5 +1,6 @@
 [Unit]
 Description=Watch Tricorder dropbox for new audio files
+PartOf=tricorder.target
 
 [Path]
 PathModified=/apps/tricorder/dropbox

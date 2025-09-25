@@ -1,5 +1,6 @@
 [Unit]
 Description=Run tmpfs guard periodically
+PartOf=tricorder.target
 
 [Timer]
 OnBootSec=2m

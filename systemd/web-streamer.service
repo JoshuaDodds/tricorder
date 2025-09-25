@@ -2,6 +2,7 @@
 Description=Tricorder HLS Web Streamer
 After=network-online.target voice-recorder.service
 Wants=network-online.target
+PartOf=tricorder.target
 
 [Service]
 Type=simple

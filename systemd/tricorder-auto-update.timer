@@ -1,5 +1,6 @@
 [Unit]
 Description=Check for Tricorder updates on GitHub
+PartOf=tricorder.target
 
 [Timer]
 OnBootSec=3m

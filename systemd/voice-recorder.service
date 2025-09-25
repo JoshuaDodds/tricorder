@@ -2,6 +2,7 @@
 Description=Tricorder Live Recorder (WebRTC VAD + RMS)
 After=sound.target network-online.target
 Wants=network-online.target
+PartOf=tricorder.target
 
 [Service]
 Type=simple
