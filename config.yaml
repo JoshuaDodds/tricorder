@@ -51,18 +51,18 @@ segmenter:
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
-  rms_threshold: 300 # was 300
+  rms_threshold: 320 # was 300
 
   # Sliding window length for “keep alive” logic (frames). With 20ms frames, 30 ≈ 600ms.
   # Typical: 20–60 frames.
-  keep_window_frames: 50
+  keep_window_frames: 60
 
   # Number of consecutive active frames required to start an event.
   # With 20ms frames: 25 ≈ 500ms of sustained activity. Increase to debounce short noises.
-  start_consecutive: 20
+  start_consecutive: 46
 
   # Minimum active frames within the recent window to refresh post-roll (prevents premature end).
-  keep_consecutive: 18
+  keep_consecutive: 35 # start moving up if recordings are too long
 
   # Optional noise reduction toggles.
   # USE_RNNOISE: High-quality but CPU-heavy; generally not recommended on Pi Zero 2 W.
@@ -127,6 +127,12 @@ logging:
   dev_mode: true
 
 dashboard:
+  # Override the base URL used by the dashboard when making API and HLS requests.
+  # Useful when the static dashboard is hosted separately from the recorder.
+  # Example: "https://recorder.local:8080". When set, the web streamer enables
+  # CORS (Access-Control-Allow-Origin: *) so remote dashboards can call the API
+  # and HLS endpoints directly. Leave blank to use the current origin.
+  api_base: "http://192.168.1.137:8080"
   # Services exposed through the dashboard controls card. Each entry may include a
   # friendly label and optional description for the UI. Units must be resolvable by
   # systemd on the host.
@@ -137,15 +143,6 @@ dashboard:
     - unit: "web-streamer.service"
       label: "Web UI"
       description: "Serves the dashboard and HLS live stream."
-    - unit: "dropbox.service"
-      label: "Dropbox ingest"
-      description: "Imports audio dropped into the Dropbox directory."
-    - unit: "tricorder-auto-update.service"
-      label: "Auto updater"
-      description: "Runs scheduled self-update checks."
-    - unit: "tmpfs-guard.service"
-      label: "Tmpfs guard"
-      description: "Prunes tmpfs recordings staging area on a timer."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.
