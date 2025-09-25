@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import shutil
+import time
 
 from lib.hls_controller import _HLSController
 from lib.hls_mux import HLSTee
@@ -142,3 +143,42 @@ def test_hls_controller_state_persistence(monkeypatch, tmp_path):
 
     assert reader.refresh_from_state() == 0
     assert stops == [0.5]
+
+
+def test_hls_controller_shared_encoder_running_state(tmp_path):
+    state_path = tmp_path / "controller_state.json"
+
+    server = _HLSController()
+    server.set_state_path(str(state_path), persist=True)
+    server.set_cooldown(0.0)
+
+    assert server.client_connected(session_id="cli") == 1
+
+    daemon = _HLSController()
+    tee = DummyHLSTee()
+    daemon.attach(tee)
+    daemon.set_state_path(str(state_path), persist=True)
+    daemon.set_cooldown(0.0)
+
+    assert daemon.refresh_from_state() == 1
+    assert tee.started == 1
+    assert daemon.status()["encoder_running"] is True
+
+    server.refresh_from_state()
+    assert server.status()["encoder_running"] is True
+
+    assert server.client_disconnected(session_id="cli") == 0
+
+    daemon.refresh_from_state()
+    daemon.stop_now()
+
+    server.refresh_from_state()
+
+    deadline = time.monotonic() + 0.25
+    final_status = server.status()
+    while final_status["encoder_running"] is True and time.monotonic() < deadline:
+        time.sleep(0.01)
+        server.refresh_from_state()
+        final_status = server.status()
+
+    assert final_status["encoder_running"] is False

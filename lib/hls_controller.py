@@ -39,6 +39,18 @@ class _HLSController:
         self._last_change = time.time()
         self._state_path: Optional[str] = None
         self._persist_enabled = True
+        self._encoder_running = False
+
+    @staticmethod
+    def _coerce_running(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            return lowered in {"1", "true", "yes", "running"}
+        return False
 
     # --- Wire HLSTee instance from the daemon ---
     def attach(self, tee: Optional["HLSTee"]) -> None:
@@ -122,6 +134,7 @@ class _HLSController:
                 tee.stop()
             except Exception:
                 pass
+        self._set_encoder_running(False)
 
     def _schedule_stop_after(self, seconds: float) -> None:
         def _cb():
@@ -134,6 +147,8 @@ class _HLSController:
                     tee.stop()
                 except Exception:
                     pass
+                else:
+                    self._set_encoder_running(False)
 
         timer = threading.Timer(seconds, _cb)
         timer.daemon = True
@@ -145,13 +160,28 @@ class _HLSController:
     def status(self) -> dict:
         with self._lock:
             tee = self._tee
-            running = (tee is not None and getattr(tee, "_t", None) is not None)
-            return {
-                "active_clients": self._clients,
-                "encoder_running": running,
-                "cooldown_sec": self._cooldown,
-                "last_change_epoch": self._last_change,
-            }
+            running = self._encoder_running
+            clients = self._clients
+            cooldown = self._cooldown
+            last_change = self._last_change
+
+        if tee is not None:
+            running = bool(getattr(tee, "_t", None) is not None)
+            with self._lock:
+                self._encoder_running = running
+        else:
+            state = self._load_state()
+            if state is not None:
+                running = self._coerce_running(state.get("encoder_running"))
+                with self._lock:
+                    self._encoder_running = running
+
+        return {
+            "active_clients": clients,
+            "encoder_running": running,
+            "cooldown_sec": cooldown,
+            "last_change_epoch": last_change,
+        }
 
     # --- State persistence for cross-process coordination ---
     def set_state_path(self, path: Optional[str], persist: bool = True) -> None:
@@ -196,6 +226,8 @@ class _HLSController:
         except (TypeError, ValueError):
             last_change_epoch = time.time()
 
+        running_flag = self._coerce_running(state.get("encoder_running"))
+
         with self._lock:
             prev_clients = self._clients
             stop_timer = self._stop_timer
@@ -208,6 +240,7 @@ class _HLSController:
             need_schedule = clients == 0 and prev_clients > 0
             if need_cancel:
                 self._stop_timer = None
+            self._encoder_running = running_flag
 
         if need_cancel and stop_timer is not None:
             try:
@@ -220,6 +253,8 @@ class _HLSController:
                 tee.start()
             except Exception:
                 pass
+            else:
+                self._set_encoder_running(True)
         elif clients == 0 and prev_clients > 0:
             self._schedule_stop_after(cooldown)
 
@@ -234,14 +269,31 @@ class _HLSController:
             clients = self._clients
             last_change = self._last_change
             tee = self._tee
+            running_flag = self._encoder_running
+            if tee is not None:
+                running_flag = bool(getattr(tee, "_t", None) is not None)
+                self._encoder_running = running_flag
         if not path:
             return
+        if tee is None:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    previous = json.load(handle)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                pass
+            else:
+                preserved = self._coerce_running(previous.get("encoder_running"))
+                if preserved != running_flag:
+                    running_flag = preserved
+                    with self._lock:
+                        self._encoder_running = preserved
+
         data = {
             "sessions": sessions,
             "clients": clients,
             "last_change_epoch": last_change,
             "timestamp": time.time(),
-            "encoder_running": bool(tee is not None and getattr(tee, "_t", None) is not None),
+            "encoder_running": running_flag,
         }
         tmp_path = f"{path}.tmp"
         try:
@@ -272,6 +324,14 @@ class _HLSController:
         if not isinstance(state, dict):
             return None
         return state
+
+    def _set_encoder_running(self, running: bool) -> None:
+        with self._lock:
+            changed = (self._encoder_running != running)
+            self._encoder_running = running
+            should_persist = self._persist_enabled and changed
+        if should_persist:
+            self._persist_state()
 
 
 # Module-level singleton

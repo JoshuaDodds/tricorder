@@ -77,7 +77,7 @@ def main():
         bitrate="64k",
     )
     state_path = os.path.join(hls_dir, "controller_state.json")
-    controller.set_state_path(state_path, persist=False)
+    controller.set_state_path(state_path, persist=True)
     controller.attach(hls)
     controller.refresh_from_state()
 
