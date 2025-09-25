@@ -143,21 +143,12 @@ dashboard:
     - unit: "web-streamer.service"
       label: "Web UI"
       description: "Serves the dashboard and HLS live stream."
-    - unit: "dropbox.service"
-      label: "Dropbox ingest"
-      description: "Moves finalized recordings into the Dropbox sync folder."
     - unit: "tricorder-auto-update.service"
       label: "Auto updater"
       description: "Manages Tricorder self-update checks."
     - unit: "tricorder-auto-update.timer"
       label: "Auto updater schedule"
       description: "Runs scheduled self-update checks."
-    - unit: "tmpfs-guard.service"
-      label: "Tmpfs guard"
-      description: "Maintains the tmpfs mount used for temporary files."
-    - unit: "tmpfs-guard.timer"
-      label: "Tmpfs guard schedule"
-      description: "Triggers periodic tmpfs maintenance."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.

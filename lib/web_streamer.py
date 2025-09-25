@@ -343,6 +343,7 @@ def _parse_show_output(payload: str, properties: Sequence[str]) -> dict[str, str
     result: dict[str, str] = {prop: "" for prop in properties}
 
     lines = payload.splitlines()
+
     saw_key_value = False
     for line in lines:
         if "=" not in line:
