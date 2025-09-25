@@ -7,9 +7,10 @@ on:
       - completed
 
 permissions:
-  actions: read       # needed for jobs_url + logs
+  actions: read        # needed for jobs_url + logs
   contents: read
   pull-requests: write
+  issues: write        # required to comment on PRs via issues API
 
 jobs:
   report-failure:
