@@ -1,15 +1,13 @@
 name: Detect Merge Conflicts
 
 on:
-  # Run when the base branch (main) receives new commits. This ensures open PRs
-  # are re‑checked whenever another branch is merged into main.
+  # Run when the base branch (main) receives new commits.
   push:
     branches:
       - main
-  # Also check when a PR is opened, reopened or updated to reflect changes in its
-  # head branch. This covers cases where the feature branch is rebased or force
-  # pushed.
-  pull_request:
+  # Run on PR events using pull_request_target so GITHUB_TOKEN has write scope,
+  # even for forks. Safe because we only fetch PR refs, never execute PR code.
+  pull_request_target:
     branches:
       - main
     types:
@@ -17,8 +15,6 @@ on:
       - reopened
       - synchronize
 
-# Grant write permissions to post comments on pull requests. Contents read
-# permission is required to checkout the repository.
 permissions:
   contents: read
   pull-requests: write
@@ -26,16 +22,16 @@ permissions:
 jobs:
   check-conflicts:
     runs-on: ubuntu-latest
-    # Limit the workflow to one concurrent run. Subsequent runs are queued.
     concurrency:
       group: conflict-check
       cancel-in-progress: false
+
     steps:
-      - name: Checkout repository
+      - name: Checkout main (safe, trusted code only)
         uses: actions/checkout@v4
         with:
-          # Fetch all history so merges can be tested properly
           fetch-depth: 0
+          ref: main
 
       - name: Detect conflicts and comment on PRs
         env:
@@ -45,6 +41,7 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "github-actions"
 
+          # List all open pull requests targeting main
           pr_numbers=$(gh pr list --state open --base main --json number --jq '.[].number')
           echo "Checking for conflicts in the following PRs: $pr_numbers"
 
@@ -65,9 +62,9 @@ jobs:
               while IFS= read -r file; do
                 formatted+="\n- ${file}"
               done <<< "$conflict_files"
+
               body="@codex please fix these conflicts before we can merge this or test it\n\n**Conflicting files:**${formatted}"
               gh api repos/${{ github.repository }}/issues/$pr/comments -f body="$body"
               git merge --abort || true
             fi
           done
-
