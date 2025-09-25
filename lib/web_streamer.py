@@ -268,6 +268,25 @@ def _normalize_archive_name(value: object) -> str:
     return _default_archive_name()
 
 
+def _build_recordings_archive(
+    spool: io.BufferedIOBase, selections: Sequence[tuple[str, Path]]
+) -> int:
+    """Write the selected recordings into *spool* as a zip archive."""
+
+    with zipfile.ZipFile(
+        spool,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+        allowZip64=True,
+    ) as archive:
+        for rel_posix, resolved in selections:
+            archive.write(resolved, arcname=rel_posix)
+
+    size = spool.seek(0, os.SEEK_END)
+    spool.seek(0)
+    return size
+
+
 def _normalize_new_name(value: object, current_stem: str, suffix: str) -> tuple[str, bool]:
     if not isinstance(value, str):
         return current_stem, False
@@ -1163,18 +1182,16 @@ def build_app() -> web.Application:
 
         spool = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
         try:
-            with zipfile.ZipFile(
-                spool,
-                mode="w",
-                compression=zipfile.ZIP_DEFLATED,
-                allowZip64=True,
-            ) as archive:
-                for rel_posix, resolved in selections:
-                    archive.write(resolved, arcname=rel_posix)
-
-            size = spool.seek(0, os.SEEK_END)
-            spool.seek(0)
-
+            try:
+                size = await asyncio.to_thread(
+                    _build_recordings_archive, spool, selections
+                )
+            except FileNotFoundError:
+                spool.close()
+                return web.json_response(
+                    {"errors": [{"item": "", "error": "recordings changed during archive"}]},
+                    status=409,
+                )
             response = web.StreamResponse(status=200)
             response.content_type = "application/zip"
             response.headers["Content-Disposition"] = f'attachment; filename="{archive_name}"'
@@ -1194,12 +1211,6 @@ def build_app() -> web.Application:
 
             await response.write_eof()
             return response
-        except FileNotFoundError:
-            spool.close()
-            return web.json_response(
-                {"errors": [{"item": "", "error": "recordings changed during archive"}]},
-                status=409,
-            )
         except Exception:
             spool.close()
             raise
