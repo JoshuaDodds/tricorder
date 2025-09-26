@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from lib import web_streamer
 import lib.config as config
+import yaml
 
 
 @pytest.fixture
@@ -30,8 +31,14 @@ def dashboard_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TRICORDER_TMP", str(tmp_dir))
 
     monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
     yield recordings_dir
     monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
 
 
 async def _start_client(app: web.Application) -> tuple[TestClient, TestServer]:
@@ -106,6 +113,110 @@ def test_recordings_listing_filters(dashboard_env):
             resp = await client.get("/api/recordings?search=beta")
             search = await resp.json()
             assert [item["name"] for item in search["items"]] == ["beta"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_archival_settings_round_trip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+archival:
+  enabled: false
+  backend: network_share
+  network_share:
+    target_dir: "/mnt/archive/tricorder"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/archival")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["archival"]["backend"] == "network_share"
+            assert (
+                payload["archival"]["network_share"]["target_dir"]
+                == "/mnt/archive/tricorder"
+            )
+            assert payload["config_path"] == str(config_path)
+
+            update_payload = {
+                "enabled": True,
+                "backend": "rsync",
+                "include_waveform_sidecars": True,
+                "network_share": {"target_dir": "/mnt/archive/tricorder"},
+                "rsync": {
+                    "destination": "user@example.com:/srv/tricorder/archive",
+                    "ssh_identity": "/home/pi/.ssh/id_ed25519",
+                    "options": ["-az", "--delete"],
+                    "ssh_options": ["-oStrictHostKeyChecking=yes"],
+                },
+            }
+
+            resp = await client.post("/api/config/archival", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            assert updated["archival"]["backend"] == "rsync"
+            assert updated["archival"]["enabled"] is True
+            assert (
+                updated["archival"]["rsync"]["destination"]
+                == "user@example.com:/srv/tricorder/archive"
+            )
+            assert updated["archival"]["include_waveform_sidecars"] is True
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["archival"]["backend"] == "rsync"
+            assert (
+                persisted["archival"]["rsync"]["destination"]
+                == "user@example.com:/srv/tricorder/archive"
+            )
+            assert persisted["archival"]["include_waveform_sidecars"] is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_archival_settings_validation_error(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("archival:\n  enabled: false\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "enabled": True,
+                "backend": "rsync",
+                "rsync": {"destination": ""},
+            }
+            resp = await client.post("/api/config/archival", json=payload)
+            assert resp.status == 400
+            error_payload = await resp.json()
+            assert "destination" in error_payload.get("error", "")
         finally:
             await client.close()
             await server.close()

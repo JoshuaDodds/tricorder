@@ -87,7 +87,7 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 
 ## Automatic archival uploads
 
-Freshly encoded recordings can be mirrored off-device for long-term storage using the new archival plug-ins. Configure the `archival` section in `config.yaml` to enable one of the backends:
+Freshly encoded recordings can be mirrored off-device for long-term storage using the new archival plug-ins. Configure the `archival` section in `config.yaml` to enable one of the backends (or open the dashboard’s ☰ menu → **Archival settings** to edit the same options in the UI — changes stay in sync with `config.yaml`):
 
 - **`network_share`** — copies files to a local mount (SMB/NFS/etc.). Point `archival.network_share.target_dir` at the mounted root and the recorder will mirror the per-day folder layout when pushing new files.
 - **`rsync`** — streams files to a remote SSH host using `rsync`. Set `archival.rsync.destination` (e.g. `user@server:/backups/tricorder`). Optional keys let you provide a dedicated SSH identity (`ssh_identity`), extra rsync arguments (`options`), and additional SSH flags (`ssh_options`).

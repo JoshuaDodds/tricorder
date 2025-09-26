@@ -13,6 +13,7 @@ Load order (first found wins):
 Environment variables override file values when present.
 """
 from __future__ import annotations
+import copy
 import os
 import sys
 from pathlib import Path
@@ -95,6 +96,13 @@ _DEFAULTS: Dict[str, Any] = {
 
 _cfg_cache: Dict[str, Any] | None = None
 _warned_yaml_missing = False
+_search_paths: list[Path] = []
+_active_config_path: Path | None = None
+_primary_config_path: Path | None = None
+
+
+class ConfigPersistenceError(Exception):
+    """Raised when configuration changes cannot be persisted."""
 
 def _load_yaml_if_exists(path: Path) -> Dict[str, Any]:
     global _warned_yaml_missing
@@ -114,6 +122,76 @@ def _load_yaml_if_exists(path: Path) -> Dict[str, Any]:
         # Ignore parse errors and continue with other locations/defaults
         pass
     return {}
+
+
+def _candidate_search_paths(project_root: Path, script_dir: Path) -> list[Path]:
+    search: list[Path] = []
+    env_cfg = os.getenv("TRICORDER_CONFIG")
+    if env_cfg:
+        try:
+            search.append(Path(env_cfg).expanduser().resolve())
+        except Exception:
+            search.append(Path(env_cfg).expanduser())
+    search.extend(
+        [
+            Path("/etc/tricorder/config.yaml"),
+            Path("/apps/tricorder/config.yaml"),
+            project_root / "config.yaml",
+            script_dir / "config.yaml",
+            Path.cwd() / "config.yaml",
+        ]
+    )
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for candidate in search:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(resolved)
+    return ordered
+
+
+def _resolve_primary_path(search: list[Path], active: Path | None) -> Path:
+    env_cfg = os.getenv("TRICORDER_CONFIG")
+    if env_cfg:
+        try:
+            return Path(env_cfg).expanduser().resolve()
+        except Exception:
+            return Path(env_cfg).expanduser()
+
+    try:
+        etc_path = Path("/etc/tricorder/config.yaml").resolve()
+    except Exception:
+        etc_path = Path("/etc/tricorder/config.yaml")
+
+    if active is not None:
+        try:
+            active_resolved = active.resolve()
+        except Exception:
+            active_resolved = active
+        if active_resolved != etc_path:
+            return active_resolved
+
+    base_path = Path("/apps/tricorder/config.yaml")
+    fallback: Path | None = None
+    for candidate in search:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved == base_path:
+            return resolved
+        if str(resolved).startswith("/etc/"):
+            continue
+        if fallback is None:
+            fallback = resolved
+    if fallback is not None:
+        return fallback
+    return base_path
 
 def _deep_merge(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base)
@@ -210,7 +288,7 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
             cfg.setdefault("dashboard", {})["web_service"] = value
 
 def get_cfg() -> Dict[str, Any]:
-    global _cfg_cache
+    global _cfg_cache, _search_paths, _active_config_path, _primary_config_path
     if _cfg_cache is not None:
         return _cfg_cache
 
@@ -229,22 +307,99 @@ def get_cfg() -> Dict[str, Any]:
     except Exception:
         script_dir = Path.cwd()
 
-    # Build search list in priority order
-    search: list[Path] = []
-    env_cfg = os.getenv("TRICORDER_CONFIG")
-    if env_cfg:
-        search.append(Path(env_cfg).expanduser().resolve())
-    search.extend([
-        Path("/etc/tricorder/config.yaml"),
-        Path("/apps/tricorder/config.yaml"),
-        project_root / "config.yaml",
-        script_dir / "config.yaml",
-        Path.cwd() / "config.yaml",
-    ])
+    search = _candidate_search_paths(project_root, script_dir)
+    _search_paths = list(search)
 
-    for p in search:
-        cfg = _deep_merge(cfg, _load_yaml_if_exists(p))
+    active: Path | None = None
+    for candidate in search:
+        if active is None:
+            try:
+                if candidate.exists():
+                    active = candidate
+            except OSError:
+                pass
+
+    for candidate in reversed(search):
+        cfg = _deep_merge(cfg, _load_yaml_if_exists(candidate))
+
+    _active_config_path = active
+    _primary_config_path = _resolve_primary_path(search, active)
 
     _apply_env_overrides(cfg)
     _cfg_cache = cfg
     return cfg
+
+
+def reload_cfg() -> Dict[str, Any]:
+    global _cfg_cache
+    _cfg_cache = None
+    return get_cfg()
+
+
+def primary_config_path() -> Path:
+    global _primary_config_path
+    if _primary_config_path is None:
+        get_cfg()
+    assert _primary_config_path is not None
+    return _primary_config_path
+
+
+def active_config_path() -> Path | None:
+    global _active_config_path
+    if _active_config_path is None:
+        get_cfg()
+    return _active_config_path
+
+
+def search_paths() -> list[Path]:
+    global _search_paths
+    if not _search_paths:
+        get_cfg()
+    return list(_search_paths)
+
+
+def _load_raw_yaml(path: Path) -> Dict[str, Any]:
+    if not yaml:
+        raise ConfigPersistenceError("PyYAML is required to update configuration files")
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle) or {}
+            if isinstance(payload, dict):
+                return payload
+    except Exception as exc:
+        raise ConfigPersistenceError(f"Unable to read configuration: {exc}") from exc
+    return {}
+
+
+def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
+    if not yaml:
+        raise ConfigPersistenceError("PyYAML is required to update configuration files")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise ConfigPersistenceError(f"Unable to create configuration directory: {exc}") from exc
+    try:
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(
+                payload,
+                handle,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+    except Exception as exc:
+        raise ConfigPersistenceError(f"Unable to write configuration: {exc}") from exc
+
+
+def update_archival_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(settings, dict):
+        raise ConfigPersistenceError("Archival settings payload must be a mapping")
+
+    primary_path = primary_config_path()
+    current = _load_raw_yaml(primary_path)
+    updated = copy.deepcopy(current)
+    updated["archival"] = copy.deepcopy(settings)
+    _dump_yaml(primary_path, updated)
+    return reload_cfg().get("archival", {})
