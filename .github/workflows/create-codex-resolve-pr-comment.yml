@@ -168,7 +168,7 @@ jobs:
                   '{public:false, files:{($name):{content:$content}}}')
 
                 GIST_RESPONSE=$(curl -s -X POST \
-                  -H "Authorization: token '"$REPO_PAT"'" \
+                  -H "Authorization: token $REPO_PAT" \
                   -H "Content-Type: application/json" \
                   -d "$GIST_PAYLOAD" https://api.github.com/gists)
 
