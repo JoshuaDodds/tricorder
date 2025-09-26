@@ -217,6 +217,12 @@ def _store_state(state: Dict[str, Any], state_path: Path | None = None) -> None:
         handle.write("\n")
     os.replace(tmp_path, target)
 
+    if target != VOLATILE_STATE_PATH and target.parent != VOLATILE_STATE_DIR:
+        try:
+            VOLATILE_STATE_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+
 
 def reset_state(new_cid: str, state_path: Path | None = None) -> Dict[str, Any]:
     """Return a cleared state for a freshly detected SD card."""

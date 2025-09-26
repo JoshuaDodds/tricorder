@@ -136,3 +136,24 @@ def test_load_state_prefers_flagged_volatile_state(tmp_path, monkeypatch):
 
     state = sd_card_health.load_state(state_path=primary, fallback_path=volatile)
     assert state["last_event"]["pattern"] == "crc_error"
+
+
+def test_persistent_write_clears_volatile_cache(tmp_path, monkeypatch):
+    primary = tmp_path / "persist.json"
+    volatile_dir = tmp_path / "volatile"
+    volatile_dir.mkdir()
+    volatile = volatile_dir / "sd_card_health.json"
+
+    monkeypatch.setattr(sd_card_health, "VOLATILE_STATE_DIR", volatile_dir)
+    monkeypatch.setattr(sd_card_health, "VOLATILE_STATE_PATH", volatile)
+
+    sd_card_health.sync_cid("oldcid", volatile)
+    sd_card_health.register_failure(
+        "mmcblk0: io error", pattern="io_error", state_path=volatile
+    )
+    assert volatile.exists()
+
+    result = sd_card_health.sync_cid("newcid", primary)
+    assert result.status == "replaced"
+    assert result.state["warning_active"] is False
+    assert not volatile.exists()
