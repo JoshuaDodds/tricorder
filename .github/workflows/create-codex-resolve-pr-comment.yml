@@ -100,7 +100,7 @@ jobs:
           REPO_PAT: ${{ env.REPO_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
           emit_inline_reference() {
             local file_path="$1"
@@ -132,8 +132,8 @@ jobs:
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
           echo "Conflicted files: $CONFLICT_FILES" >&2
 
-          read -r -d '' PREAMBLE <<'TXT' || true
-          Automated context: attempted merging the repository default branch into `'"$BRANCH"'` produced merge conflicts. Tagging @codex to resolve.
+          PREAMBLE=$(cat <<TXT
+          Automated context: attempted merging the repository default branch into `${BRANCH}` produced merge conflicts. Tagging @codex to resolve.
 
           ---
           **Resolution instructions for @codex (follow exactly):**
@@ -160,6 +160,7 @@ jobs:
           ---
 
           TXT
+          )
 
           GIST_LINES=""
           for f in $CONFLICT_FILES; do
