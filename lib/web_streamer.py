@@ -53,7 +53,7 @@ from aiohttp import web
 from aiohttp.web import AppKey
 
 from lib.hls_controller import controller
-from lib import webui
+from lib import webui, sd_card_health
 from lib.config import get_cfg
 from lib.waveform_cache import generate_waveform
 
@@ -1216,6 +1216,14 @@ def build_app() -> web.Application:
     async def config_snapshot(_: web.Request) -> web.Response:
         return web.json_response(cfg)
 
+    async def system_health(_: web.Request) -> web.Response:
+        state = sd_card_health.load_state()
+        payload = {
+            "generated_at": time.time(),
+            "sd_card": sd_card_health.state_summary(state),
+        }
+        return web.json_response(payload)
+
     async def services_list(request: web.Request) -> web.Response:
         entries = request.app.get(SERVICE_ENTRIES_KEY, [])
         auto_restart = request.app.get(AUTO_RESTART_KEY, set())
@@ -1364,6 +1372,7 @@ def build_app() -> web.Application:
     app.router.add_post("/api/recordings/clip", recordings_clip)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
+    app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
 
