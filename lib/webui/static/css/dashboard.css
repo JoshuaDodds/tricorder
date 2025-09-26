@@ -424,6 +424,16 @@ body {
   box-shadow: 0 14px 32px -14px rgba(56, 189, 248, 0.9);
 }
 
+.primary-button:disabled,
+.primary-button[aria-disabled="true"] {
+  background: rgba(56, 189, 248, 0.45);
+  color: rgba(2, 6, 23, 0.7);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+  filter: saturate(0.6);
+}
+
 .primary-button[aria-pressed="true"] {
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.35);
   transform: none;
