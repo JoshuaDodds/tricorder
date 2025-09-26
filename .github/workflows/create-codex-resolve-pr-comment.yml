@@ -77,13 +77,18 @@ jobs:
           MERGE_CODE=$?
           set -e
 
-          # If there are staged changes without conflicts (fast-forward or clean merge), we still treat as "no conflicts"
-          if git ls-files -u | grep -q .; then
+          # Capture the index state without relying on pipeline exit codes so conflicts don't abort the script
+          conflict_index_output=$(git ls-files -u)
+
+          if [[ -n "$conflict_index_output" ]]; then
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ $MERGE_CODE -eq 0 ]]; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
             # Reset to clean state to avoid dirty workspace
             git merge --abort || git reset --hard
+          else
+            echo "Merge failed with exit $MERGE_CODE and no indexed conflicts detected." >&2
+            exit "$MERGE_CODE"
           fi
 
       - name: Prepare conflict comment (and create gists)
