@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      
+
     env:
       GITHUB_API: https://api.github.com
       # REPO defaults to this repository unless provided via workflow_dispatch input
@@ -131,9 +131,9 @@ jobs:
 
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
           echo "Conflicted files: $CONFLICT_FILES" >&2
-
-          PREAMBLE=$(cat <<TXT
-          Automated context: attempted merging the repository default branch into `${BRANCH}` produced merge conflicts. Tagging @codex to resolve.
+          
+          PREAMBLE_TEMPLATE=$(cat <<'TXT'
+          Automated context: attempted merging the repository default branch into BRANCH_PLACEHOLDER produced merge conflicts. Tagging @codex to resolve.
 
           ---
           **Resolution instructions for @codex (follow exactly):**
@@ -161,6 +161,9 @@ jobs:
 
           TXT
           )
+
+          BRANCH_MARKDOWN=$(printf '\`%s\`' "$BRANCH")
+          PREAMBLE=${PREAMBLE_TEMPLATE//BRANCH_PLACEHOLDER/$BRANCH_MARKDOWN}
 
           GIST_LINES=""
           for f in $CONFLICT_FILES; do
