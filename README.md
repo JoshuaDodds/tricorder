@@ -231,6 +231,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
+- `notifications` – optional webhook/email alerts when events finish recording.
 
 ---
 
@@ -273,6 +274,21 @@ Entries are separated by semicolons; optional `|label|description` segments over
 
 Services that are triggered by timers or path units now surface their related units directly in the dashboard. For example, `dropbox.service` shows the state of `dropbox.path`, and the auto-updater exposes its scheduling timer so "Waiting" reflects an active watcher instead of a dead service.
 
+
+### Event notifications
+
+Set `notifications.enabled` to `true` to emit callbacks after each recorded event. Two delivery methods are supported:
+
+- **Webhooks** – configure `notifications.webhook.url` (and optional headers/method) to receive a JSON payload containing the event metadata (`etype`, `trigger_rms`, duration, etc.). Leaving the URL blank skips webhook delivery entirely so email-only installs do not raise errors.
+- **Email** – supply SMTP credentials under `notifications.email`. A templated subject/body is rendered with the event fields, enabling simple alert emails for high-priority clips.
+
+Common tunables include:
+
+- `notifications.allowed_event_types` – restrict alerts to specific event classifications (e.g., `["Human", "Both"]`).
+- `notifications.min_trigger_rms` – only notify on clips that exceed the configured RMS threshold.
+- `notifications.webhook.headers` / `method` / `timeout_sec` – customize webhook POST requests for downstream services.
+- `notifications.email.subject_template` / `body_template` – adjust the rendered message content for email delivery.
+
 ### Dashboard clip editor
 
 Select any recording in the dashboard preview pane to open the new **Clip editor**. The inline tool lets you trim the beginning/end of a take or extract a sub-clip without leaving the browser:
@@ -282,6 +298,7 @@ Select any recording in the dashboard preview pane to open the new **Clip editor
 - Click **Save clip** to render a new `.opus` file and waveform sidecar via the existing ffmpeg/Opus pipeline. The new artifact appears alongside the original recording so you can review or delete either copy immediately.
 
 Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and never overwrite the source file.
+
 
 ---
 

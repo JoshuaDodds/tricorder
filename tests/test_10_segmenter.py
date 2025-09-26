@@ -129,3 +129,34 @@ def test_adaptive_threshold_recovery(monkeypatch):
     )
     expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
     assert lowered == expected_linear
+
+
+def test_notifier_receives_event(monkeypatch, tmp_path):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(segmenter, "is_voice", lambda buf: True)
+
+    tmp_root = tmp_path / "tricorder"
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_root / "tmp"))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(tmp_root / "rec"))
+
+    class DummyNotifier:
+        def __init__(self):
+            self.events = []
+
+        def handle_event(self, event):
+            self.events.append(event)
+
+    dummy = DummyNotifier()
+    monkeypatch.setattr(segmenter, "NOTIFIER", dummy)
+
+    rec = TimelineRecorder()
+    for idx in range(segmenter.START_CONSECUTIVE + 10):
+        rec.ingest(make_frame(2000), idx)
+    rec.flush(200)
+
+    assert dummy.events, "Notification should have been dispatched"
+    event = dummy.events[0]
+    assert event["etype"] in {"Human", "Both"}
+    assert event["trigger_rms"] >= segmenter.STATIC_RMS_THRESH
+    assert event.get("end_reason")
