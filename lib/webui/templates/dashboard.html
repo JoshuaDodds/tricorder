@@ -42,16 +42,54 @@
       </div>
       <header class="app-header">
         <div class="titles">
+          <div class="app-menu-wrapper">
+            <button
+              id="app-menu-toggle"
+              class="icon-button app-menu-toggle"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="app-menu"
+            >
+              <span class="sr-only">Open menu</span>
+              <span aria-hidden="true" class="menu-icon">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            </button>
+            <div
+              id="app-menu"
+              class="app-menu"
+              role="menu"
+              aria-hidden="true"
+              aria-labelledby="app-menu-toggle"
+              hidden
+              data-visible="false"
+            >
+              <button
+                id="archival-open"
+                class="menu-item"
+                type="button"
+                role="menuitem"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+              >
+                Archival settings
+              </button>
+              <button
+                id="services-open"
+                class="menu-item"
+                type="button"
+                role="menuitem"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+              >
+                Services
+              </button>
+            </div>
+          </div>
           <h1>Dashboard</h1>
-          <button
-            id="services-open"
-            class="ghost-button"
-            type="button"
-            aria-haspopup="dialog"
-            aria-expanded="false"
-          >
-            Services
-          </button>
         </div>
         <div class="header-actions">
           <div class="header-status">
@@ -75,7 +113,6 @@
               data-visible="false"
             ></div>
           </div>
-          <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
           <div
             id="refresh-indicator"
             class="refresh-indicator"
@@ -479,6 +516,42 @@
             aria-label="Service statuses"
           ></div>
           <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
+        </div>
+      </div>
+    </div>
+    <div
+      id="archival-modal"
+      class="settings-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="archival-dialog"
+        class="settings-dialog card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="archival-dialog-title"
+        aria-describedby="archival-dialog-description"
+        tabindex="-1"
+      >
+        <div class="card-header settings-dialog-header">
+          <div class="card-heading">
+            <h2 id="archival-dialog-title">Archival settings</h2>
+            <p id="archival-dialog-description" class="card-subtitle">
+              Configure archival upload destinations and options.
+            </p>
+          </div>
+          <div class="settings-dialog-actions">
+            <button id="archival-close" class="ghost-button small" type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        <div class="settings-dialog-body">
+          <p class="settings-placeholder">
+            Archival settings controls will appear here in a future update.
+          </p>
         </div>
       </div>
     </div>
