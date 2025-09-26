@@ -40,6 +40,7 @@ class _HLSController:
         self._state_path: Optional[str] = None
         self._persist_enabled = True
         self._encoder_running = False
+        self._state_write_lock = threading.Lock()
 
     @staticmethod
     def _coerce_running(value: object) -> bool:
@@ -296,18 +297,21 @@ class _HLSController:
             "encoder_running": running_flag,
         }
         tmp_path = f"{path}.tmp"
-        try:
-            directory = os.path.dirname(path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            with open(tmp_path, "w", encoding="utf-8") as handle:
-                json.dump(data, handle)
-            os.replace(tmp_path, path)
-        except Exception:
+        with self._state_write_lock:
             try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+                directory = os.path.dirname(path)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+                with open(tmp_path, "w", encoding="utf-8") as handle:
+                    json.dump(data, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def _load_state(self) -> Optional[dict]:
         with self._lock:
