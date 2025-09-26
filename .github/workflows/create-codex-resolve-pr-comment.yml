@@ -167,18 +167,30 @@ jobs:
                 GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$FILE_CONTENT" \
                   '{public:false, files:{($name):{content:$content}}}')
 
+                set +e
                 GIST_RESPONSE=$(curl -s -X POST \
                   -H "Authorization: token $REPO_PAT" \
                   -H "Content-Type: application/json" \
                   -d "$GIST_PAYLOAD" https://api.github.com/gists)
+                CURL_STATUS=$?
+                set -e
 
-                GIST_URL=$(echo "$GIST_RESPONSE" | jq -r '.html_url // empty')
-                if [[ -n "$GIST_URL" ]]; then
-                  GIST_LINES+="- **$f**: ${GIST_URL}\n"
-                  continue
+                if [[ $CURL_STATUS -eq 0 && -n "$GIST_RESPONSE" ]]; then
+                  set +e
+                  GIST_URL=$(printf '%s' "$GIST_RESPONSE" | jq -r '.html_url // empty')
+                  JQ_STATUS=$?
+                  set -e
+                  if [[ $JQ_STATUS -eq 0 && -n "$GIST_URL" ]]; then
+                    GIST_LINES+="- **$f**: ${GIST_URL}\n"
+                    continue
+                  fi
                 fi
 
-                echo "Failed to create gist for $f; falling back to inline snippet." >&2
+                if [[ $CURL_STATUS -ne 0 ]]; then
+                  echo "Failed to create gist for $f (curl exit $CURL_STATUS); falling back to inline snippet." >&2
+                else
+                  echo "Failed to create gist for $f; falling back to inline snippet." >&2
+                fi
               fi
 
               GIST_LINES+="$(emit_inline_reference "$f" "$MAX_INLINE")"
