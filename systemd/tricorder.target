@@ -1,6 +1,6 @@
 [Unit]
 Description=Tricorder Service Group
-Requires=voice-recorder.service web-streamer.service
+Requires=voice-recorder.service web-streamer.service sd-card-monitor.service
 Wants=tricorder-auto-update.timer tmpfs-guard.timer dropbox.path
 
 [Install]
