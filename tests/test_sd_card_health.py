@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import os
+import time
+
 from lib import sd_card_health
 
 
@@ -89,3 +92,47 @@ def test_load_state_uses_volatile_fallback(tmp_path, monkeypatch):
     state = sd_card_health.load_state(state_path=primary)
     assert state["warning_active"] is True
     assert state["last_event"]["pattern"] == "io_error"
+
+
+def test_load_state_prefers_newer_volatile_state(tmp_path, monkeypatch):
+    primary = tmp_path / "persist.json"
+    volatile_dir = tmp_path / "volatile"
+    volatile_dir.mkdir()
+    volatile = volatile_dir / "sd_card_health.json"
+
+    monkeypatch.setattr(sd_card_health, "VOLATILE_STATE_DIR", volatile_dir)
+    monkeypatch.setattr(sd_card_health, "VOLATILE_STATE_PATH", volatile)
+
+    sd_card_health.register_failure(
+        "mmcblk0: io error", pattern="io_error", state_path=primary
+    )
+    os.utime(primary, (time.time() - 60, time.time() - 60))
+
+    sd_card_health.register_failure(
+        "mmcblk0: crc error", pattern="crc_error", state_path=volatile
+    )
+
+    state = sd_card_health.load_state(state_path=primary, fallback_path=volatile)
+    assert state["last_event"]["pattern"] == "crc_error"
+
+
+def test_load_state_prefers_flagged_volatile_state(tmp_path, monkeypatch):
+    primary = tmp_path / "persist.json"
+    volatile_dir = tmp_path / "volatile"
+    volatile_dir.mkdir()
+    volatile = volatile_dir / "sd_card_health.json"
+
+    monkeypatch.setattr(sd_card_health, "VOLATILE_STATE_DIR", volatile_dir)
+    monkeypatch.setattr(sd_card_health, "VOLATILE_STATE_PATH", volatile)
+
+    sd_card_health.register_failure(
+        "mmcblk0: io error", pattern="io_error", state_path=primary
+    )
+
+    sd_card_health.register_failure(
+        "mmcblk0: crc error", pattern="crc_error", state_path=volatile
+    )
+    os.utime(volatile, (time.time() - 120, time.time() - 120))
+
+    state = sd_card_health.load_state(state_path=primary, fallback_path=volatile)
+    assert state["last_event"]["pattern"] == "crc_error"

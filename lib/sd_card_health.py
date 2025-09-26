@@ -66,6 +66,34 @@ def _ensure_directory(path: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
 
 
+def _read_candidate(path: Path | None) -> tuple[Dict[str, Any], bool, float | None] | None:
+    if not path:
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        return None
+    except OSError:
+        return None
+
+    volatile_marker = False
+    if isinstance(raw, dict):
+        volatile_marker = bool(raw.get("_volatile_active"))
+    state = _normalise_state(raw if isinstance(raw, dict) else None)
+
+    try:
+        metadata = path.stat()
+    except OSError:
+        mtime = None
+    else:
+        mtime = metadata.st_mtime
+
+    return state, volatile_marker, mtime
+
+
 def _isoformat(ts: float | None = None) -> str:
     value = ts if ts is not None else datetime.now(timezone.utc).timestamp()
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat(timespec="seconds")
@@ -141,31 +169,51 @@ def load_state(
 
     primary = Path(state_path) if state_path else STATE_PATH
     fallback = Path(fallback_path) if fallback_path else VOLATILE_STATE_PATH
-    candidates = [primary]
-    if fallback and fallback != primary:
-        candidates.append(fallback)
 
-    for target in candidates:
-        try:
-            with target.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except FileNotFoundError:
-            continue
-        except json.JSONDecodeError:
-            continue
-        except OSError:
-            continue
-        return _normalise_state(data)
+    primary_result = _read_candidate(primary)
+    fallback_result = None
+    if fallback and fallback != primary:
+        fallback_result = _read_candidate(fallback)
+
+    if fallback_result and not primary_result:
+        return fallback_result[0]
+
+    if primary_result and fallback_result:
+        _, fallback_marker, fallback_mtime = fallback_result
+        _, _, primary_mtime = primary_result
+
+        prefer_fallback = False
+        if fallback_marker:
+            prefer_fallback = True
+        elif fallback_mtime is not None and primary_mtime is not None:
+            prefer_fallback = fallback_mtime > primary_mtime
+        elif fallback_mtime is not None and primary_mtime is None:
+            prefer_fallback = True
+
+        if prefer_fallback:
+            return fallback_result[0]
+
+    if primary_result:
+        return primary_result[0]
+
+    if fallback_result:
+        return fallback_result[0]
 
     return dict(_DEFAULT_STATE)
 
 
 def _store_state(state: Dict[str, Any], state_path: Path | None = None) -> None:
     target = Path(state_path) if state_path else STATE_PATH
+    payload = dict(state)
+    if target == VOLATILE_STATE_PATH or target.parent == VOLATILE_STATE_DIR:
+        payload["_volatile_active"] = True
+    else:
+        payload.pop("_volatile_active", None)
+
     _ensure_directory(target)
     tmp_path = target.with_suffix(".tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, sort_keys=True)
+        json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(tmp_path, target)
 
