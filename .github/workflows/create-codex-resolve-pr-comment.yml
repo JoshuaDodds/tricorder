@@ -9,7 +9,7 @@ on:
         description: "Optional: PR number (auto-detect if omitted)"
         required: false
       max_inline_size:
-        description: "Max file size (bytes) to inline in comment"
+        description: "Max file size (bytes) to inline in comment (fallback to gist if larger)"
         required: false
         default: "60000"
 
@@ -38,27 +38,27 @@ jobs:
 
       - name: Fetch remote default refs (main/master)
         run: |
-          # simple, reliable fetch of common default branch names
+          # Try common default branch names
           git fetch origin main || true
           git fetch origin master || true
-          # show what we have
-          git show-ref --heads --tags --refs | grep origin || true
+          # show current refs (debug)
+          git show-ref --head || true
           git branch -a || true
 
       - name: Attempt merge (no commit) to reproduce conflicts
         id: attempt_merge
         run: |
           set -e
-          # Try merging origin/main first, fallback to origin/master
+          # Prefer origin/main, fallback to origin/master, fallback to FETCH_HEAD
           if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
             git merge --no-commit --no-ff origin/main || true
           elif git rev-parse --verify --quiet refs/remotes/origin/master >/dev/null; then
             git merge --no-commit --no-ff origin/master || true
           else
-            # fallback: merge FETCH_HEAD (last fetched ref)
             git merge --no-commit --no-ff FETCH_HEAD || true
           fi
 
+          # detect conflicts
           if git ls-files -u | grep -q .; then
             echo "conflicts=true" >> $GITHUB_OUTPUT
           else
@@ -86,10 +86,11 @@ jobs:
           # Start building comment
           COMMENT="Automated context: attempted merging the repository default branch into \`${BRANCH}\` produced merge conflicts. Tagging @codex to resolve.\\n\\n"
           COMMENT="$COMMENT---\\n"
-          COMMENT="$COMMENT**Resolution instructions for @codex (follow exactly):**\\n"
-          COMMENT="$COMMENT\\n\`\`\`text\\n@codex You are resolving a Git merge conflict. I will provide the full file contents including conflict markers (<<<<<<<, =======, >>>>>>>).\\n\\nYour task:\\n    Combine both conflicting changes so that no functionality is lost.\\n    Prefer keeping new code from both branches unless it is clearly redundant or incompatible.\\n    Preserve function signatures, imports, and surrounding context exactly unless they must change for the code to run.\\n    Ensure the final code is syntactically correct and logically consistent.\\n    Do NOT remove new functionality from either branch unless it is duplicated.\\n    Resolve without adding comments, explanations, and be sure to remove conflict markers.\\n\\nAfter producing the resolved file(s), overwrite the conflicted file(s) in the branch, run:\\n    git add <file> && git commit -m \"chore: AI-resolved merge conflicts (automated)\" && git push origin HEAD\\n(You have permission to push as the repository user.)\\n\`\`\`\\n\\n"
+          COMMENT="$COMMENT**Resolution instructions for @codex (follow exactly):**\\n\\n"
+          COMMENT="$COMMENT\`\`\`text\\n@codex You are resolving a Git merge conflict. I will provide the full file contents including conflict markers (<<<<<<<, =======, >>>>>>>).\\n\\nYour task:\\n    Combine both conflicting changes so that no functionality is lost.\\n    Prefer keeping new code from both branches unless it is clearly redundant or incompatible.\\n    Preserve function signatures, imports, and surrounding context exactly unless they must change for the code to run.\\n    Ensure the final code is syntactically correct and logically consistent.\\n    Do NOT remove new functionality from either branch unless it is duplicated.\\n    Resolve without adding comments, explanations, and be sure to remove conflict markers.\\n\\nAfter producing the resolved file(s), overwrite the conflicted file(s) in the branch, then run (from the repo root):\\n    git add <file> && git commit -m \"chore: AI-resolved merge conflicts (automated)\" && git push origin HEAD\\n\\nYou should push using credentials that can push to this repository as the repository user.\\n\\nEND OF INSTRUCTIONS.\\n\`\`\`\\n\\n"
           COMMENT="$COMMENT---\\n\\n"
 
+          # Add each conflicted file inline or create a private gist if it's too large
           for f in $CONFLICT_FILES; do
             if [ ! -f "$f" ]; then
               COMMENT="$COMMENT**$f**: (file missing in working tree)\\n\\n"
@@ -98,9 +99,8 @@ jobs:
 
             filesize=$(wc -c < "$f" | tr -d ' ')
             if [ "$filesize" -le "$MAX_INLINE" ]; then
-              # inline file content with fenced code block
               CONTENT=$(sed -n '1,400000p' "$f" | sed 's/\r$//')
-              # use triple backticks; if file contains triple backticks, fall back to ~~~
+              # choose fence type to avoid nested triple backtick collisions
               if printf '%s' "$CONTENT" | grep -q '\`\`\`'; then
                 fence="~~~"
               else
@@ -116,7 +116,6 @@ jobs:
               if [ -n "$GIST_URL" ]; then
                 COMMENT="$COMMENT**File: $f**: $GIST_URL\\n\\n"
               else
-                # fallback to inline with warning
                 CONTENT=$(sed -n '1,400000p' "$f" | sed 's/\r$//')
                 COMMENT="$COMMENT**File: $f** (failed to create gist; inlined)\\n\`\`\`text\n$CONTENT\n\`\`\`\\n\\n"
               fi
@@ -156,7 +155,7 @@ jobs:
           PR="${{ steps.prepare.outputs.pr_number }}"
           COMMENT_BODY="${{ steps.prepare.outputs.prepared_comment }}"
           if [ -z "$PR" ]; then
-            echo "PR not detected. Prepared comment:"
+            echo "PR not detected. Prepared comment (printed to logs):"
             echo "$COMMENT_BODY"
             exit 1
           fi
@@ -165,4 +164,4 @@ jobs:
           PAYLOAD=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
           POST_URL="https://api.github.com/repos/${REPO}/issues/${PR}/comments"
           RESPONSE=$(curl -s -X POST -H "Authorization: token $REPO_PAT" -H "Content-Type: application/json" -d "$PAYLOAD" "$POST_URL")
-          echo "$RESPONSE" | jq -r '.html_url // "no-url-returned"'
+          echo "Comment URL: $(echo "$RESPONSE" | jq -r '.html_url // "no-url-returned"')"
