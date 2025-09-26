@@ -77,13 +77,18 @@ jobs:
           MERGE_CODE=$?
           set -e
 
-          # If there are staged changes without conflicts (fast-forward or clean merge), we still treat as "no conflicts"
-          if git ls-files -u | grep -q .; then
+          # Capture the index state without relying on pipeline exit codes so conflicts don't abort the script
+          conflict_index_output=$(git ls-files -u)
+
+          if [[ -n "$conflict_index_output" ]]; then
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ $MERGE_CODE -eq 0 ]]; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
             # Reset to clean state to avoid dirty workspace
             git merge --abort || git reset --hard
+          else
+            echo "Merge failed with exit $MERGE_CODE and no indexed conflicts detected." >&2
+            exit "$MERGE_CODE"
           fi
 
       - name: Prepare conflict comment (and create gists)
@@ -127,8 +132,8 @@ jobs:
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
           echo "Conflicted files: $CONFLICT_FILES" >&2
 
-          read -r -d '' PREAMBLE <<'TXT'
-          Automated context: attempted merging the repository default branch into `'"$BRANCH"'` produced merge conflicts. Tagging @codex to resolve.
+          PREAMBLE_TEMPLATE=$(cat <<'TXT'
+          Automated context: attempted merging the repository default branch into BRANCH_PLACEHOLDER produced merge conflicts. Tagging @codex to resolve.
 
           ---
           **Resolution instructions for @codex (follow exactly):**
@@ -155,6 +160,10 @@ jobs:
           ---
 
           TXT
+          )
+
+          BRANCH_MARKDOWN=$(printf '\`%s\`' "$BRANCH")
+          PREAMBLE=${PREAMBLE_TEMPLATE//BRANCH_PLACEHOLDER/$BRANCH_MARKDOWN}
 
           GIST_LINES=""
           for f in $CONFLICT_FILES; do
@@ -244,17 +253,35 @@ jobs:
       - name: Post comment to PR
         if: steps.merge_try.outputs.conflicts == 'true' && steps.find_pr.outputs.pr_number != ''
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
           set -euo pipefail
+          payload_file=$(mktemp)
+          response_file=$(mktemp)
+          trap 'rm -f "$payload_file" "$response_file"' EXIT
+
           # Use the workflow GITHUB_TOKEN for repo comments
-          jq -n --arg body "${{ steps.prep_comment.outputs.prepared_comment }}" '{body:$body}' | \
-          curl -sS -X POST \
+          jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
+
+          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            -d @- "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments" >/dev/null
+            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments")
+
+          if [[ "$status" != "201" ]]; then
+            echo "Failed to post PR comment (status $status). Response body:" >&2
+            cat "$response_file" >&2
+            exit 1
+          fi
+
+          echo "Posted merge-conflict instructions comment to PR #${{ steps.find_pr.outputs.pr_number }} (status $status)."
 
       - name: Echo prepared comment (no PR found)
         if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure')
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
-          echo "${{ steps.prep_comment.outputs.prepared_comment }}"
+          set -euo pipefail
+          printf "%s\n" "$COMMENT_BODY"
