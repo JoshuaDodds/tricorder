@@ -131,7 +131,7 @@ jobs:
 
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
           echo "Conflicted files: $CONFLICT_FILES" >&2
-          
+
           PREAMBLE_TEMPLATE=$(cat <<'TXT'
           Automated context: attempted merging the repository default branch into BRANCH_PLACEHOLDER produced merge conflicts. Tagging @codex to resolve.
 
