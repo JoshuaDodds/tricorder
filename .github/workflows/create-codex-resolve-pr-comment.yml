@@ -28,7 +28,7 @@ jobs:
       BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.event.inputs.branch }}
       # Personal access token must have "gist" scope to create private gists
       REPO_PAT: ${{ secrets.REPO_PAT }}
-      MAX_INLINE: "0"  # force gists so we never hit PR comment size limits
+      MAX_INLINE: "30000"  # bytes of inline context when gists are unavailable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,12 +92,36 @@ jobs:
         shell: bash
         env:
           MAX_INLINE: ${{ env.MAX_INLINE }}
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
+          emit_inline_reference() {
+            local file_path="$1"
+            local limit_bytes="$2"
+            local file_content truncated fence
+
+            if [[ -n "$limit_bytes" && "$limit_bytes" =~ ^[0-9]+$ && "$limit_bytes" -gt 0 ]]; then
+              truncated=$(head -c "$limit_bytes" "$file_path")
+            else
+              truncated=$(head -c 30000 "$file_path")
+            fi
+
+            if [[ "$truncated" == *\`\`\`* ]]; then
+              fence="~~~"
+            else
+              fence="\`\`\`"
+            fi
+
+            printf -- "- **%s** (inline, truncated)\n%s\n%s\n%s\n" \
+              "$file_path" "$fence" "$truncated" "$fence"
+          }
+
+          USE_GISTS=1
           if [[ -z "${REPO_PAT:-}" ]]; then
-            echo "ERROR: REPO_PAT is not set. It must have 'gist' scope to create private gists." >&2
-            exit 1
+            echo "REPO_PAT is not set; falling back to inline conflict content." >&2
+            USE_GISTS=0
           fi
 
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
@@ -138,24 +162,26 @@ jobs:
               # Read up to 400k lines (~large), normalize line endings
               FILE_CONTENT=$(sed -n '1,400000p' "$f" | sed 's/\r$//')
 
-              # Create a private gist with the exact file content
-              GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$FILE_CONTENT" \
-                '{public:false, files:{($name):{content:$content}}}')
+              if [[ "$USE_GISTS" -eq 1 ]]; then
+                # Create a private gist with the exact file content
+                GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$FILE_CONTENT" \
+                  '{public:false, files:{($name):{content:$content}}}')
 
-              GIST_RESPONSE=$(curl -s -X POST \
-                -H "Authorization: token '"$REPO_PAT"'" \
-                -H "Content-Type: application/json" \
-                -d "$GIST_PAYLOAD" https://api.github.com/gists)
+                GIST_RESPONSE=$(curl -s -X POST \
+                  -H "Authorization: token '"$REPO_PAT"'" \
+                  -H "Content-Type: application/json" \
+                  -d "$GIST_PAYLOAD" https://api.github.com/gists)
 
-              GIST_URL=$(echo "$GIST_RESPONSE" | jq -r '.html_url // empty')
-              if [[ -n "$GIST_URL" ]]; then
-                GIST_LINES+="- **$f**: ${GIST_URL}\n"
-              else
-                # Emergency inline fallback (truncated safely to avoid comment limits)
-                TRUNCATED=$(printf "%s" "$FILE_CONTENT" | head -c 30000)
-                if [[ "$TRUNCATED" == *\`\`\`* ]]; then fence="~~~"; else fence="\`\`\`"; fi
-                GIST_LINES+="- **$f** (inline, truncated)\n${fence}\n${TRUNCATED}\n${fence}\n"
+                GIST_URL=$(echo "$GIST_RESPONSE" | jq -r '.html_url // empty')
+                if [[ -n "$GIST_URL" ]]; then
+                  GIST_LINES+="- **$f**: ${GIST_URL}\n"
+                  continue
+                fi
+
+                echo "Failed to create gist for $f; falling back to inline snippet." >&2
               fi
+
+              GIST_LINES+="$(emit_inline_reference "$f" "$MAX_INLINE")"
             else
               GIST_LINES+="- **$f**: (file missing in working tree)\n"
             fi
@@ -174,6 +200,9 @@ jobs:
         if: steps.merge_try.outputs.conflicts == 'true'
         id: find_pr
         shell: bash
+        env:
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # If we're in a PR run, we already have the number
@@ -184,7 +213,14 @@ jobs:
 
           # workflow_dispatch path: look up PR by head branch
           OWNER="${REPO%%/*}"
-          PR=$(curl -s -H "Authorization: token $REPO_PAT" \
+          AUTH_TOKEN="${REPO_PAT:-${GITHUB_TOKEN:-}}"
+          if [[ -z "$AUTH_TOKEN" ]]; then
+            echo "No token available to query pull requests." >&2
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR=$(curl -s -H "Authorization: token $AUTH_TOKEN" \
                 "$GITHUB_API/repos/$REPO/pulls?head=${OWNER}:${BRANCH}" | jq -r '.[0].number // empty')
           if [[ -z "$PR" || "$PR" == "null" ]]; then
             echo "No PR found for $OWNER:$BRANCH" >&2
