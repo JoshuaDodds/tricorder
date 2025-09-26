@@ -38,6 +38,81 @@ body {
   margin: 0 auto;
 }
 
+.system-banner {
+  display: none;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.42);
+  box-shadow: 0 18px 40px -26px rgba(248, 113, 113, 0.55);
+  backdrop-filter: blur(10px);
+  color: #fee2e2;
+  line-height: 1.35;
+}
+
+.system-banner[data-visible="true"] {
+  display: flex;
+}
+
+.system-banner .banner-icon {
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.15);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  font-weight: 700;
+  font-size: 1.4rem;
+}
+
+.system-banner .banner-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.system-banner .banner-title {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: 0.03em;
+}
+
+.system-banner .banner-message {
+  margin: 0;
+  font-size: 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.system-banner .banner-link {
+  color: #bae6fd;
+  font-weight: 600;
+  text-decoration: underline;
+  width: fit-content;
+}
+
+.system-banner .banner-link:hover {
+  color: #f8fafc;
+}
+
+.system-banner .banner-link:focus-visible {
+  outline: 2px solid rgba(191, 219, 254, 0.9);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+.system-banner .banner-detail {
+  margin: 0;
+  font-size: 0.85rem;
+  color: rgba(254, 226, 226, 0.85);
+}
+
 .app-header {
   display: flex;
   justify-content: space-between;

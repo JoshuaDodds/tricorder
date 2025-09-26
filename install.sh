@@ -16,7 +16,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE=$VENV/lib/python$PY_VER/site-packages
 
-UNITS=(voice-recorder.service web-streamer.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder.target)
+UNITS=(voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder.target)
 
 say(){ echo "[Tricorder] $*"; }
 
@@ -174,7 +174,7 @@ fi
 if [[ "${DEV:-0}" != "1" ]]; then
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
-  for unit in voice-recorder.service web-streamer.service dropbox.service tmpfs-guard.service tricorder-auto-update.service; do
+  for unit in voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service tmpfs-guard.service tricorder-auto-update.service; do
       sudo systemctl enable "$unit" || true
   done
   for timer in tmpfs-guard.timer tricorder-auto-update.timer; do

@@ -12,6 +12,34 @@
   </head>
   <body data-tricorder-api-base="{{ api_base | default('', true) }}">
     <div class="app-shell">
+      <div
+        id="system-banner"
+        class="system-banner"
+        role="alert"
+        aria-live="assertive"
+        hidden
+        data-visible="false"
+      >
+        <div class="banner-icon" aria-hidden="true">!</div>
+        <div class="banner-body">
+          <h2 class="banner-title">SD card warning</h2>
+          <p id="system-banner-message" class="banner-message">
+            <span>
+              Persistent SD card faults detected. Replace the card as soon as possible.
+            </span>
+            <a
+              id="system-banner-help"
+              class="banner-link"
+              href="{{ static_url('docs/sd-card-recovery.html') }}"
+              target="_blank"
+              rel="noopener"
+            >
+              How to clone and replace the SD card
+            </a>
+          </p>
+          <p id="system-banner-detail" class="banner-detail"></p>
+        </div>
+      </div>
       <header class="app-header">
         <div class="titles">
           <h1>Dashboard</h1>
