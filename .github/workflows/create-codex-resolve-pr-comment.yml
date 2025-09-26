@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      
+
     env:
       GITHUB_API: https://api.github.com
       # REPO defaults to this repository unless provided via workflow_dispatch input
@@ -262,9 +262,11 @@ jobs:
           trap 'rm -f "$payload_file" "$response_file"' EXIT
 
           # Use the workflow GITHUB_TOKEN for repo comments
+
           jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
 
           status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
+
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments")
