@@ -257,12 +257,27 @@ jobs:
           COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
           set -euo pipefail
+          payload_file=$(mktemp)
+          response_file=$(mktemp)
+          trap 'rm -f "$payload_file" "$response_file"' EXIT
+
           # Use the workflow GITHUB_TOKEN for repo comments
-          jq -n --arg body "$COMMENT_BODY" '{body:$body}' | \
-          curl -sS -X POST \
+
+          jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
+
+          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
+
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            -d @- "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments" >/dev/null
+            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments")
+
+          if [[ "$status" != "201" ]]; then
+            echo "Failed to post PR comment (status $status). Response body:" >&2
+            cat "$response_file" >&2
+            exit 1
+          fi
+
+          echo "Posted merge-conflict instructions comment to PR #${{ steps.find_pr.outputs.pr_number }} (status $status)."
 
       - name: Echo prepared comment (no PR found)
         if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure')
