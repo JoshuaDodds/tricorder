@@ -126,6 +126,15 @@ body {
   box-shadow: 0 0 0 5px rgba(56, 189, 248, 0.18);
 }
 
+.recording-indicator[data-state="disabled"] {
+  color: #fb923c;
+}
+
+.recording-indicator[data-state="disabled"] .indicator-dot {
+  background: #fb923c;
+  box-shadow: 0 0 0 5px rgba(251, 146, 60, 0.25);
+}
+
 .recording-indicator[data-state="unknown"] {
   color: rgba(148, 163, 184, 0.7);
 }
