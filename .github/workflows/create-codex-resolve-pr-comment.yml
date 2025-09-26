@@ -1,0 +1,163 @@
+name: Tell @codex to fix merge conflict
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to run on (do NOT use 'main')"
+        required: true
+      pr_number:
+        description: "Optional: PR number (auto-detected if omitted)"
+        required: false
+      max_inline_size:
+        description: "Max file size (bytes) to inline in comment (use gist beyond this)."
+        required: false
+        default: "60000"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  post-conflicts:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.branch != 'main' && github.event.inputs.branch != '' }}
+    env:
+      GITHUB_API: https://api.github.com
+    steps:
+
+      - name: Checkout target branch (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
+
+      - name: Configure git user
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Fetch origin/main
+        run: git fetch --no-tags --prune --depth=1 origin main:refs/remotes/origin/main
+
+      - name: Attempt merge (no commit) to reproduce conflicts
+        id: merge
+        run: |
+          set -e
+          git merge --no-commit --no-ff origin/main || true
+          if git ls-files -u | grep -q .; then
+            echo "conflicts=true" >> $GITHUB_OUTPUT
+          else
+            echo "conflicts=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exit if no conflicts
+        if: steps.merge.outputs.conflicts == 'false'
+        run: |
+          echo "No conflicts after merging origin/main into ${{ github.event.inputs.branch }}. Nothing to post."
+      
+      - name: Collect conflicted files and prepare comment
+        if: steps.merge.outputs.conflicts == 'true'
+        id: prepare
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.inputs.branch }}
+          MAX_INLINE: ${{ github.event.inputs.max_inline_size }}
+          REPO_PAT: ${{ secrets.REPO_PAT }}
+        run: |
+          set -euo pipefail
+          CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
+          echo "conflict_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CONFLICT_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Build comment body
+          COMMENT="Automated context: attempted merging origin/main into branch \`${BRANCH}\` produced merge conflicts. Tagging @codex to resolve.\\n\\n"
+          COMMENT="$COMMENT---\\n"
+          COMMENT="$COMMENT**Resolution instructions for @codex (follow exactly):**\\n"
+          COMMENT="$COMMENT\\n\`\`\`text\\n@codex You are resolving a Git merge conflict. I will provide the full file contents including conflict markers (<<<<<<<, =======, >>>>>>>).\\n\\nYour tasks:\\n1) Produce a single merged file that preserves all new functionality from both sides unless logically redundant.\\n2) Preserve function signatures, imports, and surrounding context exactly unless they must change for correctness.\\n3) Ensure the final file is syntactically correct and contains no conflict markers.\\n4) Output ONLY the final merged file contents. No explanations, no extra comments.\\n5) After producing the resolved file(s), overwrite the conflicted file(s) in the branch, run:\\n   git add <file> && git commit -m \"chore: AI-resolved merge conflicts (automated)\" && git push origin HEAD\\n   (You have access to push authenticated as the repository user.)\\n\\nIf a file is too large to inline, a Gist has been created and linked below.\\n\\nEnd of instruction.\\n\`\`\`\\n\\n"
+          COMMENT="$COMMENT---\\n\\n"
+
+          # For each file include its conflicted contents (or create gist if large)
+          for f in $CONFLICT_FILES; do
+            if [ ! -f "$f" ]; then
+              COMMENT="$COMMENT**$f**: [file missing in working tree]\\n\\n"
+              continue
+            fi
+            filesize=$(stat -c%s "$f" || stat -f%z "$f")
+            echo "Processing $f (size: $filesize bytes)"
+            if [ "$filesize" -le "$MAX_INLINE" ]; then
+              CONTENT=$(sed -n '1,400000p' "$f" | sed 's/\r$//')
+              # Escape triple backticks inside content by using ~~~ fence if needed
+              if printf '%s' "$CONTENT" | grep -q '\`\`\`'; then
+                fence="~~~"
+              else
+                fence="\`\`\`"
+              fi
+              COMMENT="$COMMENT**File: $f**\\n$fencejs\n$CONTENT\n$fence\\n\\n"
+            else
+              echo "Creating gist for $f"
+              GIST_PAYLOAD=$(jq -n --arg name "$f" --arg content "$(sed -n '1,400000p' "$f")" \
+                '{public:false,files:{($name):{content:$content}}}')
+              GIST_RESPONSE=$(curl -s -X POST -H "Authorization: token $REPO_PAT" -H "Content-Type: application/json" \
+                -d "$GIST_PAYLOAD" https://api.github.com/gists)
+              GIST_URL=$(echo "$GIST_RESPONSE" | jq -r .html_url // empty)
+              if [ -z "$GIST_URL" ]; then
+                echo "Gist creation failed, including inline fallback for $f"
+                CONTENT=$(sed -n '1,400000p' "$f" | sed 's/\r$//')
+                COMMENT="$COMMENT**File: $f** (failed to gist; inlined)\\n\`\`\`js\n$CONTENT\n\`\`\`\\n\\n"
+              else
+                COMMENT="$COMMENT**File: $f**: $GIST_URL\\n\\n"
+              fi
+            fi
+          done
+
+          # Detect or find PR number
+          PR="${{ github.event.inputs.pr_number || '' }}"
+          if [ -z "$PR" ]; then
+            echo "Attempting to find PR for branch ${BRANCH}"
+            PR=$(curl -s -H "Authorization: token $REPO_PAT" \
+              "${GITHUB_API}/repos/${REPO}/pulls?head=${REPO%/*}:${BRANCH}" | jq -r '.[0].number // empty')
+          fi
+          if [ -z "$PR" ]; then
+            echo "No PR found for branch ${BRANCH}. Will post comment on the branch's PR is required. Exiting with failure."
+            echo "pr_number<<EOF" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "comment_body<<EOF" >> $GITHUB_OUTPUT
+            echo "$COMMENT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "pr_number<<EOF" >> $GITHUB_OUTPUT
+          echo "$PR" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "comment_body<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post comment to PR as you (with REPO_PAT)
+        if: steps.merge.outputs.conflicts == 'true'
+        env:
+          REPO: ${{ github.repository }}
+          REPO_PAT: ${{ secrets.REPO_PAT }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${{ steps.prepare.outputs.pr_number }}"
+          COMMENT_BODY="${{ steps.prepare.outputs.comment_body }}"
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "PR number was not detected. See action output for the prepared comment. Failing."
+            echo "Prepared comment saved to workflow logs."
+            echo "$COMMENT_BODY"
+            exit 1
+          fi
+
+          echo "Posting comment to PR #$PR_NUMBER as the token owner..."
+          PAYLOAD=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
+          curl -s -X POST -H "Authorization: token $REPO_PAT" -H "Content-Type: application/json" \
+            -d "$PAYLOAD" "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            | jq -r '.html_url' || true
+
+          echo "Comment posted. Workflow finished."
