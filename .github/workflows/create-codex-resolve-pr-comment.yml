@@ -100,7 +100,7 @@ jobs:
           REPO_PAT: ${{ env.REPO_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           emit_inline_reference() {
             local file_path="$1"
