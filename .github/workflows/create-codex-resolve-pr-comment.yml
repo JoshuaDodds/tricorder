@@ -1,5 +1,4 @@
-name: AI: Post conflict context to @codex (manual)
-
+name: Tell @codex to fix merge conflict
 on:
   workflow_dispatch:
     inputs:
