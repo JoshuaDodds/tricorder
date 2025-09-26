@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      metadata: read
+      
     env:
       GITHUB_API: https://api.github.com
       # REPO defaults to this repository unless provided via workflow_dispatch input
