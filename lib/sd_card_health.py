@@ -235,7 +235,12 @@ def reset_state(new_cid: str, state_path: Path | None = None) -> Dict[str, Any]:
     return state
 
 
-def sync_cid(current_cid: str | None, state_path: Path | None = None) -> SyncResult:
+def sync_cid(
+    current_cid: str | None,
+    state_path: Path | None = None,
+    *,
+    force_reset: bool = False,
+) -> SyncResult:
     """Ensure the persisted state matches the current CID.
 
     Returns ``SyncResult`` where ``status`` is one of:
@@ -243,6 +248,7 @@ def sync_cid(current_cid: str | None, state_path: Path | None = None) -> SyncRes
     - ``"missing"`` – CID unreadable (no state change).
     - ``"initialised"`` – baseline persisted for the first time.
     - ``"replaced"`` – CID changed, warning cleared.
+    - ``"rebaselined"`` – warning cleared without CID change via ``force_reset``.
     - ``"unchanged"`` – CID matches the persisted baseline.
     """
 
@@ -258,6 +264,14 @@ def sync_cid(current_cid: str | None, state_path: Path | None = None) -> SyncRes
         state["updated_at"] = _isoformat(now)
         _store_state(state, state_path)
         return SyncResult(state=state, status="initialised")
+
+    if (
+        force_reset
+        and stored_cid == cid
+        and (state.get("warning_active") or state.get("last_event"))
+    ):
+        state = reset_state(cid, state_path)
+        return SyncResult(state=state, status="rebaselined")
 
     if stored_cid != cid:
         state = reset_state(cid, state_path)

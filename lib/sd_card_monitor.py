@@ -150,9 +150,12 @@ class SdCardMonitor:
         elif result.status == "initialised":
             self._cid_missing_logged = False
             self._log("Stored SD card CID baseline")
-        elif result.status == "replaced":
+        elif result.status in {"replaced", "rebaselined"}:
             self._cid_missing_logged = False
-            self._log("Detected SD card replacement; warning state cleared")
+            if result.status == "replaced":
+                self._log("Detected SD card replacement; warning state cleared")
+            else:
+                self._log("Reset SD card warning baseline without CID change")
             if self._volatile_active:
                 self._clear_volatile_state()
         else:

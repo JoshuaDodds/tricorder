@@ -61,6 +61,23 @@ def test_sync_cid_transitions(tmp_path):
     assert result_replaced.state["warning_active"] is False
 
 
+def test_sync_cid_force_reset_clears_warning(tmp_path):
+    state_path = tmp_path / "sd_state.json"
+
+    sd_card_health.sync_cid("abcd", state_path)
+    sd_card_health.register_failure(
+        "crc error",
+        pattern="crc_error",
+        state_path=state_path,
+    )
+
+    result = sd_card_health.sync_cid("abcd", state_path, force_reset=True)
+    assert result.status == "rebaselined"
+    assert result.state["cid"] == "abcd"
+    assert result.state["warning_active"] is False
+    assert result.state["last_event"] is None
+
+
 def test_state_summary_structure(tmp_path):
     state_path = tmp_path / "sd_state.json"
     sd_card_health.register_failure(
