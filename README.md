@@ -14,6 +14,7 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 - Web dashboard (aiohttp + Jinja) for monitoring recorder state, browsing recordings, previewing audio + waveform, deleting files, and inspecting configuration.
 - Dropbox-style ingest path for external recordings that reuses the segmentation + encoding pipeline.
 - Systemd-managed services and timers, including optional automatic updates driven by `tricorder_auto_update.sh`.
+- Persistent SD card health monitoring with automatic dashboard warnings when the card reports errors.
 - Utilities for deployment (`install.sh`), cleanup (`clear_logs.sh`), and environment tuning (`room_tuner.py`).
 
 ---
@@ -55,6 +56,7 @@ graph TD
         SM_dropbox[dropbox.path + dropbox.service] --> G;
         SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E;
         SM_updater[tricorder-auto-update.timer + service] --> D;
+        SM_sd_monitor[sd-card-monitor.service] --> J;
     end
 ```
 
@@ -68,6 +70,7 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 | --- | --- |
 | `voice-recorder.service` | Runs `live_stream_daemon.py` for continuous capture and segmentation. |
 | `web-streamer.service` | Hosts the aiohttp dashboard + HLS endpoints (`lib/web_streamer.py`). |
+| `sd-card-monitor.service` | Monitors kernel/syslog for SD card errors and keeps the dashboard warning banner in sync. |
 | `dropbox.path` / `dropbox.service` | Watches `/apps/tricorder/dropbox` and processes externally provided recordings. |
 | `tmpfs-guard.timer` / `tmpfs-guard.service` | Enforces tmpfs usage/rotation to prevent storage exhaustion. |
 | `tricorder-auto-update.timer` / `tricorder-auto-update.service` | Periodically run `bin/tricorder_auto_update.sh` to pull and install updates. |
@@ -89,6 +92,7 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 - Recording browser with search, day filtering, pagination, and bulk deletion.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
+- Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
@@ -149,6 +153,7 @@ tricorder/
 ├── systemd/
 │   ├── dropbox.path
 │   ├── dropbox.service
+│   ├── sd-card-monitor.service
 │   ├── tmpfs-guard.service
 │   ├── tmpfs-guard.timer
 │   ├── tricorder-auto-update.service
@@ -165,6 +170,7 @@ tricorder/
 │   ├── test_50_uninstall.py
 │   ├── test_60_hls.py
 │   ├── test_waveform_cache.py
+│   ├── test_sd_card_health.py
 │   └── test_web_dashboard.py
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -184,7 +190,7 @@ tricorder/
    - Installs apt dependencies (`ffmpeg`, `alsa-utils`, `python3-venv`, `python3-pip`).
    - Creates a Python virtualenv under `/apps/tricorder/venv` and installs `requirements.txt`.
    - Copies project files into `/apps/tricorder`, preserving existing YAML configs.
-   - Installs/updates systemd units, enables services (`voice-recorder`, `web-streamer`, `dropbox`) and timers (`tmpfs-guard`, `tricorder-auto-update`).
+   - Installs/updates systemd units, enables services (`voice-recorder`, `web-streamer`, `sd-card-monitor`, `dropbox`) and timers (`tmpfs-guard`, `tricorder-auto-update`).
 3. Optional flags:
    - `DEV=1 ./install.sh` skips apt + systemd actions and also copies `main.py` and `room_tuner.py` for development setups.
    - `BASE=/custom/path ./install.sh` installs into an alternate root (used by tests and CI).
@@ -282,6 +288,16 @@ Select any recording in the dashboard preview pane to open the new **Clip editor
 - Click **Save clip** to render a new `.opus` file and waveform sidecar via the existing ffmpeg/Opus pipeline. The new artifact appears alongside the original recording so you can review or delete either copy immediately.
 
 Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and never overwrite the source file.
+
+### SD card recovery workflow
+
+When the SD card monitor flags persistent kernel errors, the dashboard banner now exposes a **Clone and replace the SD card** help link. The linked page lives on the recorder at `/static/docs/sd-card-recovery.html` and walks through:
+
+- Gracefully shutting down the recorder before removing the failing card.
+- Using a workstation to clone the failing card onto a replacement of equal or larger capacity with `dd`.
+- Expanding the filesystem on a larger target and rebooting to confirm the warning clears automatically once the CID changes.
+
+If the `dd` copy encounters unrecoverable sectors, rerun the clone with `ddrescue` or re-image a fresh OS and restore `/recordings` and configuration files from backup.
 
 ---
 

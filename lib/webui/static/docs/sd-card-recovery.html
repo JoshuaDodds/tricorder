@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clone and Replace the Recorder SD Card</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        margin: 0 auto;
+        padding: 1.5rem clamp(1rem, 4vw, 3rem);
+        max-width: 60rem;
+        line-height: 1.6;
+        background: #0b111b;
+        color: #f8fafc;
+      }
+      h1,
+      h2,
+      h3 {
+        line-height: 1.2;
+        margin-top: 2rem;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: clamp(2rem, 5vw, 2.8rem);
+      }
+      h2 {
+        font-size: clamp(1.4rem, 4vw, 1.9rem);
+      }
+      h3 {
+        font-size: clamp(1.2rem, 3vw, 1.4rem);
+      }
+      p,
+      li {
+        font-size: clamp(1rem, 3vw, 1.05rem);
+      }
+      code,
+      pre {
+        font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+      }
+      pre {
+        background: rgba(15, 23, 42, 0.85);
+        border-radius: 0.5rem;
+        padding: 1rem;
+        overflow-x: auto;
+      }
+      a {
+        color: #38bdf8;
+      }
+      .callout {
+        border-left: 0.35rem solid #f97316;
+        background: rgba(249, 115, 22, 0.12);
+        padding: 0.75rem 1rem;
+        border-radius: 0.5rem;
+        margin: 1.5rem 0;
+      }
+      ol {
+        padding-left: 1.25rem;
+      }
+      footer {
+        margin-top: 3rem;
+        font-size: 0.9rem;
+        color: rgba(248, 250, 252, 0.75);
+      }
+      @media (prefers-color-scheme: light) {
+        body {
+          background: #f9fafb;
+          color: #0f172a;
+        }
+        pre {
+          background: rgba(226, 232, 240, 0.7);
+        }
+        .callout {
+          background: rgba(251, 191, 36, 0.2);
+          color: #92400e;
+        }
+        footer {
+          color: rgba(15, 23, 42, 0.7);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Clone and Replace the Recorder SD Card</h1>
+    <p>
+      This guide explains how to copy the recorder's SD card to a new card after a
+      hardware warning. The steps assume you have a Linux or macOS workstation
+      with an SD card reader. Commands use <code>sdX</code> as the source card and
+      <code>sdY</code> as the destination; substitute the actual device paths on
+      your workstation.
+    </p>
+
+    <div class="callout">
+      <strong>Important:</strong> The recorder must be shut down before you remove
+      its SD card. Removing a card from a running system can corrupt data.
+    </div>
+
+    <h2>1. Shut down and identify the failing card</h2>
+    <ol>
+      <li>Run <code>sudo shutdown -h now</code> on the recorder and wait for the LEDs to stop blinking.</li>
+      <li>Remove the card from the recorder and insert it into your workstation's reader.</li>
+      <li>Run <code>lsblk</code> (Linux) or <code>diskutil list</code> (macOS) to identify the device name for the failing card.</li>
+    </ol>
+
+    <h2>2. Insert the replacement card</h2>
+    <ol>
+      <li>Insert the new SD card into the reader. It must be equal or larger in capacity.</li>
+      <li>Use <code>lsblk</code> or <code>diskutil list</code> again to confirm the device name. Double-check the mapping; the next step will overwrite the destination card completely.</li>
+      <li>If the new card has existing partitions mounted, unmount them (for example <code>sudo umount /dev/sdY*</code> on Linux).</li>
+    </ol>
+
+    <h2>3. Clone the card block-for-block</h2>
+    <p>
+      Use <code>dd</code> with a progress monitor to stream the failing card onto the new card. The <code>conv=fsync</code> flag makes sure buffers are flushed before the command exits.
+    </p>
+    <pre><code>sudo dd if=/dev/sdX of=/dev/sdY bs=4M status=progress conv=fsync</code></pre>
+    <p>
+      When the command finishes, run <code>sync</code> to flush any outstanding writes. Some cards need a few extra seconds before it is safe to remove them from the reader.
+    </p>
+
+    <h2>4. Expand the filesystem (optional)</h2>
+    <p>
+      If the replacement card is larger than the original, expand the filesystem so the recorder can use the extra space:</p>
+    <ul>
+      <li>Linux: run <code>sudo raspi-config --expand-rootfs</code> after the new card boots, or use <code>growpart</code> and <code>resize2fs</code>.</li>
+      <li>Raspberry Pi OS (Bookworm): the GUI imager's “Expand filesystem” option performs the same task on first boot.</li>
+    </ul>
+
+    <h2>5. Boot the recorder with the new card</h2>
+    <ol>
+      <li>Eject both cards from your workstation. Reinsert the cloned card into the recorder.</li>
+      <li>Power on the recorder. The dashboard warning banner clears automatically after it detects the new card's CID.</li>
+      <li>Verify that recordings resume and that the dashboard no longer shows the SD card warning after a refresh.</li>
+    </ol>
+
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li>If <code>dd</code> reports read errors, retry with <code>ddrescue</code> for a more fault-tolerant copy. Document the command you used in case you need to re-run it.</li>
+      <li>If the recorder refuses to boot, re-image the new card with a fresh OS image and restore the <code>/recordings</code> and configuration files from backup.</li>
+    </ul>
+
+    <footer>
+      Static recovery instructions live at <code>/static/docs/sd-card-recovery.html</code> on the device.
+    </footer>
+  </body>
+</html>

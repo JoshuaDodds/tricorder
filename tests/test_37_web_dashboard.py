@@ -493,3 +493,20 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
             await server.close()
 
     asyncio.run(runner())
+
+
+def test_sd_card_recovery_static_doc_served(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/static/docs/sd-card-recovery.html")
+            assert resp.status == 200
+            payload = await resp.text()
+            assert "Clone and Replace the Recorder SD Card" in payload
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())

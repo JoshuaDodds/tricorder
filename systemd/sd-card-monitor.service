@@ -1,0 +1,19 @@
+[Unit]
+Description=Tricorder SD card health monitor
+After=network-online.target
+Wants=network-online.target
+PartOf=tricorder.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/apps/tricorder
+ExecStart=/apps/tricorder/venv/bin/python -m lib.sd_card_monitor
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
