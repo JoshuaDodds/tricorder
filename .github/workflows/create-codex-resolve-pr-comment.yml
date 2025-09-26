@@ -250,10 +250,12 @@ jobs:
       - name: Post comment to PR
         if: steps.merge_try.outputs.conflicts == 'true' && steps.find_pr.outputs.pr_number != ''
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
           set -euo pipefail
           # Use the workflow GITHUB_TOKEN for repo comments
-          jq -n --arg body "${{ steps.prep_comment.outputs.prepared_comment }}" '{body:$body}' | \
+          jq -n --arg body "$COMMENT_BODY" '{body:$body}' | \
           curl -sS -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
@@ -262,5 +264,8 @@ jobs:
       - name: Echo prepared comment (no PR found)
         if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure')
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
-          echo "${{ steps.prep_comment.outputs.prepared_comment }}"
+          set -euo pipefail
+          printf "%s\n" "$COMMENT_BODY"
