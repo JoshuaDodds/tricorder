@@ -149,7 +149,7 @@ jobs:
               Do NOT remove new functionality from either branch unless it is duplicated.
               Resolve without adding comments, explanations, and be sure to remove conflict markers.
 
-          After producing the resolved file(s), overwrite the conflicted file(s) in the branch, then run (from the repo root):
+          After producing the resolved file(s), overwrite the conflicted file(s), then run (from the repo root):
               git add <file> && git commit -m "chore: AI-resolved merge conflicts (automated)" && git push origin HEAD
 
           You should push using credentials that can push to this repository as the repository user.
@@ -164,6 +164,7 @@ jobs:
 
           BRANCH_MARKDOWN=$(printf '\`%s\`' "$BRANCH")
           PREAMBLE=${PREAMBLE_TEMPLATE//BRANCH_PLACEHOLDER/$BRANCH_MARKDOWN}
+
 
           GIST_LINES=""
           for f in $CONFLICT_FILES; do
@@ -252,35 +253,52 @@ jobs:
 
       - name: Post comment to PR
         if: steps.merge_try.outputs.conflicts == 'true' && steps.find_pr.outputs.pr_number != ''
+        id: post_comment
         shell: bash
         env:
           COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
+          ISSUE_NUMBER: ${{ steps.find_pr.outputs.pr_number }}
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           payload_file=$(mktemp)
           response_file=$(mktemp)
           trap 'rm -f "$payload_file" "$response_file"' EXIT
 
-          # Use the workflow GITHUB_TOKEN for repo comments
-
           jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
 
-          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
-
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments")
-
-          if [[ "$status" != "201" ]]; then
-            echo "Failed to post PR comment (status $status). Response body:" >&2
-            cat "$response_file" >&2
-            exit 1
+          auth_token="${REPO_PAT:-${GITHUB_TOKEN:-}}"
+          if [[ -z "$auth_token" ]]; then
+            echo "No token available for posting PR comment; falling back to log output." >&2
+            echo "posted=false" >>"$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "Posted merge-conflict instructions comment to PR #${{ steps.find_pr.outputs.pr_number }} (status $status)."
+          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
+            -H "Authorization: token ${auth_token}" \
+            -H "Accept: application/vnd.github+json" \
+            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${ISSUE_NUMBER}/comments")
+
+          if [[ "$status" == "201" ]]; then
+            echo "Posted merge-conflict instructions comment to PR #${ISSUE_NUMBER} (status $status)."
+            echo "posted=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Failed to post PR comment (status $status). Response body:" >&2
+          cat "$response_file" >&2
+          echo "posted=false" >>"$GITHUB_OUTPUT"
+
+          if [[ "$status" == "403" ]]; then
+            echo "Comment permissions denied; will emit instructions to logs instead." >&2
+            exit 0
+          fi
+
+          exit 1
 
       - name: Echo prepared comment (no PR found)
-        if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure')
+        if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure' || steps.post_comment.outputs.posted != 'true')
         shell: bash
         env:
           COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
