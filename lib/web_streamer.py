@@ -620,7 +620,7 @@ def build_app() -> web.Application:
             frame_bytes=frame_bytes,
             history_seconds=history_seconds,
         )
-        app["webrtc_manager"] = webrtc_manager
+    app["webrtc_manager"] = webrtc_manager
     recordings_root = Path(cfg["paths"]["recordings_dir"])
     try:
         recordings_root.mkdir(parents=True, exist_ok=True)
