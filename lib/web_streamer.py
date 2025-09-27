@@ -848,6 +848,26 @@ async def _restart_units(units: Iterable[str]) -> list[dict[str, Any]]:
         if not unit_text or unit_text in seen:
             continue
         seen.add(unit_text)
+        status_code, status_stdout, status_stderr = await _run_systemctl(
+            ["is-active", unit_text]
+        )
+        status_stdout_text = status_stdout.strip()
+        status_stderr_text = status_stderr.strip()
+        if status_code != 0:
+            skip_reason = status_stderr_text or status_stdout_text
+            if not skip_reason:
+                skip_reason = "Service inactive; restart skipped."
+            results.append(
+                {
+                    "unit": f"{unit_text} (inactive, restart skipped)",
+                    "ok": True,
+                    "stdout": status_stdout_text,
+                    "stderr": status_stderr_text,
+                    "message": skip_reason,
+                    "returncode": 0,
+                }
+            )
+            continue
         code, stdout, stderr = await _run_systemctl(["restart", unit_text])
         stdout_text = stdout.strip()
         stderr_text = stderr.strip()
