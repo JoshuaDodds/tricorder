@@ -70,26 +70,95 @@
               hidden
               data-visible="false"
             >
-              <button
-                id="archival-open"
-                class="menu-item"
-                type="button"
-                role="menuitem"
-                aria-haspopup="dialog"
-                aria-expanded="false"
-              >
-                Archival settings
-              </button>
-              <button
-                id="services-open"
-                class="menu-item"
-                type="button"
-                role="menuitem"
-                aria-haspopup="dialog"
-                aria-expanded="false"
-              >
-                Services
-              </button>
+              <div class="menu-section" role="none">
+                <div class="menu-section-title" role="presentation">Recorder configuration</div>
+                <button
+                  id="recorder-menu-audio"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="audio"
+                >
+                  Audio input &amp; gain
+                </button>
+                <button
+                  id="recorder-menu-segmenter"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="segmenter"
+                >
+                  Event detection
+                </button>
+                <button
+                  id="recorder-menu-adaptive"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="adaptive_rms"
+                >
+                  Adaptive RMS
+                </button>
+                <button
+                  id="recorder-menu-ingest"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="ingest"
+                >
+                  Ingest pipeline
+                </button>
+                <button
+                  id="recorder-menu-logging"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="logging"
+                >
+                  Logging &amp; diagnostics
+                </button>
+                <button
+                  id="recorder-menu-streaming"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="streaming"
+                >
+                  Live streaming
+                </button>
+                <button
+                  id="recorder-menu-dashboard"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="dashboard"
+                >
+                  Dashboard API access
+                </button>
+              </div>
+              <div class="menu-section" role="none">
+                <div class="menu-section-title" role="presentation">Operations</div>
+                <button
+                  id="archival-open"
+                  class="menu-item"
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                >
+                  Archival settings
+                </button>
+                <button
+                  id="services-open"
+                  class="menu-item"
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                >
+                  Services
+                </button>
+              </div>
             </div>
           </div>
           <h1>Dashboard</h1>
@@ -519,6 +588,391 @@
             aria-label="Service statuses"
           ></div>
           <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
+        </div>
+      </div>
+    </div>
+    <div
+      id="recorder-settings-modal"
+      class="settings-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="recorder-settings-dialog"
+        class="settings-dialog card recorder-settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="recorder-settings-title"
+        aria-describedby="recorder-settings-description"
+        tabindex="-1"
+        data-active-section=""
+      >
+        <div class="card-header settings-dialog-header">
+          <div class="card-heading">
+            <h2 id="recorder-settings-title">Recorder configuration</h2>
+            <p id="recorder-settings-description" class="card-subtitle">
+              Tune audio capture, event detection, ingest, and streaming settings without leaving the dashboard.
+            </p>
+          </div>
+          <div class="settings-dialog-actions">
+            <button id="recorder-settings-close" class="ghost-button small" type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        <div class="settings-dialog-body recorder-settings-body">
+          <div class="settings-footnote">
+            Saved to <code id="recorder-settings-config-path"></code>
+          </div>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="audio"
+            aria-labelledby="recorder-audio-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-audio-title" class="settings-section-title">Audio input &amp; gain</h3>
+              <p class="settings-section-description">
+                Select the ALSA capture device and frame characteristics used by the recorder pipeline.
+              </p>
+            </div>
+            <form id="audio-form" class="settings-subform" novalidate>
+              <div class="settings-field">
+                <label for="audio-device">ALSA device</label>
+                <input id="audio-device" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Matches the identifier reported by <code>arecord -l</code>, for example
+                  <code>hw:CARD=Device,DEV=0</code>.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="audio-sample-rate">Sample rate</label>
+                <select id="audio-sample-rate">
+                  <option value="48000">48&nbsp;kHz (recommended)</option>
+                  <option value="32000">32&nbsp;kHz</option>
+                  <option value="16000">16&nbsp;kHz</option>
+                </select>
+                <p class="field-description">
+                  Higher rates improve VAD accuracy and WebRTC stream quality at the cost of CPU and storage.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="audio-frame-ms">Frame duration</label>
+                <select id="audio-frame-ms">
+                  <option value="10">10&nbsp;ms</option>
+                  <option value="20">20&nbsp;ms</option>
+                  <option value="30">30&nbsp;ms</option>
+                </select>
+                <p class="field-description">
+                  Shorter frames reduce latency; 20&nbsp;ms balances responsiveness and CPU load.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="audio-gain">Software gain</label>
+                <input id="audio-gain" type="number" min="0.1" max="16" step="0.1" />
+                <p class="field-description">
+                  Linear multiplier applied before detection. Values above 4 can cause clipping on loud inputs.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="audio-vad">VAD aggressiveness</label>
+                <select id="audio-vad">
+                  <option value="0">0 – permissive (captures most sounds)</option>
+                  <option value="1">1 – low</option>
+                  <option value="2">2 – balanced</option>
+                  <option value="3">3 – strict (filters background noise)</option>
+                </select>
+                <p class="field-description">
+                  Controls the WebRTC voice detector sensitivity. Higher values reject more noise but may miss quiet speech.
+                </p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="audio-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="audio-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="audio-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="segmenter"
+            aria-labelledby="recorder-segmenter-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-segmenter-title" class="settings-section-title">Event detection</h3>
+              <p class="settings-section-description">
+                Adjust trigger windows, thresholds, and buffer sizes used while segmenting audio into recordings.
+              </p>
+            </div>
+            <form id="segmenter-form" class="settings-subform" novalidate>
+              <div class="settings-field">
+                <label for="segmenter-pre-pad">Pre-roll (ms)</label>
+                <input id="segmenter-pre-pad" type="number" min="0" step="100" />
+                <p class="field-description">Amount of context preserved before the trigger fires.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-post-pad">Post-roll (ms)</label>
+                <input id="segmenter-post-pad" type="number" min="0" step="100" />
+                <p class="field-description">How long to continue recording after activity stops.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-threshold">RMS threshold</label>
+                <input id="segmenter-threshold" type="number" min="0" step="10" />
+                <p class="field-description">Linear RMS trigger level after gain. Dial in with <code>room_tuner.py</code>.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-keep-window">Keep window (frames)</label>
+                <input id="segmenter-keep-window" type="number" min="1" step="1" />
+                <p class="field-description">Sliding window size used to refresh the post-roll timer.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-start-consecutive">Start frames required</label>
+                <input id="segmenter-start-consecutive" type="number" min="1" step="1" />
+                <p class="field-description">Consecutive active frames required before starting a recording.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-keep-consecutive">Keep frames required</label>
+                <input id="segmenter-keep-consecutive" type="number" min="1" step="1" />
+                <p class="field-description">Active frames needed within the window to continue an in-progress recording.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-flush-bytes">Flush threshold (bytes)</label>
+                <input id="segmenter-flush-bytes" type="number" min="4096" step="1024" />
+                <p class="field-description">Controls how often buffered WAV data is flushed to disk.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-max-queue">Max queued frames</label>
+                <input id="segmenter-max-queue" type="number" min="16" step="16" />
+                <p class="field-description">Upper bound on pending audio frames before applying backpressure.</p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-use-rnnoise" type="checkbox" />
+                  <label for="segmenter-use-rnnoise">Enable RNNoise denoising</label>
+                </div>
+                <p class="field-description">High quality but CPU intensive. Best suited for more powerful Pis.</p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-use-noisereduce" type="checkbox" />
+                  <label for="segmenter-use-noisereduce">Enable spectral noise reduction</label>
+                </div>
+                <p class="field-description">Experimental filter that can reduce steady background noise.</p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-denoise-before-vad" type="checkbox" />
+                  <label for="segmenter-denoise-before-vad">Denoise before VAD</label>
+                </div>
+                <p class="field-description">Applies denoising prior to voice detection. Can reduce sensitivity.</p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="segmenter-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="segmenter-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="segmenter-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="adaptive_rms"
+            aria-labelledby="recorder-adaptive-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-adaptive-title" class="settings-section-title">Adaptive RMS</h3>
+              <p class="settings-section-description">
+                Automatically adjusts the RMS trigger as the room quiets down or becomes noisier.
+              </p>
+            </div>
+            <form id="adaptive-form" class="settings-subform" novalidate>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="adaptive-enabled" type="checkbox" />
+                  <label for="adaptive-enabled">Enable adaptive thresholding</label>
+                </div>
+                <p class="field-description">Tracks background noise and scales the trigger dynamically.</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-min-thresh">Minimum threshold</label>
+                <input id="adaptive-min-thresh" type="number" min="0" max="1" step="0.001" />
+                <p class="field-description">Floor for the normalized RMS threshold (0–1 scale).</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-margin">Noise margin</label>
+                <input id="adaptive-margin" type="number" min="0.5" max="10" step="0.05" />
+                <p class="field-description">Multiplier applied to the observed background noise floor.</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-update-interval">Update interval (s)</label>
+                <input id="adaptive-update-interval" type="number" min="0.5" max="120" step="0.5" />
+                <p class="field-description">How frequently the threshold is recomputed.</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-window">Window length (s)</label>
+                <input id="adaptive-window" type="number" min="1" max="300" step="1" />
+                <p class="field-description">Rolling sample window for background RMS estimation.</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-hysteresis">Hysteresis tolerance</label>
+                <input id="adaptive-hysteresis" type="number" min="0" max="1" step="0.01" />
+                <p class="field-description">Minimum proportional change before adopting a new threshold.</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-release">Release percentile</label>
+                <input id="adaptive-release" type="number" min="0.05" max="1" step="0.01" />
+                <p class="field-description">Percentile of the noise distribution used when relaxing the threshold.</p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="adaptive-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="adaptive-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="adaptive-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="ingest"
+            aria-labelledby="recorder-ingest-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-ingest-title" class="settings-section-title">Ingest pipeline</h3>
+              <p class="settings-section-description">
+                Control how files dropped into the ingest directory are validated and accepted.
+              </p>
+            </div>
+            <form id="ingest-form" class="settings-subform" novalidate>
+              <div class="settings-field">
+                <label for="ingest-stable-checks">Stable checks required</label>
+                <input id="ingest-stable-checks" type="number" min="1" max="20" step="1" />
+                <p class="field-description">Number of size checks before a file is considered ready.</p>
+              </div>
+              <div class="settings-field">
+                <label for="ingest-stable-interval">Check interval (s)</label>
+                <input id="ingest-stable-interval" type="number" min="0.1" max="30" step="0.1" />
+                <p class="field-description">Delay between size checks while watching incoming files.</p>
+              </div>
+              <div class="settings-field">
+                <label for="ingest-allowed-ext">Allowed extensions</label>
+                <textarea id="ingest-allowed-ext" rows="3"></textarea>
+                <p class="field-description">One extension per line (include the leading dot).</p>
+              </div>
+              <div class="settings-field">
+                <label for="ingest-ignore-suffixes">Ignore suffixes</label>
+                <textarea id="ingest-ignore-suffixes" rows="3"></textarea>
+                <p class="field-description">File suffixes that indicate partial downloads or temporary files.</p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="ingest-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="ingest-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="ingest-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="logging"
+            aria-labelledby="recorder-logging-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-logging-title" class="settings-section-title">Logging &amp; diagnostics</h3>
+              <p class="settings-section-description">
+                Enable verbose logging for troubleshooting noisy environments or new deployments.
+              </p>
+            </div>
+            <form id="logging-form" class="settings-subform" novalidate>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="logging-dev-mode" type="checkbox" />
+                  <label for="logging-dev-mode">Enable developer debug logs</label>
+                </div>
+                <p class="field-description">Outputs per-second segmenter stats to the journal.</p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="logging-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="logging-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="logging-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="streaming"
+            aria-labelledby="recorder-streaming-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-streaming-title" class="settings-section-title">Live streaming</h3>
+              <p class="settings-section-description">
+                Switch between HLS and WebRTC streaming modes and adjust the WebRTC frame buffer.
+              </p>
+            </div>
+            <form id="streaming-form" class="settings-subform" novalidate>
+              <div class="settings-field">
+                <label for="streaming-mode">Streaming mode</label>
+                <select id="streaming-mode">
+                  <option value="hls">HLS (compatible, higher latency)</option>
+                  <option value="webrtc">WebRTC (low latency)</option>
+                </select>
+                <p class="field-description">The dashboard automatically adjusts its player to match.</p>
+              </div>
+              <div class="settings-field">
+                <label for="streaming-history">WebRTC history (s)</label>
+                <input id="streaming-history" type="number" min="1" max="600" step="0.5" />
+                <p class="field-description">Seconds of PCM buffered for WebRTC listeners. Increase to absorb brief stalls.</p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="streaming-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="streaming-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="streaming-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="dashboard"
+            aria-labelledby="recorder-dashboard-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-dashboard-title" class="settings-section-title">Dashboard API access</h3>
+              <p class="settings-section-description">
+                Point static dashboard builds at a remote recorder by overriding the API base URL.
+              </p>
+            </div>
+            <form id="dashboard-form" class="settings-subform" novalidate>
+              <div class="settings-field">
+                <label for="dashboard-api-base">API base URL</label>
+                <input id="dashboard-api-base" type="text" autocomplete="off" />
+                <p class="field-description">
+                  When set, static dashboards use this origin for API and streaming requests (example: <code>https://recorder.local:8080</code>).
+                </p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="dashboard-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="dashboard-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="dashboard-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
         </div>
       </div>
     </div>

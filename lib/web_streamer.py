@@ -253,6 +253,617 @@ def _archival_response_payload(cfg: dict[str, Any]) -> dict[str, Any]:
         path = None
     return {"archival": normalized, "config_path": path}
 
+
+_AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
+_AUDIO_FRAME_LENGTHS = {10, 20, 30}
+_STREAMING_MODES = {"hls", "webrtc"}
+
+
+def _audio_defaults() -> dict[str, Any]:
+    return {
+        "device": "",
+        "sample_rate": 48000,
+        "frame_ms": 20,
+        "gain": 2.5,
+        "vad_aggressiveness": 3,
+    }
+
+
+def _segmenter_defaults() -> dict[str, Any]:
+    return {
+        "pre_pad_ms": 2000,
+        "post_pad_ms": 3000,
+        "rms_threshold": 300,
+        "keep_window_frames": 30,
+        "start_consecutive": 25,
+        "keep_consecutive": 25,
+        "use_rnnoise": False,
+        "use_noisereduce": False,
+        "denoise_before_vad": False,
+        "flush_threshold_bytes": 128 * 1024,
+        "max_queue_frames": 512,
+    }
+
+
+def _adaptive_rms_defaults() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "min_thresh": 0.01,
+        "margin": 1.2,
+        "update_interval_sec": 5.0,
+        "window_sec": 10.0,
+        "hysteresis_tolerance": 0.1,
+        "release_percentile": 0.5,
+    }
+
+
+def _ingest_defaults() -> dict[str, Any]:
+    return {
+        "stable_checks": 2,
+        "stable_interval_sec": 1.0,
+        "allowed_ext": [".wav", ".opus", ".flac", ".mp3"],
+        "ignore_suffixes": [
+            ".part",
+            ".partial",
+            ".tmp",
+            ".incomplete",
+            ".opdownload",
+            ".crdownload",
+        ],
+    }
+
+
+def _logging_defaults() -> dict[str, Any]:
+    return {"dev_mode": False}
+
+
+def _streaming_defaults() -> dict[str, Any]:
+    return {"mode": "hls", "webrtc_history_seconds": 8.0}
+
+
+def _dashboard_defaults() -> dict[str, Any]:
+    return {"api_base": ""}
+
+
+def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _audio_defaults()
+    raw = cfg.get("audio", {})
+    if isinstance(raw, dict):
+        device = raw.get("device")
+        if isinstance(device, str):
+            result["device"] = device.strip()
+
+        sr = raw.get("sample_rate")
+        if isinstance(sr, (int, float)) and not isinstance(sr, bool):
+            result["sample_rate"] = int(sr)
+
+        frame = raw.get("frame_ms")
+        if isinstance(frame, (int, float)) and not isinstance(frame, bool):
+            result["frame_ms"] = int(frame)
+
+        gain = raw.get("gain")
+        if isinstance(gain, (int, float)) and not isinstance(gain, bool):
+            result["gain"] = float(gain)
+
+        vad = raw.get("vad_aggressiveness")
+        if isinstance(vad, (int, float)) and not isinstance(vad, bool):
+            result["vad_aggressiveness"] = int(vad)
+    return result
+
+
+def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _segmenter_defaults()
+    raw = cfg.get("segmenter", {})
+    if isinstance(raw, dict):
+        for key in (
+            "pre_pad_ms",
+            "post_pad_ms",
+            "rms_threshold",
+            "keep_window_frames",
+            "start_consecutive",
+            "keep_consecutive",
+            "flush_threshold_bytes",
+            "max_queue_frames",
+        ):
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = int(value)
+
+        for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
+            value = raw.get(key)
+            if isinstance(value, bool):
+                result[key] = value
+    return result
+
+
+def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _adaptive_rms_defaults()
+    raw = cfg.get("adaptive_rms", {})
+    if isinstance(raw, dict):
+        enabled = raw.get("enabled")
+        if isinstance(enabled, bool):
+            result["enabled"] = enabled
+
+        for key in (
+            "min_thresh",
+            "margin",
+            "update_interval_sec",
+            "window_sec",
+            "hysteresis_tolerance",
+            "release_percentile",
+        ):
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = float(value)
+    return result
+
+
+def _canonical_ingest_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _ingest_defaults()
+    raw = cfg.get("ingest", {})
+    if isinstance(raw, dict):
+        checks = raw.get("stable_checks")
+        if isinstance(checks, (int, float)) and not isinstance(checks, bool):
+            result["stable_checks"] = int(checks)
+
+        interval = raw.get("stable_interval_sec")
+        if isinstance(interval, (int, float)) and not isinstance(interval, bool):
+            result["stable_interval_sec"] = float(interval)
+
+        allowed = raw.get("allowed_ext")
+        if isinstance(allowed, (list, tuple)):
+            items: list[str] = []
+            seen: set[str] = set()
+            for entry in allowed:
+                if not isinstance(entry, str):
+                    continue
+                normalized = entry.strip().lower()
+                if not normalized:
+                    continue
+                if not normalized.startswith("."):
+                    normalized = f".{normalized}"
+                if normalized not in seen:
+                    seen.add(normalized)
+                    items.append(normalized)
+            if items:
+                result["allowed_ext"] = items
+
+        ignore = raw.get("ignore_suffixes")
+        if isinstance(ignore, (list, tuple)):
+            items = []
+            seen: set[str] = set()
+            for entry in ignore:
+                if not isinstance(entry, str):
+                    continue
+                normalized = entry.strip().lower()
+                if not normalized:
+                    continue
+                if normalized not in seen:
+                    seen.add(normalized)
+                    items.append(normalized)
+            if items:
+                result["ignore_suffixes"] = items
+    return result
+
+
+def _canonical_logging_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _logging_defaults()
+    raw = cfg.get("logging", {})
+    if isinstance(raw, dict):
+        dev_mode = raw.get("dev_mode")
+        if isinstance(dev_mode, bool):
+            result["dev_mode"] = dev_mode
+    return result
+
+
+def _canonical_streaming_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _streaming_defaults()
+    raw = cfg.get("streaming", {})
+    if isinstance(raw, dict):
+        mode = raw.get("mode")
+        if isinstance(mode, str):
+            normalized = mode.strip().lower()
+            if normalized in _STREAMING_MODES:
+                result["mode"] = normalized
+
+        history = raw.get("webrtc_history_seconds")
+        if isinstance(history, (int, float)) and not isinstance(history, bool):
+            result["webrtc_history_seconds"] = float(history)
+    return result
+
+
+def _canonical_dashboard_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _dashboard_defaults()
+    raw = cfg.get("dashboard", {})
+    if isinstance(raw, dict):
+        api_base = raw.get("api_base")
+        if isinstance(api_base, str):
+            result["api_base"] = api_base.strip()
+    return result
+
+
+def _config_section_payload(
+    section: str, cfg: dict[str, Any], canonical_fn
+) -> dict[str, Any]:
+    normalized = canonical_fn(cfg)
+    try:
+        path = str(primary_config_path())
+    except Exception:
+        path = None
+    return {section: normalized, "config_path": path}
+
+
+def _coerce_int(
+    value: Any,
+    field: str,
+    errors: list[str],
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+    allowed: set[int] | None = None,
+) -> int | None:
+    if isinstance(value, bool):
+        errors.append(f"{field} must be a number")
+        return None
+    candidate: int | None = None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            errors.append(f"{field} must be a finite number")
+            return None
+        candidate = int(round(value))
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            errors.append(f"{field} is required")
+            return None
+        try:
+            candidate = int(text, 10)
+        except ValueError:
+            errors.append(f"{field} must be an integer")
+            return None
+    else:
+        errors.append(f"{field} must be an integer")
+        return None
+
+    if allowed is not None and candidate not in allowed:
+        allowed_values = ", ".join(str(item) for item in sorted(allowed))
+        errors.append(f"{field} must be one of: {allowed_values}")
+        return None
+
+    if min_value is not None and candidate < min_value:
+        errors.append(f"{field} must be at least {min_value}")
+        return None
+
+    if max_value is not None and candidate > max_value:
+        errors.append(f"{field} must be at most {max_value}")
+        return None
+
+    return candidate
+
+
+def _coerce_float(
+    value: Any,
+    field: str,
+    errors: list[str],
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    if isinstance(value, bool):
+        errors.append(f"{field} must be a number")
+        return None
+    candidate: float | None = None
+    if isinstance(value, (int, float)):
+        candidate = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            errors.append(f"{field} is required")
+            return None
+        try:
+            candidate = float(text)
+        except ValueError:
+            errors.append(f"{field} must be a number")
+            return None
+    else:
+        errors.append(f"{field} must be a number")
+        return None
+
+    if not math.isfinite(candidate):
+        errors.append(f"{field} must be finite")
+        return None
+
+    if min_value is not None and candidate < min_value:
+        errors.append(f"{field} must be at least {min_value}")
+        return None
+
+    if max_value is not None and candidate > max_value:
+        errors.append(f"{field} must be at most {max_value}")
+        return None
+
+    return candidate
+
+
+def _normalize_extension_list(
+    value: Any, field: str, errors: list[str]
+) -> tuple[list[str], bool]:
+    items, provided = _string_list_from_payload(value, field, errors)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        candidate = item.lower()
+        if not candidate.startswith("."):
+            candidate = f".{candidate}"
+        if candidate not in seen:
+            seen.add(candidate)
+            normalized.append(candidate)
+    return normalized, provided
+
+
+def _normalize_suffix_list(
+    value: Any, field: str, errors: list[str]
+) -> tuple[list[str], bool]:
+    items, provided = _string_list_from_payload(value, field, errors)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        candidate = item.lower()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            normalized.append(candidate)
+    return normalized, provided
+
+
+def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _audio_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    device = payload.get("device")
+    if isinstance(device, str) and device.strip():
+        normalized["device"] = device.strip()
+    else:
+        errors.append("device must be a non-empty string")
+
+    sample_rate = _coerce_int(
+        payload.get("sample_rate"),
+        "sample_rate",
+        errors,
+        allowed=_AUDIO_SAMPLE_RATES,
+    )
+    if sample_rate is not None:
+        normalized["sample_rate"] = sample_rate
+
+    frame_ms = _coerce_int(
+        payload.get("frame_ms"),
+        "frame_ms",
+        errors,
+        allowed=_AUDIO_FRAME_LENGTHS,
+    )
+    if frame_ms is not None:
+        normalized["frame_ms"] = frame_ms
+
+    gain = _coerce_float(payload.get("gain"), "gain", errors, min_value=0.1, max_value=16.0)
+    if gain is not None:
+        normalized["gain"] = gain
+
+    vad = _coerce_int(
+        payload.get("vad_aggressiveness"),
+        "vad_aggressiveness",
+        errors,
+        min_value=0,
+        max_value=3,
+    )
+    if vad is not None:
+        normalized["vad_aggressiveness"] = vad
+
+    return normalized, errors
+
+
+def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _segmenter_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    int_fields = {
+        "pre_pad_ms": (0, 60000),
+        "post_pad_ms": (0, 120000),
+        "rms_threshold": (0, 10000),
+        "keep_window_frames": (1, 2000),
+        "start_consecutive": (1, 2000),
+        "keep_consecutive": (1, 2000),
+        "flush_threshold_bytes": (4096, 4 * 1024 * 1024),
+        "max_queue_frames": (16, 4096),
+    }
+
+    for field, bounds in int_fields.items():
+        min_value, max_value = bounds
+        candidate = _coerce_int(payload.get(field), field, errors, min_value=min_value, max_value=max_value)
+        if candidate is not None:
+            normalized[field] = candidate
+
+    for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
+        normalized[field] = _bool_from_any(payload.get(field))
+
+    return normalized, errors
+
+
+def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _adaptive_rms_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["enabled"] = _bool_from_any(payload.get("enabled"))
+
+    min_thresh = _coerce_float(
+        payload.get("min_thresh"), "min_thresh", errors, min_value=0.0, max_value=1.0
+    )
+    if min_thresh is not None:
+        normalized["min_thresh"] = min_thresh
+
+    margin = _coerce_float(payload.get("margin"), "margin", errors, min_value=0.5, max_value=10.0)
+    if margin is not None:
+        normalized["margin"] = margin
+
+    update_interval = _coerce_float(
+        payload.get("update_interval_sec"),
+        "update_interval_sec",
+        errors,
+        min_value=0.5,
+        max_value=120.0,
+    )
+    if update_interval is not None:
+        normalized["update_interval_sec"] = update_interval
+
+    window_sec = _coerce_float(
+        payload.get("window_sec"), "window_sec", errors, min_value=1.0, max_value=300.0
+    )
+    if window_sec is not None:
+        normalized["window_sec"] = window_sec
+
+    hysteresis = _coerce_float(
+        payload.get("hysteresis_tolerance"),
+        "hysteresis_tolerance",
+        errors,
+        min_value=0.0,
+        max_value=1.0,
+    )
+    if hysteresis is not None:
+        normalized["hysteresis_tolerance"] = hysteresis
+
+    percentile = _coerce_float(
+        payload.get("release_percentile"),
+        "release_percentile",
+        errors,
+        min_value=0.05,
+        max_value=1.0,
+    )
+    if percentile is not None:
+        normalized["release_percentile"] = percentile
+
+    return normalized, errors
+
+
+def _normalize_ingest_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _ingest_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    checks = _coerce_int(payload.get("stable_checks"), "stable_checks", errors, min_value=1, max_value=20)
+    if checks is not None:
+        normalized["stable_checks"] = checks
+
+    interval = _coerce_float(
+        payload.get("stable_interval_sec"), "stable_interval_sec", errors, min_value=0.1, max_value=30.0
+    )
+    if interval is not None:
+        normalized["stable_interval_sec"] = interval
+
+    allowed, provided_allowed = _normalize_extension_list(payload.get("allowed_ext"), "allowed_ext", errors)
+    if provided_allowed:
+        normalized["allowed_ext"] = allowed
+
+    ignore, provided_ignore = _normalize_suffix_list(payload.get("ignore_suffixes"), "ignore_suffixes", errors)
+    if provided_ignore:
+        normalized["ignore_suffixes"] = ignore
+
+    if not normalized["allowed_ext"]:
+        errors.append("allowed_ext must include at least one extension")
+
+    return normalized, errors
+
+
+def _normalize_logging_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _logging_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["dev_mode"] = _bool_from_any(payload.get("dev_mode"))
+    return normalized, errors
+
+
+def _normalize_streaming_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _streaming_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    mode_raw = payload.get("mode")
+    if isinstance(mode_raw, str):
+        candidate = mode_raw.strip().lower()
+        if candidate in _STREAMING_MODES:
+            normalized["mode"] = candidate
+        else:
+            errors.append("mode must be one of: hls, webrtc")
+    else:
+        errors.append("mode must be a string")
+
+    history = _coerce_float(
+        payload.get("webrtc_history_seconds"),
+        "webrtc_history_seconds",
+        errors,
+        min_value=1.0,
+        max_value=600.0,
+    )
+    if history is not None:
+        normalized["webrtc_history_seconds"] = history
+
+    return normalized, errors
+
+
+def _normalize_dashboard_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _dashboard_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    api_base = payload.get("api_base")
+    if api_base is None:
+        normalized["api_base"] = ""
+    elif isinstance(api_base, str):
+        normalized["api_base"] = api_base.strip()
+    else:
+        errors.append("api_base must be a string")
+
+    return normalized, errors
+
+
+async def _restart_units(units: Iterable[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for unit in units:
+        unit_text = str(unit or "").strip()
+        if not unit_text or unit_text in seen:
+            continue
+        seen.add(unit_text)
+        code, stdout, stderr = await _run_systemctl(["restart", unit_text])
+        stdout_text = stdout.strip()
+        stderr_text = stderr.strip()
+        message = stderr_text or stdout_text
+        results.append(
+            {
+                "unit": unit_text,
+                "ok": code == 0,
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+                "message": message,
+                "returncode": code,
+            }
+        )
+    return results
+
 from aiohttp import web
 from aiohttp.web import AppKey
 
@@ -263,7 +874,14 @@ from lib.config import (
     get_cfg,
     primary_config_path,
     reload_cfg,
+    update_adaptive_rms_settings,
     update_archival_settings,
+    update_audio_settings,
+    update_dashboard_settings,
+    update_ingest_settings,
+    update_logging_settings,
+    update_segmenter_settings,
+    update_streaming_settings,
 )
 from lib.waveform_cache import generate_waveform
 
@@ -1501,6 +2119,156 @@ def build_app() -> web.Application:
         payload = _archival_response_payload(refreshed)
         return web.json_response(payload)
 
+    section_restart_units: dict[str, Sequence[str]] = {
+        "audio": ["voice-recorder.service"],
+        "segmenter": ["voice-recorder.service"],
+        "adaptive_rms": ["voice-recorder.service"],
+        "ingest": ["dropbox.path", "dropbox.service"],
+        "logging": ["voice-recorder.service"],
+        "streaming": ["voice-recorder.service", "web-streamer.service"],
+        "dashboard": ["web-streamer.service"],
+    }
+
+    async def _settings_get(
+        section: str, canonical_fn
+    ) -> web.Response:
+        refreshed = reload_cfg()
+        payload = _config_section_payload(section, refreshed, canonical_fn)
+        return web.json_response(payload)
+
+    async def _settings_update(
+        request: web.Request,
+        *,
+        section: str,
+        section_label: str,
+        normalize,
+        update_func,
+        canonical_fn,
+    ) -> web.Response:
+        log = logging.getLogger("web_streamer")
+        try:
+            data = await request.json()
+        except Exception as exc:
+            message = f"Invalid JSON payload: {exc}"
+            return web.json_response({"error": message}, status=400)
+
+        normalized, errors = normalize(data)
+        if errors:
+            message = errors[0]
+            return web.json_response({"error": message, "errors": errors}, status=400)
+
+        try:
+            update_func(normalized)
+        except ConfigPersistenceError as exc:
+            log.warning("Unable to persist %s settings: %s", section, exc)
+            return web.json_response(
+                {"error": f"Unable to save {section_label} settings: {exc}"},
+                status=500,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.exception("Unexpected %s settings failure: %s", section, exc)
+            return web.json_response(
+                {"error": f"Unexpected error while saving {section_label} settings"},
+                status=500,
+            )
+
+        cfg_snapshot = get_cfg()
+        payload = _config_section_payload(section, cfg_snapshot, canonical_fn)
+        restart_units = section_restart_units.get(section, [])
+        payload["restart_results"] = await _restart_units(restart_units)
+        return web.json_response(payload)
+
+    async def config_audio_get(request: web.Request) -> web.Response:
+        return await _settings_get("audio", _canonical_audio_settings)
+
+    async def config_audio_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="audio",
+            section_label="audio",
+            normalize=_normalize_audio_payload,
+            update_func=update_audio_settings,
+            canonical_fn=_canonical_audio_settings,
+        )
+
+    async def config_segmenter_get(request: web.Request) -> web.Response:
+        return await _settings_get("segmenter", _canonical_segmenter_settings)
+
+    async def config_segmenter_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="segmenter",
+            section_label="segmenter",
+            normalize=_normalize_segmenter_payload,
+            update_func=update_segmenter_settings,
+            canonical_fn=_canonical_segmenter_settings,
+        )
+
+    async def config_adaptive_rms_get(request: web.Request) -> web.Response:
+        return await _settings_get("adaptive_rms", _canonical_adaptive_rms_settings)
+
+    async def config_adaptive_rms_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="adaptive_rms",
+            section_label="adaptive RMS",
+            normalize=_normalize_adaptive_rms_payload,
+            update_func=update_adaptive_rms_settings,
+            canonical_fn=_canonical_adaptive_rms_settings,
+        )
+
+    async def config_ingest_get(request: web.Request) -> web.Response:
+        return await _settings_get("ingest", _canonical_ingest_settings)
+
+    async def config_ingest_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="ingest",
+            section_label="ingest",
+            normalize=_normalize_ingest_payload,
+            update_func=update_ingest_settings,
+            canonical_fn=_canonical_ingest_settings,
+        )
+
+    async def config_logging_get(request: web.Request) -> web.Response:
+        return await _settings_get("logging", _canonical_logging_settings)
+
+    async def config_logging_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="logging",
+            section_label="logging",
+            normalize=_normalize_logging_payload,
+            update_func=update_logging_settings,
+            canonical_fn=_canonical_logging_settings,
+        )
+
+    async def config_streaming_get(request: web.Request) -> web.Response:
+        return await _settings_get("streaming", _canonical_streaming_settings)
+
+    async def config_streaming_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="streaming",
+            section_label="streaming",
+            normalize=_normalize_streaming_payload,
+            update_func=update_streaming_settings,
+            canonical_fn=_canonical_streaming_settings,
+        )
+
+    async def config_dashboard_get(request: web.Request) -> web.Response:
+        return await _settings_get("dashboard", _canonical_dashboard_settings)
+
+    async def config_dashboard_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="dashboard",
+            section_label="dashboard",
+            normalize=_normalize_dashboard_payload,
+            update_func=update_dashboard_settings,
+            canonical_fn=_canonical_dashboard_settings,
+        )
+
     async def system_health(_: web.Request) -> web.Response:
         state = sd_card_health.load_state()
         payload = {
@@ -1715,6 +2483,20 @@ def build_app() -> web.Application:
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/config/archival", config_archival_get)
     app.router.add_post("/api/config/archival", config_archival_update)
+    app.router.add_get("/api/config/audio", config_audio_get)
+    app.router.add_post("/api/config/audio", config_audio_update)
+    app.router.add_get("/api/config/segmenter", config_segmenter_get)
+    app.router.add_post("/api/config/segmenter", config_segmenter_update)
+    app.router.add_get("/api/config/adaptive-rms", config_adaptive_rms_get)
+    app.router.add_post("/api/config/adaptive-rms", config_adaptive_rms_update)
+    app.router.add_get("/api/config/ingest", config_ingest_get)
+    app.router.add_post("/api/config/ingest", config_ingest_update)
+    app.router.add_get("/api/config/logging", config_logging_get)
+    app.router.add_post("/api/config/logging", config_logging_update)
+    app.router.add_get("/api/config/streaming", config_streaming_get)
+    app.router.add_post("/api/config/streaming", config_streaming_update)
+    app.router.add_get("/api/config/dashboard", config_dashboard_get)
+    app.router.add_post("/api/config/dashboard", config_dashboard_update)
     app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
