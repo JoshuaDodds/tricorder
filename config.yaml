@@ -156,6 +156,43 @@ logging:
   # When true, emits per-second debug lines from the segmenter.
   dev_mode: true
 
+notifications:
+  # Optional notifications when events finish recording. Leave disabled to avoid network calls.
+  enabled: false
+
+  # Filter notifications to specific event types ("Human", "Other", "Both"). Empty list notifies for all.
+  allowed_event_types: ["Human", "Both"]
+
+  # Minimum trigger RMS required to notify. Set to 0 to allow all events or increase to catch only loud clips.
+  min_trigger_rms: 400
+
+  webhook:
+    # HTTP endpoint to receive JSON payloads with event metadata. Leave blank to disable webhook delivery.
+    url: ""
+    method: "POST"
+    headers: {}
+    timeout_sec: 5.0
+
+  email:
+    # SMTP settings for email notifications. Leave smtp_host blank to disable email delivery.
+    smtp_host: ""
+    smtp_port: 587
+    use_tls: true
+    use_ssl: false
+    username: ""
+    password: ""
+    from: "tricorder@example.com"
+    to: ["alerts@example.com"]
+    subject_template: "Tricorder event: {etype} (RMS {trigger_rms})"
+    body_template: |
+      Event {base_name} completed on {host}.
+      Type: {etype}
+      Trigger RMS: {trigger_rms}
+      Average RMS: {avg_rms}
+      Duration: {duration_seconds}s
+      Start: {started_at}
+      Reason: {end_reason}
+
 streaming:
   # Live streaming mode exposed in the dashboard. Valid values:
   #   "hls"   – HTTP Live Streaming (higher latency, broad compatibility).
