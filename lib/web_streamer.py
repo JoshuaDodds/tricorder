@@ -794,10 +794,37 @@ def build_app() -> web.Application:
     except OSError:
         pass
 
-    hls_dir = os.path.join(tmp_root, "hls")
-    os.makedirs(hls_dir, exist_ok=True)
-    controller.set_state_path(os.path.join(hls_dir, "controller_state.json"), persist=True)
-    controller.refresh_from_state()
+    streaming_cfg = cfg.get("streaming", {})
+    stream_mode_raw = str(streaming_cfg.get("mode", "hls")).strip().lower()
+    stream_mode = stream_mode_raw if stream_mode_raw in {"hls", "webrtc"} else "hls"
+    app["stream_mode"] = stream_mode
+
+    hls_dir: str | None = None
+    webrtc_manager: Any = None
+
+    if stream_mode == "hls":
+        hls_dir = os.path.join(tmp_root, "hls")
+        os.makedirs(hls_dir, exist_ok=True)
+        controller.set_state_path(os.path.join(hls_dir, "controller_state.json"), persist=True)
+        controller.refresh_from_state()
+    else:
+        from lib.webrtc_stream import WebRTCManager
+
+        webrtc_dir = os.path.join(tmp_root, "webrtc")
+        os.makedirs(webrtc_dir, exist_ok=True)
+        audio_cfg = cfg.get("audio", {})
+        sample_rate = int(audio_cfg.get("sample_rate", 48000))
+        frame_ms = int(audio_cfg.get("frame_ms", 20))
+        frame_bytes = int(sample_rate * 2 * frame_ms / 1000)
+        history_seconds = float(streaming_cfg.get("webrtc_history_seconds", 8.0))
+        webrtc_manager = WebRTCManager(
+            buffer_dir=webrtc_dir,
+            sample_rate=sample_rate,
+            frame_ms=frame_ms,
+            frame_bytes=frame_bytes,
+            history_seconds=history_seconds,
+        )
+    app["webrtc_manager"] = webrtc_manager
     recordings_root = Path(cfg["paths"]["recordings_dir"])
     try:
         recordings_root.mkdir(parents=True, exist_ok=True)
@@ -1059,13 +1086,20 @@ def build_app() -> web.Application:
             payload["start_epoch"] = clip_start_epoch
         return payload
 
-    template_defaults = {
-        "page_title": "Tricorder HLS Stream",
-        "heading": "HLS Audio Stream",
-    }
-
-    playlist_ready_timeout = 5.0
-    playlist_poll_interval = 0.1
+    if stream_mode == "hls":
+        template_defaults = {
+            "page_title": "Tricorder HLS Stream",
+            "heading": "HLS Audio Stream",
+        }
+        playlist_ready_timeout = 5.0
+        playlist_poll_interval = 0.1
+    else:
+        template_defaults = {
+            "page_title": "Tricorder WebRTC Stream",
+            "heading": "WebRTC Audio Stream",
+        }
+        playlist_ready_timeout = 0.0
+        playlist_poll_interval = 0.0
 
     def _playlist_has_segments(path: str) -> bool:
         try:
@@ -1084,10 +1118,13 @@ def build_app() -> web.Application:
             "dashboard.html",
             page_title="Tricorder Dashboard",
             api_base=dashboard_api_base,
+            stream_mode=stream_mode,
         )
         return web.Response(text=html, content_type="text/html")
 
     async def hls_index(_: web.Request) -> web.Response:
+        if stream_mode != "hls":
+            raise web.HTTPNotFound()
         html = webui.render_template("hls_index.html", **template_defaults)
         return web.Response(text=html, content_type="text/html")
 
@@ -1583,6 +1620,9 @@ def build_app() -> web.Application:
 
     # Playlist handler ensures encoder has been started on direct hits
     async def hls_playlist(_: web.Request) -> web.StreamResponse:
+        if stream_mode != "hls" or hls_dir is None:
+            raise web.HTTPNotFound()
+
         controller.ensure_started()
         path = os.path.join(hls_dir, "live.m3u8")
 
@@ -1606,6 +1646,59 @@ def build_app() -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    if stream_mode == "webrtc":
+        from lib.webrtc_stream import RTCSessionDescription
+        import uuid
+
+        assert webrtc_manager is not None
+
+        async def webrtc_start(request: web.Request) -> web.Response:
+            session_id = request.rel_url.query.get("session")
+            webrtc_manager.mark_started(session_id)
+            return web.json_response({"ok": True})
+
+        async def webrtc_stop(request: web.Request) -> web.Response:
+            session_id = request.rel_url.query.get("session")
+            await webrtc_manager.stop(session_id)
+            return web.json_response({"ok": True})
+
+        async def webrtc_stats(_: web.Request) -> web.Response:
+            return web.json_response(webrtc_manager.stats())
+
+        async def webrtc_offer(request: web.Request) -> web.Response:
+            session_id = request.rel_url.query.get("session")
+            if not session_id:
+                session_id = str(uuid.uuid4())
+
+            try:
+                payload = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response({"error": "invalid json"}, status=400)
+
+            sdp = payload.get("sdp")
+            offer_type = payload.get("type")
+            if not isinstance(sdp, str) or not isinstance(offer_type, str):
+                return web.json_response({"error": "invalid offer"}, status=400)
+
+            offer = RTCSessionDescription(sdp=sdp, type=offer_type)
+            answer = await webrtc_manager.create_answer(session_id, offer)
+            if answer is None:
+                return web.json_response({"error": "stream unavailable"}, status=503)
+            return web.json_response({"sdp": answer.sdp, "type": answer.type})
+    else:
+
+        async def webrtc_start(_: web.Request) -> web.Response:  # type: ignore[return-type]
+            raise web.HTTPNotFound()
+
+        async def webrtc_stop(_: web.Request) -> web.Response:  # type: ignore[return-type]
+            raise web.HTTPNotFound()
+
+        async def webrtc_stats(_: web.Request) -> web.Response:  # type: ignore[return-type]
+            raise web.HTTPNotFound()
+
+        async def webrtc_offer(_: web.Request) -> web.Response:  # type: ignore[return-type]
+            raise web.HTTPNotFound()
+
     async def healthz(_: web.Request) -> web.Response:
         return web.Response(text="ok\n")
 
@@ -1626,19 +1719,29 @@ def build_app() -> web.Application:
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
 
-    # Control + stats
-    app.router.add_get("/hls/start", hls_start)
-    app.router.add_post("/hls/start", hls_start)
-    app.router.add_get("/hls/stop", hls_stop)
-    app.router.add_post("/hls/stop", hls_stop)
-    app.router.add_get("/hls/stats", hls_stats)
-
-    # Playlist handler BEFORE static, so we can ensure start on direct access
-    app.router.add_get("/hls/live.m3u8", hls_playlist)
-
-    # Static segments/playlist directory (segments like seg00001.ts)
-    app.router.add_static("/hls/", hls_dir, show_index=True)
+    if stream_mode == "hls":
+        app.router.add_get("/hls/start", hls_start)
+        app.router.add_post("/hls/start", hls_start)
+        app.router.add_get("/hls/stop", hls_stop)
+        app.router.add_post("/hls/stop", hls_stop)
+        app.router.add_get("/hls/stats", hls_stats)
+        app.router.add_get("/hls/live.m3u8", hls_playlist)
+        if hls_dir is not None:
+            app.router.add_static("/hls/", hls_dir, show_index=True)
+    else:
+        app.router.add_get("/webrtc/start", webrtc_start)
+        app.router.add_post("/webrtc/start", webrtc_start)
+        app.router.add_get("/webrtc/stop", webrtc_stop)
+        app.router.add_post("/webrtc/stop", webrtc_stop)
+        app.router.add_get("/webrtc/stats", webrtc_stats)
+        app.router.add_post("/webrtc/offer", webrtc_offer)
     app.router.add_static("/static/", webui.static_directory(), show_index=False)
+
+    if webrtc_manager is not None:
+        async def _cleanup_webrtc(_: web.Application) -> None:
+            await webrtc_manager.shutdown()
+
+        app.on_cleanup.append(_cleanup_webrtc)
 
     app.router.add_get("/healthz", healthz)
     return app
@@ -1700,7 +1803,8 @@ def start_web_streamer_in_thread(
         loop.run_until_complete(site.start())
         runner_box["runner"] = runner
         app_box["app"] = app
-        log.info("web_streamer started on %s:%s (HLS on-demand)", host, port)
+        mode = app.get("stream_mode", "hls")
+        log.info("web_streamer started on %s:%s (stream mode: %s)", host, port, mode)
         try:
             loop.run_forever()
         finally:

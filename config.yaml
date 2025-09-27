@@ -156,6 +156,16 @@ logging:
   # When true, emits per-second debug lines from the segmenter.
   dev_mode: true
 
+streaming:
+  # Live streaming mode exposed in the dashboard. Valid values:
+  #   "hls"   – HTTP Live Streaming (higher latency, broad compatibility).
+  #   "webrtc" – WebRTC audio stream (lower latency, modern browsers only).
+  mode: "hls"
+  # When streaming.mode is "webrtc", audio frames are stored in a shared ring
+  # buffer before they are forwarded to WebRTC peers. Increase this to tolerate
+  # short stalls at the cost of RAM usage (seconds of audio history).
+  webrtc_history_seconds: 8.0
+
 dashboard:
   # Override the base URL used by the dashboard when making API and HLS requests.
   # Useful when the static dashboard is hosted separately from the recorder.
@@ -172,7 +182,7 @@ dashboard:
       description: "Segments microphone input into individual events."
     - unit: "web-streamer.service"
       label: "Web UI"
-      description: "Serves the dashboard and HLS live stream."
+      description: "Serves the dashboard and live stream."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.

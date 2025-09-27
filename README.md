@@ -10,7 +10,7 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 
 - Continuous audio capture with adaptive RMS tracking and configurable VAD aggressiveness.
 - Event segmentation with pre/post roll, asynchronous encoding, and automatic waveform sidecars for fast preview rendering.
-- Live HLS streaming that powers up only when listeners are present and tears down when idle.
+- Live streaming via HLS or optional WebRTC mode that powers up only when listeners are present and tears down when idle.
 - Web dashboard (aiohttp + Jinja) for monitoring recorder state, browsing recordings, previewing audio + waveform, deleting files, and inspecting configuration.
 - Dropbox-style ingest path for external recordings that reuses the segmentation + encoding pipeline.
 - Optional archival uploads to mounted network shares or rsync-over-SSH targets right after encoding.
@@ -26,7 +26,7 @@ The name is both a nod to the *Star Trek* tricorder (a portable device that cont
 and a literal description of this project’s **three core recording functions**:
 
 1. **Audio-triggered recording with Voice Activity Detection (VAD) tagging** – capture events when the input exceeds a sound threshold and/or speech is detected.  
-2. **Live Network Streaming** – HLS live streaming of audio from the device microphone to any web browser.   
+2. **Live Network Streaming** – HLS or WebRTC live streaming of audio from the device microphone to any web browser.
 3. **External file ingestion** – process/ingest external recordings, trimming away uninteresting parts automatically.
 
 ---
@@ -70,7 +70,7 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 | Unit / Script | Purpose |
 | --- | --- |
 | `voice-recorder.service` | Runs `live_stream_daemon.py` for continuous capture and segmentation. |
-| `web-streamer.service` | Hosts the aiohttp dashboard + HLS endpoints (`lib/web_streamer.py`). |
+| `web-streamer.service` | Hosts the aiohttp dashboard + streaming endpoints (HLS/WebRTC) (`lib/web_streamer.py`). |
 | `sd-card-monitor.service` | Monitors kernel/syslog for SD card errors and keeps the dashboard warning banner in sync. |
 | `dropbox.path` / `dropbox.service` | Watches `/apps/tricorder/dropbox` and processes externally provided recordings. |
 | `tmpfs-guard.timer` / `tmpfs-guard.service` | Enforces tmpfs usage/rotation to prevent storage exhaustion. |
@@ -107,7 +107,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
-- JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats`, etc.) consumed by the dashboard and available for automation.
+- JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
 Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`).
@@ -118,7 +118,7 @@ Waveform JSON is loaded on demand and cached client-side. Missing or stale sidec
 python -m lib.web_streamer --host 0.0.0.0 --port 8080
 ```
 
-Visit `http://<device>:8080/` for the dashboard or `http://<device>:8080/hls` for the legacy HLS page. During development `python main.py` launches the live recorder and dashboard together, automatically stopping the systemd service while dev mode is active.
+Visit `http://<device>:8080/` for the dashboard. When `streaming.mode` is set to `hls`, the legacy playlist viewer remains available at `http://<device>:8080/hls`; enabling WebRTC mode returns `404` there to make the configuration explicit. During development `python main.py` launches the live recorder and dashboard together, automatically stopping the systemd service while dev mode is active.
 
 ### Remote dashboard deployments
 
@@ -126,9 +126,13 @@ When the static dashboard is hosted separately from the recorder APIs (for examp
 
 ---
 
-## Live HLS streaming
+## Live streaming modes
 
-The live stream relies on `lib.hls_mux.HLSTee` to buffer recent audio frames and generate HLS segments only when listeners are connected:
+`streaming.mode` in `config.yaml` selects the live streaming backend exposed by the dashboard.
+
+### HLS (default)
+
+The default HLS pipeline still relies on `lib.hls_mux.HLSTee` to buffer recent audio frames and emit segments only when listeners are connected:
 
 - `/hls/start` increments the listener count and starts the encoder if idle.
 - `/hls/live.m3u8` blocks until the first segment exists and is served with `Cache-Control: no-store`.
@@ -136,6 +140,19 @@ The live stream relies on `lib.hls_mux.HLSTee` to buffer recent audio frames and
 - `/hls/stats` exposes the current listener count and encoder status for dashboards or monitoring.
 
 HLS artifacts live under `<tmp_dir>/hls` (defaults to `/apps/tricorder/tmp/hls`). `ffmpeg` runs with `-hls_flags delete_segments` so disk usage stays bounded.
+
+### WebRTC (optional)
+
+Setting `streaming.mode` to `webrtc` enables a lower-latency path tailored for modern browsers. The live daemon feeds raw PCM frames into `lib.webrtc_buffer.WebRTCBufferWriter`, which persists a circular buffer (`webrtc_buffer.raw`) alongside state metadata inside `<tmp_dir>/webrtc`. The dashboard exchanges SDP offers with `lib.webrtc_stream.WebRTCManager` via:
+
+- `/webrtc/start` – marks a session as active (mirrors the HLS start call).
+- `/webrtc/offer` – accepts browser SDP offers and returns negotiated answers.
+- `/webrtc/stop` – tears down the peer connection for the provided session.
+- `/webrtc/stats` – reports listener counts, dependency status, and encoder activity.
+
+WebRTC support depends on [`aiortc`](https://github.com/aiortc/aiortc) and [`av`](https://github.com/PyAV-Org/PyAV); both packages ship in `requirements.txt`. When those dependencies are unavailable, `create_answer()` returns `None` and `/webrtc/stats` surfaces a helpful reason so dashboards can surface the failure. The dashboard automatically switches to WebRTC playback when the mode is enabled and falls back to HLS otherwise.
+
+Switching between modes only requires updating `streaming.mode` and restarting `voice-recorder.service` + `web-streamer.service` so both the capture daemon and dashboard pick up the new configuration.
 
 ---
 

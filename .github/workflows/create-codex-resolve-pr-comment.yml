@@ -182,18 +182,27 @@ jobs:
 
               if [[ "$USE_GISTS" -eq 1 ]]; then
                 # Create a private gist with the exact file content
-                GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$SNIPPET_CONTENT" \
+                GIST_NAME=${f//\//_}
+                GIST_PAYLOAD=$(jq -nc --arg name "$GIST_NAME" --arg content "$SNIPPET_CONTENT" \
                   '{public:false, files:{($name):{content:$content}}}')
 
+                RESPONSE_FILE=$(mktemp)
                 set +e
-                GIST_RESPONSE=$(curl -s -X POST \
+                CURL_HTTP_STATUS=$(curl -sS -w '%{http_code}' -o "$RESPONSE_FILE" \
                   -H "Authorization: token $REPO_PAT" \
                   -H "Content-Type: application/json" \
                   -d "$GIST_PAYLOAD" https://api.github.com/gists)
-                CURL_STATUS=$?
+                CURL_EXIT=$?
                 set -e
 
-                if [[ $CURL_STATUS -eq 0 && -n "$GIST_RESPONSE" ]]; then
+                CURL_HTTP_STATUS=$(printf '%s' "$CURL_HTTP_STATUS" | tr -dc '0-9')
+                GIST_RESPONSE=""
+                if [[ -f "$RESPONSE_FILE" ]]; then
+                  GIST_RESPONSE=$(cat "$RESPONSE_FILE")
+                fi
+                rm -f "$RESPONSE_FILE"
+
+                if [[ $CURL_EXIT -eq 0 && "$CURL_HTTP_STATUS" =~ ^2 ]]; then
                   set +e
                   GIST_URL=$(printf '%s' "$GIST_RESPONSE" | jq -r '.html_url // empty')
                   JQ_STATUS=$?
@@ -202,12 +211,33 @@ jobs:
                     GIST_LINES+="- **$f** (conflict hunks via gist): ${GIST_URL}\n"
                     continue
                   fi
-                fi
-
-                if [[ $CURL_STATUS -ne 0 ]]; then
-                  echo "Failed to create gist for $f (curl exit $CURL_STATUS); falling back to inline snippet." >&2
+                  ERROR_MESSAGE=$(printf '%s' "$GIST_RESPONSE" | jq -r '.message // empty' 2>/dev/null || true)
+                  if [[ -n "$ERROR_MESSAGE" ]]; then
+                    echo "Failed to parse gist URL for $f (message: $ERROR_MESSAGE); falling back to inline snippet." >&2
+                  else
+                    echo "Failed to parse gist URL for $f; falling back to inline snippet." >&2
+                  fi
                 else
-                  echo "Failed to create gist for $f; falling back to inline snippet." >&2
+                  if [[ -n "$GIST_RESPONSE" ]]; then
+                    GIST_ERRORS=$(printf '%s' "$GIST_RESPONSE" | jq -c '.errors // []' 2>/dev/null || printf '[]')
+                    echo "Failed to create gist for $f; falling back to inline snippet. errors=${GIST_ERRORS}" >&2
+
+                  ERROR_MESSAGE=""
+                  if [[ -n "$GIST_RESPONSE" ]]; then
+                    ERROR_MESSAGE=$(printf '%s' "$GIST_RESPONSE" | jq -r '.message // empty' 2>/dev/null || true)
+                  fi
+                  if [[ $CURL_EXIT -ne 0 ]]; then
+                    echo "Failed to create gist for $f (curl exit $CURL_EXIT); falling back to inline snippet." >&2
+                  elif [[ -n "$CURL_HTTP_STATUS" ]]; then
+                    if [[ -n "$ERROR_MESSAGE" ]]; then
+                      echo "Failed to create gist for $f (HTTP $CURL_HTTP_STATUS): $ERROR_MESSAGE; falling back to inline snippet." >&2
+                    else
+                      echo "Failed to create gist for $f (HTTP $CURL_HTTP_STATUS); falling back to inline snippet." >&2
+                    fi
+
+                  else
+                    echo "Failed to create gist for $f; falling back to inline snippet." >&2
+                  fi
                 fi
               fi
 

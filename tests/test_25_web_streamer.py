@@ -4,6 +4,8 @@ import asyncio
 
 import pytest
 
+import copy
+
 import lib.web_streamer as web_streamer
 
 pytest_plugins = ("aiohttp.pytest_plugin",)
@@ -21,6 +23,7 @@ async def test_dashboard_page_structure(aiohttp_client):
     assert 'id="config-viewer"' in body
     assert 'href="/static/css/dashboard.css"' in body
     assert 'src="/static/js/dashboard.js"' in body
+    assert 'data-tricorder-stream-mode="hls"' in body
 
 
 @pytest.mark.asyncio
@@ -55,6 +58,12 @@ async def test_web_streamer_static_assets_available(aiohttp_client):
     assert "const SESSION_STORAGE_KEY" in js_body
     assert "withSession" in js_body
 
+    dashboard_js = await client.get("/static/js/dashboard.js")
+    assert dashboard_js.status == 200
+    dashboard_body = await dashboard_js.text()
+    assert "const STREAM_MODE" in dashboard_body
+    assert "const OFFER_ENDPOINT" in dashboard_body
+
 
 @pytest.mark.asyncio
 async def test_hls_playlist_waits_for_segments(monkeypatch, tmp_path, aiohttp_client):
@@ -84,6 +93,40 @@ async def test_hls_playlist_waits_for_segments(monkeypatch, tmp_path, aiohttp_cl
     assert response.headers.get("Cache-Control") == "no-store"
 
     await writer
+
+
+@pytest.mark.asyncio
+async def test_webrtc_mode_registers_webrtc_routes(monkeypatch, tmp_path, aiohttp_client):
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_path))
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+    base_cfg = copy.deepcopy(config_module.get_cfg())
+    base_cfg["streaming"] = {"mode": "webrtc", "webrtc_history_seconds": 2.0}
+    monkeypatch.setattr(config_module, "_cfg_cache", base_cfg, raising=False)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    start_response = await client.get("/webrtc/start")
+    assert start_response.status == 200
+
+    stats_response = await client.get("/webrtc/stats")
+    assert stats_response.status == 200
+    stats_payload = await stats_response.json()
+    assert "active_clients" in stats_payload
+    assert "encoder_running" in stats_payload
+
+    offer_response = await client.post(
+        "/webrtc/offer",
+        json={"sdp": "v=0", "type": "offer"},
+    )
+    assert offer_response.status == 503
+
+    stop_response = await client.get("/webrtc/stop")
+    assert stop_response.status == 200
+
+    legacy_response = await client.get("/hls")
+    assert legacy_response.status == 404
 
 
 def test_parse_show_output_handles_blank_fields():
