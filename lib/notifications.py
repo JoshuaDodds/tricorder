@@ -2,9 +2,11 @@
 """Utility helpers for optional event notifications."""
 
 import json
+import queue
 import smtplib
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -66,11 +68,17 @@ class NotificationDispatcher:
         filters: NotificationFilters,
         webhook_cfg: dict[str, Any] | None,
         email_cfg: dict[str, Any] | None,
+        run_async: bool = True,
+        queue_size: int = 32,
     ) -> None:
         self.filters = filters
         self.webhook_cfg = webhook_cfg or {}
         self.email_cfg = email_cfg or {}
         self.hostname = socket.gethostname()
+        self._run_async = run_async
+        self._queue: queue.Queue[dict[str, Any]] | None = None
+        self._worker: threading.Thread | None = None
+        self._queue_size = max(1, int(queue_size or 32))
 
         self.webhook_url = str(self.webhook_cfg.get("url") or "").strip()
         self.webhook_method = (
@@ -81,6 +89,15 @@ class NotificationDispatcher:
 
         self.email_recipients = _as_list(self.email_cfg.get("to"))
         self.email_sender = str(self.email_cfg.get("from") or "").strip()
+
+        if self._run_async:
+            self._queue = queue.Queue(maxsize=self._queue_size)
+            self._worker = threading.Thread(
+                target=self._dispatch_loop,
+                name="notification-dispatcher",
+                daemon=True,
+            )
+            self._worker.start()
 
     @staticmethod
     def _normalise_headers(headers: Any) -> dict[str, str]:
@@ -102,8 +119,52 @@ class NotificationDispatcher:
             "generated_at": time.time(),
         }
 
-        self._send_webhook(payload)
-        self._send_email(payload)
+        if not self._run_async:
+            self._dispatch_payload(payload)
+            return
+
+        assert self._queue is not None
+        try:
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            print(
+                "[notifications] WARN: dropping notification payload (queue full)",
+                flush=True,
+            )
+
+    def _dispatch_loop(self) -> None:
+        assert self._queue is not None
+        while True:
+            try:
+                payload = self._queue.get()
+            except Exception:
+                continue
+
+            if payload is None:
+                self._queue.task_done()
+                break
+
+            try:
+                self._dispatch_payload(payload)
+            finally:
+                self._queue.task_done()
+
+    def _dispatch_payload(self, payload: dict[str, Any]) -> None:
+        try:
+            self._send_webhook(payload)
+        except Exception as exc:
+            print(
+                f"[notifications] WARN: webhook dispatch raised unexpected error: {exc}",
+                flush=True,
+            )
+
+        try:
+            self._send_email(payload)
+        except Exception as exc:
+            print(
+                f"[notifications] WARN: email dispatch raised unexpected error: {exc}",
+                flush=True,
+            )
 
     # --- webhook ---
     def _send_webhook(self, payload: dict[str, Any]) -> None:

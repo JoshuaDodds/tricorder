@@ -41,6 +41,7 @@ def test_dispatcher_matches(monkeypatch):
                 ),
                 webhook_cfg={"url": ""},
                 email_cfg={},
+                run_async=False,
             )
             self.webhook_payloads = []
             self.email_payloads = []
