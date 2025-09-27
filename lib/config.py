@@ -92,6 +92,13 @@ _DEFAULTS: Dict[str, Any] = {
         ],
         "web_service": "web-streamer.service",
     },
+    "notifications": {
+        "enabled": False,
+        "allowed_event_types": [],
+        "min_trigger_rms": None,
+        "webhook": {},
+        "email": {},
+    },
 }
 
 _cfg_cache: Dict[str, Any] | None = None
