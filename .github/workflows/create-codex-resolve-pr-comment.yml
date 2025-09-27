@@ -102,15 +102,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          emit_inline_reference() {
-            local file_path="$1"
+          emit_inline_snippet() {
+            local file_label="$1"
             local limit_bytes="$2"
-            local file_content truncated fence
+            local snippet_content="$3"
+            local truncated fence
 
             if [[ -n "$limit_bytes" && "$limit_bytes" =~ ^[0-9]+$ && "$limit_bytes" -gt 0 ]]; then
-              truncated=$(head -c "$limit_bytes" "$file_path")
+              truncated=$(printf '%s' "$snippet_content" | head -c "$limit_bytes")
             else
-              truncated=$(head -c 30000 "$file_path")
+              truncated=$(printf '%s' "$snippet_content")
             fi
 
             if [[ "$truncated" == *\`\`\`* ]]; then
@@ -119,8 +120,8 @@ jobs:
               fence="\`\`\`"
             fi
 
-            printf -- "- **%s** (inline, truncated)\n%s\n%s\n%s\n" \
-              "$file_path" "$fence" "$truncated" "$fence"
+            printf -- "- **%s** (conflict hunks inline)\n%s\n%s\n%s\n" \
+              "$file_label" "$fence" "$truncated" "$fence"
           }
 
           USE_GISTS=1
@@ -139,7 +140,7 @@ jobs:
           **Resolution instructions for @codex (follow exactly):**
 
           ```text
-          @codex You are resolving a Git merge conflict. I will provide the full file contents including conflict markers (<<<<<<<, =======, >>>>>>>).
+          @codex You are resolving a Git merge conflict. I will provide the conflict hunks (with markers <<<<<<, =======, >>>>>>>) and limited surrounding context.
 
           Your task:
               Combine both conflicting changes so that no functionality is lost.
@@ -167,14 +168,21 @@ jobs:
 
 
           GIST_LINES=""
+          CONTEXT_LINES=5
           for f in $CONFLICT_FILES; do
             if [[ -f "$f" ]]; then
-              # Read up to 400k lines (~large), normalize line endings
-              FILE_CONTENT=$(sed -n '1,400000p' "$f" | sed 's/\r$//')
+              SNIPPET_CONTENT=$(python3 -c $'import pathlib\nimport sys\n\nFALLBACK_MESSAGE = "(Binary or non-text content; conflict hunks unavailable.)"\n\npath = pathlib.Path(sys.argv[1])\ncontext = int(sys.argv[2])\n\ntry:\n    raw_text = path.read_bytes().decode("utf-8", errors="replace")\nexcept Exception as exc:  # pragma: no cover - defensive\n    print(f"Failed to read conflicted file: {exc}", file=sys.stderr)\n    raw_text = ""\n\nif not raw_text:\n    raw_text = FALLBACK_MESSAGE\n\nlines = raw_text.splitlines()\nsnippets = []\nline_count = len(lines)\n\nidx = 0\nwhile idx < line_count:\n    if lines[idx].startswith("<<<<<<< "):\n        start = max(0, idx - context)\n        end = idx\n        while end < line_count and not lines[end].startswith(">>>>>>> "):\n            end += 1\n        if end >= line_count:\n            end = line_count - 1\n        snippet_lines = lines[start:end + 1]\n        header = f"Lines {start + 1}-{end + 1}:"\n        snippets.append((header, "\\n".join(snippet_lines)))\n        idx = end + 1\n    else:\n        idx += 1\n\nif snippets:\n    parts = []\n    for header, snippet in snippets:\n        parts.append(header)\n        parts.append(snippet)\n        parts.append("")\n    output = "\\n".join(parts).rstrip()\nelse:\n    output = raw_text if raw_text else FALLBACK_MESSAGE\n\nsys.stdout.write(output)\n' "$f" "$CONTEXT_LINES")
+
+              # Normalize Windows line endings if present
+              SNIPPET_CONTENT=$(printf '%s' "$SNIPPET_CONTENT" | sed 's/\r$//')
+
+              if [[ -z "$SNIPPET_CONTENT" ]]; then
+                SNIPPET_CONTENT="(Failed to extract conflict hunks; file was empty.)"
+              fi
 
               if [[ "$USE_GISTS" -eq 1 ]]; then
                 # Create a private gist with the exact file content
-                GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$FILE_CONTENT" \
+                GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$SNIPPET_CONTENT" \
                   '{public:false, files:{($name):{content:$content}}}')
 
                 set +e
@@ -191,7 +199,7 @@ jobs:
                   JQ_STATUS=$?
                   set -e
                   if [[ $JQ_STATUS -eq 0 && -n "$GIST_URL" ]]; then
-                    GIST_LINES+="- **$f**: ${GIST_URL}\n"
+                    GIST_LINES+="- **$f** (conflict hunks via gist): ${GIST_URL}\n"
                     continue
                   fi
                 fi
@@ -203,7 +211,7 @@ jobs:
                 fi
               fi
 
-              GIST_LINES+="$(emit_inline_reference "$f" "$MAX_INLINE")"
+              GIST_LINES+="$(emit_inline_snippet "$f" "$MAX_INLINE" "$SNIPPET_CONTENT")"
             else
               GIST_LINES+="- **$f**: (file missing in working tree)\n"
             fi
