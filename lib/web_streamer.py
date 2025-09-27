@@ -35,6 +35,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -1499,6 +1500,240 @@ def build_app() -> web.Application:
     class ClipError(Exception):
         """Raised when an audio clip cannot be produced."""
 
+    class ClipUndoError(Exception):
+        """Raised when an undo request for a clip cannot be completed."""
+
+        def __init__(self, message: str, *, status: int = 400):
+            super().__init__(message)
+            self.status = status
+
+    clip_undo_root = Path(tmp_root) / "clip_undo"
+    clip_undo_token_pattern = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+    CLIP_UNDO_MAX_AGE_SECONDS = 24 * 60 * 60
+
+    def _cleanup_clip_undo_storage(now: float | None = None) -> None:
+        if not clip_undo_root.exists():
+            return
+        current = time.time() if now is None else float(now)
+        try:
+            entries = list(clip_undo_root.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            meta_path = entry / "meta.json"
+            try:
+                with meta_path.open("r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+                created_at = metadata.get("created_at")
+                if not isinstance(created_at, (int, float)):
+                    raise ValueError("missing created_at")
+                if current - float(created_at) <= CLIP_UNDO_MAX_AGE_SECONDS:
+                    continue
+            except Exception:
+                pass
+            shutil.rmtree(entry, ignore_errors=True)
+
+    def _prepare_clip_backup(
+        final_path: Path, final_waveform: Path, rel_path: Path
+    ) -> str:
+        try:
+            clip_undo_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ClipError("unable to prepare undo storage") from exc
+
+        attempts = 0
+        while attempts < 8:
+            attempts += 1
+            token = secrets.token_urlsafe(24)
+            backup_dir = clip_undo_root / token
+            try:
+                backup_dir.mkdir(mode=0o700)
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                raise ClipError("unable to prepare undo storage") from exc
+            try:
+                audio_backup = backup_dir / final_path.name
+                shutil.copy2(final_path, audio_backup)
+                waveform_filename = None
+                if final_waveform.exists():
+                    waveform_backup = backup_dir / final_waveform.name
+                    shutil.copy2(final_waveform, waveform_backup)
+                    waveform_filename = final_waveform.name
+                metadata = {
+                    "path": rel_path.as_posix(),
+                    "filename": final_path.name,
+                    "waveform_filename": waveform_filename,
+                    "created_at": time.time(),
+                }
+                with (backup_dir / "meta.json").open("w", encoding="utf-8") as handle:
+                    json.dump(metadata, handle)
+            except Exception as exc:
+                shutil.rmtree(backup_dir, ignore_errors=True)
+                raise ClipError("unable to prepare undo storage") from exc
+            else:
+                return token
+        raise ClipError("unable to prepare undo storage")
+
+    def _restore_clip_backup(token: str) -> dict[str, object]:
+        token = token.strip()
+        if not clip_undo_token_pattern.match(token):
+            raise ClipUndoError("Invalid undo token.")
+
+        backup_dir = clip_undo_root / token
+        if not backup_dir.is_dir():
+            raise ClipUndoError("Undo history expired.", status=404)
+
+        meta_path = backup_dir / "meta.json"
+        try:
+            with meta_path.open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise ClipUndoError("Undo history unavailable.", status=404) from exc
+
+        rel_text = metadata.get("path")
+        filename = metadata.get("filename")
+        waveform_filename = metadata.get("waveform_filename")
+        if not isinstance(rel_text, str) or not rel_text:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise ClipUndoError("Undo metadata invalid.", status=404)
+        if not isinstance(filename, str) or not filename:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise ClipUndoError("Undo metadata invalid.", status=404)
+
+        rel_path = Path(rel_text)
+        target_path = recordings_root / rel_path
+        try:
+            resolved_target = target_path.resolve()
+        except FileNotFoundError:
+            resolved_target = target_path
+
+        try:
+            resolved_target.relative_to(recordings_root_resolved)
+        except ValueError as exc:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise ClipUndoError("Undo target is invalid.", status=404) from exc
+
+        audio_backup = backup_dir / filename
+        if not audio_backup.is_file():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise ClipUndoError("Undo history unavailable.", status=404)
+
+        waveform_backup: Path | None = None
+        if isinstance(waveform_filename, str) and waveform_filename:
+            candidate = backup_dir / waveform_filename
+            if candidate.is_file():
+                waveform_backup = candidate
+
+        temp_audio_path: Path | None = None
+        temp_waveform_path: Path | None = None
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_audio_fd, temp_audio_name = tempfile.mkstemp(
+                dir=resolved_target.parent,
+                prefix=f".undo-{resolved_target.stem}-",
+                suffix=resolved_target.suffix or ".tmp",
+            )
+            os.close(temp_audio_fd)
+            temp_audio_path = Path(temp_audio_name)
+            shutil.copy2(audio_backup, temp_audio_path)
+            os.replace(temp_audio_path, resolved_target)
+            temp_audio_path = None
+
+            target_waveform = resolved_target.with_suffix(
+                resolved_target.suffix + ".waveform.json"
+            )
+            if waveform_backup is not None:
+                temp_wave_fd, temp_wave_name = tempfile.mkstemp(
+                    dir=target_waveform.parent,
+                    prefix=f".undo-{target_waveform.stem}-",
+                    suffix=target_waveform.suffix or ".tmp",
+                )
+                os.close(temp_wave_fd)
+                temp_waveform_path = Path(temp_wave_name)
+                shutil.copy2(waveform_backup, temp_waveform_path)
+                os.replace(temp_waveform_path, target_waveform)
+                temp_waveform_path = None
+            else:
+                try:
+                    target_waveform.unlink()
+                except FileNotFoundError:
+                    pass
+        except Exception as exc:
+            raise ClipUndoError("Unable to restore clip from history.") from exc
+        else:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        finally:
+            if temp_audio_path is not None:
+                try:
+                    temp_audio_path.unlink()
+                except FileNotFoundError:
+                    pass
+            if temp_waveform_path is not None:
+                try:
+                    temp_waveform_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+        try:
+            rel_verified = resolved_target.relative_to(recordings_root_resolved)
+        except ValueError:
+            rel_verified = resolved_target.relative_to(recordings_root)
+
+        rel_posix = rel_verified.as_posix()
+        day = rel_verified.parts[0] if rel_verified.parts else ""
+
+        try:
+            stat = resolved_target.stat()
+        except OSError as exc:
+            raise ClipUndoError("Restored clip is unavailable.") from exc
+
+        waveform_meta: dict[str, object] | None = None
+        try:
+            with resolved_target.with_suffix(
+                resolved_target.suffix + ".waveform.json"
+            ).open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+                if isinstance(payload, dict):
+                    waveform_meta = payload
+        except FileNotFoundError:
+            waveform_meta = None
+        except (OSError, json.JSONDecodeError):
+            waveform_meta = None
+
+        duration = None
+        if waveform_meta is not None:
+            raw_duration = waveform_meta.get("duration_seconds")
+            if isinstance(raw_duration, (int, float)) and raw_duration > 0:
+                duration = float(raw_duration)
+        if duration is None:
+            duration = _probe_duration(resolved_target, stat)
+        clip_start_epoch = None
+        if waveform_meta is not None:
+            start_value = waveform_meta.get("start_epoch")
+            if isinstance(start_value, (int, float)) and start_value > 0:
+                clip_start_epoch = float(start_value)
+            elif isinstance(waveform_meta.get("started_epoch"), (int, float)):
+                clip_start_epoch = float(waveform_meta["started_epoch"])
+        if clip_start_epoch is None and hasattr(stat, "st_mtime"):
+            clip_start_epoch = float(stat.st_mtime)
+
+        payload: dict[str, object] = {
+            "path": rel_posix,
+            "name": resolved_target.stem,
+            "duration_seconds": duration,
+            "day": day,
+        }
+        if clip_start_epoch and clip_start_epoch > 0:
+            payload["start_epoch"] = clip_start_epoch
+
+        _cleanup_clip_undo_storage()
+
+        return payload
+
     def _format_timecode_slug(seconds: float) -> str:
         total_ms = max(0, int(round(seconds * 1000)))
         hours, remainder = divmod(total_ms, 3_600_000)
@@ -1593,15 +1828,15 @@ def build_app() -> web.Application:
         default_name = _default_clip_name(resolved, float(start_seconds), float(end_seconds))
         base_name = _sanitize_clip_name(clip_name, default_name)
 
-        attempt = 1
         final_path = target_dir / f"{base_name}.opus"
-        while final_path.exists():
-            attempt += 1
-            if attempt > 9999:
-                raise ClipError("unable to allocate unique filename")
-            final_path = target_dir / f"{base_name}_{attempt:02d}.opus"
-
         final_waveform = final_path.with_suffix(final_path.suffix + ".waveform.json")
+
+        try:
+            rel_path = final_path.relative_to(recordings_root_resolved)
+        except ValueError:
+            rel_path = final_path.relative_to(recordings_root)
+
+        undo_token: str | None = None
 
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -1691,6 +1926,9 @@ def build_app() -> web.Application:
             except Exception as exc:
                 raise ClipError("waveform generation failed") from exc
 
+            if final_path.exists():
+                undo_token = _prepare_clip_backup(final_path, final_waveform, rel_path)
+
             try:
                 shutil.move(str(tmp_opus), str(final_path))
                 shutil.move(str(tmp_waveform), str(final_waveform))
@@ -1729,6 +1967,10 @@ def build_app() -> web.Application:
         }
         if clip_start_epoch and clip_start_epoch > 0:
             payload["start_epoch"] = clip_start_epoch
+        if undo_token:
+            payload["undo_token"] = undo_token
+
+        _cleanup_clip_undo_storage()
         return payload
 
     if stream_mode == "hls":
@@ -2096,6 +2338,31 @@ def build_app() -> web.Application:
         except Exception as exc:  # pragma: no cover - unexpected failures
             log.exception("Unexpected error while creating clip for %s", source_path)
             raise web.HTTPInternalServerError(reason="unable to create clip") from exc
+
+        return web.json_response(payload)
+
+    async def recordings_clip_undo(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        token_value = data.get("token")
+        if not isinstance(token_value, str) or not token_value.strip():
+            raise web.HTTPBadRequest(reason="token must be a string")
+
+        loop = asyncio.get_running_loop()
+        try:
+            payload = await loop.run_in_executor(
+                None, functools.partial(_restore_clip_backup, token_value)
+            )
+        except ClipUndoError as exc:
+            if exc.status == 404:
+                raise web.HTTPNotFound(reason=str(exc)) from exc
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - unexpected failures
+            log.exception("Unexpected error while restoring clip for token %s", token_value)
+            raise web.HTTPInternalServerError(reason="unable to restore clip") from exc
 
         return web.json_response(payload)
 
@@ -2525,6 +2792,7 @@ def build_app() -> web.Application:
     app.router.add_post("/api/recordings/delete", recordings_delete)
     app.router.add_post("/api/recordings/remove", recordings_delete)
     app.router.add_post("/api/recordings/clip", recordings_clip)
+    app.router.add_post("/api/recordings/clip/undo", recordings_clip_undo)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/config/archival", config_archival_get)

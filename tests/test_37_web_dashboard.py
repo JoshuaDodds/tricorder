@@ -476,6 +476,79 @@ def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_clip_overwrite_and_undo(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240107"
+        day_dir.mkdir()
+
+        source = day_dir / "long.wav"
+        _create_silent_wav(source, duration=3.0)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=3.0)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            initial_payload = {
+                "source_path": "20240107/long.wav",
+                "start_seconds": 0.0,
+                "end_seconds": 2.5,
+                "clip_name": "long-clip",
+            }
+            resp = await client.post("/api/recordings/clip", json=initial_payload)
+            assert resp.status == 200
+            data = await resp.json()
+            clip_rel_path = data["path"]
+            clip_file = dashboard_env / clip_rel_path
+            clip_waveform = clip_file.with_suffix(clip_file.suffix + ".waveform.json")
+            assert clip_file.exists()
+            original_waveform = json.loads(clip_waveform.read_text())
+            original_duration = original_waveform.get("duration_seconds")
+            assert isinstance(original_duration, (int, float))
+            assert not data.get("undo_token")
+            clip_name = data.get("name")
+            assert isinstance(clip_name, str) and clip_name
+
+            update_payload = {
+                "source_path": clip_rel_path,
+                "start_seconds": 0.5,
+                "end_seconds": 1.25,
+                "clip_name": clip_name,
+            }
+            resp_update = await client.post("/api/recordings/clip", json=update_payload)
+            assert resp_update.status == 200
+            data_update = await resp_update.json()
+            assert data_update["path"] == clip_rel_path
+            undo_token = data_update.get("undo_token")
+            assert isinstance(undo_token, str) and undo_token
+
+            updated_waveform = json.loads(clip_waveform.read_text())
+            updated_duration = updated_waveform.get("duration_seconds")
+            assert isinstance(updated_duration, (int, float))
+            assert updated_duration < original_duration - 0.1
+
+            resp_undo = await client.post("/api/recordings/clip/undo", json={"token": undo_token})
+            assert resp_undo.status == 200
+            data_undo = await resp_undo.json()
+            assert data_undo["path"] == clip_rel_path
+
+            restored_waveform = json.loads(clip_waveform.read_text())
+            restored_duration = restored_waveform.get("duration_seconds")
+            assert isinstance(restored_duration, (int, float))
+            assert restored_duration == pytest.approx(original_duration, rel=0.01)
+
+            resp_undo_again = await client.post("/api/recordings/clip/undo", json={"token": undo_token})
+            assert resp_undo_again.status == 404
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_validates_range(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
