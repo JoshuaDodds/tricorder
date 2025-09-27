@@ -224,6 +224,151 @@ def test_archival_settings_validation_error(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_audio_settings_round_trip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+audio:
+  device: "hw:1,0"
+  sample_rate: 32000
+  frame_ms: 20
+  gain: 2.0
+  vad_aggressiveness: 2
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        restarts: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            restarts.append(list(args))
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/audio")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["audio"]["device"] == "hw:1,0"
+            assert payload["audio"]["sample_rate"] == 32000
+
+            update_payload = {
+                "device": "hw:CARD=Device,DEV=0",
+                "sample_rate": 48000,
+                "frame_ms": 10,
+                "gain": 1.5,
+                "vad_aggressiveness": 3,
+            }
+
+            resp = await client.post("/api/config/audio", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            assert updated["audio"]["frame_ms"] == 10
+            assert updated["audio"]["gain"] == pytest.approx(1.5)
+            assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
+
+            assert restarts == [["restart", "voice-recorder.service"]]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["audio"]["gain"] == 1.5
+            assert persisted["audio"]["frame_ms"] == 10
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_streaming_settings_restart_services(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("streaming:\n  mode: hls\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        restarts: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            restarts.append(list(args))
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {"mode": "webrtc", "webrtc_history_seconds": 12.0}
+            resp = await client.post("/api/config/streaming", json=payload)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["streaming"]["mode"] == "webrtc"
+            assert data["streaming"]["webrtc_history_seconds"] == pytest.approx(12.0)
+
+            assert restarts == [
+                ["restart", "voice-recorder.service"],
+                ["restart", "web-streamer.service"],
+            ]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["streaming"]["mode"] == "webrtc"
+            assert persisted["streaming"]["webrtc_history_seconds"] == 12.0
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_audio_settings_validation_error(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("audio:\n  device: hw:1,0\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "device": "",
+                "sample_rate": 12345,
+                "frame_ms": 15,
+                "gain": -1,
+                "vad_aggressiveness": 7,
+            }
+            resp = await client.post("/api/config/audio", json=payload)
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")

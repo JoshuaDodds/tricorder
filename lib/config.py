@@ -400,13 +400,58 @@ def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
         raise ConfigPersistenceError(f"Unable to write configuration: {exc}") from exc
 
 
-def update_archival_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+def _persist_settings_section(
+    section: str, settings: Dict[str, Any], *, merge: bool = True
+) -> Dict[str, Any]:
     if not isinstance(settings, dict):
-        raise ConfigPersistenceError("Archival settings payload must be a mapping")
+        raise ConfigPersistenceError(f"{section} settings payload must be a mapping")
 
     primary_path = primary_config_path()
     current = _load_raw_yaml(primary_path)
     updated = copy.deepcopy(current)
-    updated["archival"] = copy.deepcopy(settings)
+
+    if merge:
+        base: Dict[str, Any] = {}
+        existing = updated.get(section)
+        if isinstance(existing, dict):
+            base = copy.deepcopy(existing)
+        for key, value in settings.items():
+            base[key] = copy.deepcopy(value)
+        updated[section] = base
+    else:
+        updated[section] = copy.deepcopy(settings)
+
     _dump_yaml(primary_path, updated)
-    return reload_cfg().get("archival", {})
+    return reload_cfg().get(section, {})
+
+
+def update_archival_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("archival", settings, merge=False)
+
+
+def update_audio_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("audio", settings, merge=True)
+
+
+def update_segmenter_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("segmenter", settings, merge=True)
+
+
+def update_adaptive_rms_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("adaptive_rms", settings, merge=True)
+
+
+def update_ingest_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("ingest", settings, merge=True)
+
+
+def update_logging_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("logging", settings, merge=True)
+
+
+def update_streaming_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("streaming", settings, merge=True)
+
+
+def update_dashboard_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("dashboard", settings, merge=True)
