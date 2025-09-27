@@ -575,6 +575,11 @@ def build_app() -> web.Application:
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
     tmp_root = os.environ.get("TRICORDER_TMP", default_tmp)
 
+    try:
+        os.makedirs(tmp_root, exist_ok=True)
+    except OSError:
+        pass
+
     streaming_cfg = cfg.get("streaming", {})
     stream_mode_raw = str(streaming_cfg.get("mode", "hls")).strip().lower()
     stream_mode = stream_mode_raw if stream_mode_raw in {"hls", "webrtc"} else "hls"
