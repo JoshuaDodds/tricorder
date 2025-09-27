@@ -77,13 +77,18 @@ jobs:
           MERGE_CODE=$?
           set -e
 
-          # If there are staged changes without conflicts (fast-forward or clean merge), we still treat as "no conflicts"
-          if git ls-files -u | grep -q .; then
+          # Capture the index state without relying on pipeline exit codes so conflicts don't abort the script
+          conflict_index_output=$(git ls-files -u)
+
+          if [[ -n "$conflict_index_output" ]]; then
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ $MERGE_CODE -eq 0 ]]; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
             # Reset to clean state to avoid dirty workspace
             git merge --abort || git reset --hard
+          else
+            echo "Merge failed with exit $MERGE_CODE and no indexed conflicts detected." >&2
+            exit "$MERGE_CODE"
           fi
 
       - name: Prepare conflict comment (and create gists)
@@ -127,8 +132,8 @@ jobs:
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
           echo "Conflicted files: $CONFLICT_FILES" >&2
 
-          read -r -d '' PREAMBLE <<'TXT'
-          Automated context: attempted merging the repository default branch into `'"$BRANCH"'` produced merge conflicts. Tagging @codex to resolve.
+          PREAMBLE_TEMPLATE=$(cat <<'TXT'
+          Automated context: attempted merging the repository default branch into BRANCH_PLACEHOLDER produced merge conflicts. Tagging @codex to resolve.
 
           ---
           **Resolution instructions for @codex (follow exactly):**
@@ -144,7 +149,7 @@ jobs:
               Do NOT remove new functionality from either branch unless it is duplicated.
               Resolve without adding comments, explanations, and be sure to remove conflict markers.
 
-          After producing the resolved file(s), overwrite the conflicted file(s) in the branch, then run (from the repo root):
+          After producing the resolved file(s), overwrite the conflicted file(s), then run (from the repo root):
               git add <file> && git commit -m "chore: AI-resolved merge conflicts (automated)" && git push origin HEAD
 
           You should push using credentials that can push to this repository as the repository user.
@@ -155,6 +160,11 @@ jobs:
           ---
 
           TXT
+          )
+
+          BRANCH_MARKDOWN=$(printf '\`%s\`' "$BRANCH")
+          PREAMBLE=${PREAMBLE_TEMPLATE//BRANCH_PLACEHOLDER/$BRANCH_MARKDOWN}
+
 
           GIST_LINES=""
           for f in $CONFLICT_FILES; do
@@ -243,18 +253,55 @@ jobs:
 
       - name: Post comment to PR
         if: steps.merge_try.outputs.conflicts == 'true' && steps.find_pr.outputs.pr_number != ''
+        id: post_comment
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
+          ISSUE_NUMBER: ${{ steps.find_pr.outputs.pr_number }}
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Use the workflow GITHUB_TOKEN for repo comments
-          jq -n --arg body "${{ steps.prep_comment.outputs.prepared_comment }}" '{body:$body}' | \
-          curl -sS -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          payload_file=$(mktemp)
+          response_file=$(mktemp)
+          trap 'rm -f "$payload_file" "$response_file"' EXIT
+
+          jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
+
+          auth_token="${REPO_PAT:-${GITHUB_TOKEN:-}}"
+          if [[ -z "$auth_token" ]]; then
+            echo "No token available for posting PR comment; falling back to log output." >&2
+            echo "posted=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
+            -H "Authorization: token ${auth_token}" \
             -H "Accept: application/vnd.github+json" \
-            -d @- "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments" >/dev/null
+            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${ISSUE_NUMBER}/comments")
+
+          if [[ "$status" == "201" ]]; then
+            echo "Posted merge-conflict instructions comment to PR #${ISSUE_NUMBER} (status $status)."
+            echo "posted=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Failed to post PR comment (status $status). Response body:" >&2
+          cat "$response_file" >&2
+          echo "posted=false" >>"$GITHUB_OUTPUT"
+
+          if [[ "$status" == "403" ]]; then
+            echo "Comment permissions denied; will emit instructions to logs instead." >&2
+            exit 0
+          fi
+
+          exit 1
 
       - name: Echo prepared comment (no PR found)
-        if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure')
+        if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure' || steps.post_comment.outputs.posted != 'true')
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
-          echo "${{ steps.prep_comment.outputs.prepared_comment }}"
+          set -euo pipefail
+          printf "%s\n" "$COMMENT_BODY"
