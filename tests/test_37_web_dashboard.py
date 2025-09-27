@@ -246,10 +246,12 @@ audio:
     monkeypatch.setattr(config, "_search_paths", [], raising=False)
 
     async def runner():
-        restarts: list[list[str]] = []
+        systemctl_calls: list[list[str]] = []
 
         async def fake_systemctl(args):
-            restarts.append(list(args))
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
             return 0, "", ""
 
         monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
@@ -279,11 +281,68 @@ audio:
             assert updated["audio"]["gain"] == pytest.approx(1.5)
             assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
 
-            assert restarts == [["restart", "voice-recorder.service"]]
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
 
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["audio"]["gain"] == 1.5
             assert persisted["audio"]["frame_ms"] == 10
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_audio_settings_skip_restart_when_inactive(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "audio:\n  device: hw:1,0\n  sample_rate: 32000\n  frame_ms: 30\n  gain: 1.0\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 3, "inactive\n", ""
+            pytest.fail(f"unexpected systemctl call: {args}")
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/config/audio",
+                json={
+                    "device": "hw:CARD=Device,DEV=0",
+                    "sample_rate": 48000,
+                    "frame_ms": 10,
+                    "gain": 1.5,
+                    "vad_aggressiveness": 3,
+                },
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["audio"]["gain"] == pytest.approx(1.5)
+            assert payload["audio"]["device"] == "hw:CARD=Device,DEV=0"
+
+            assert systemctl_calls == [["is-active", "voice-recorder.service"]]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["audio"]["gain"] == 1.5
         finally:
             await client.close()
             await server.close()
@@ -302,10 +361,12 @@ def test_streaming_settings_restart_services(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_search_paths", [], raising=False)
 
     async def runner():
-        restarts: list[list[str]] = []
+        systemctl_calls: list[list[str]] = []
 
         async def fake_systemctl(args):
-            restarts.append(list(args))
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
             return 0, "", ""
 
         monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
@@ -321,8 +382,10 @@ def test_streaming_settings_restart_services(tmp_path, monkeypatch):
             assert data["streaming"]["mode"] == "webrtc"
             assert data["streaming"]["webrtc_history_seconds"] == pytest.approx(12.0)
 
-            assert restarts == [
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
                 ["restart", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
                 ["restart", "web-streamer.service"],
             ]
 
