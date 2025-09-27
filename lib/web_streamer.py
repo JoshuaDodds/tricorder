@@ -884,8 +884,13 @@ async def _restart_units(units: Iterable[str]) -> list[dict[str, Any]]:
         )
     return results
 
-from aiohttp import web
+from aiohttp import web, web_fileresponse
 from aiohttp.web import AppKey
+
+# aiohttp's sendfile() path sometimes times out on slow or lossy networks when
+# downloading large recordings. Force the chunked fallback, which cooperates
+# better with flow control and avoids surfacing TimeoutError to clients.
+web_fileresponse.NOSENDFILE = True
 
 from lib.hls_controller import controller
 from lib import webui, sd_card_health
