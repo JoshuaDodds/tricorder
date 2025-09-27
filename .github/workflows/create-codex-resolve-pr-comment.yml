@@ -182,7 +182,8 @@ jobs:
 
               if [[ "$USE_GISTS" -eq 1 ]]; then
                 # Create a private gist with the exact file content
-                GIST_PAYLOAD=$(jq -nc --arg name "$f" --arg content "$SNIPPET_CONTENT" \
+                GIST_NAME=${f//\//_}
+                GIST_PAYLOAD=$(jq -nc --arg name "$GIST_NAME" --arg content "$SNIPPET_CONTENT" \
                   '{public:false, files:{($name):{content:$content}}}')
 
                 set +e
