@@ -11,13 +11,13 @@ from datetime import datetime
 import threading
 import queue
 import warnings
+import array
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
     message="pkg_resources is deprecated as an API.*"
 )
 import webrtcvad    # noqa
-import audioop      # noqa
 from lib.config import get_cfg
 from lib.notifications import build_dispatcher
 
@@ -45,6 +45,56 @@ SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
 FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+
+INT16_MAX = 2 ** 15 - 1
+INT16_MIN = -2 ** 15
+
+
+def pcm16_rms(buf: bytes) -> int:
+    """Compute RMS amplitude for signed 16-bit little-endian PCM data."""
+    if not buf:
+        return 0
+    if len(buf) % SAMPLE_WIDTH:
+        raise ValueError("PCM16 buffer length must be a multiple of 2 bytes")
+
+    samples = array.array('h')
+    samples.frombytes(buf)
+    if sys.byteorder != 'little':
+        samples.byteswap()
+
+    total = 0
+    for sample in samples:
+        total += sample * sample
+    if not samples:
+        return 0
+    mean_square = total / len(samples)
+    return int(math.sqrt(mean_square))
+
+
+def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
+    """Scale signed 16-bit PCM samples by gain with int16 clipping."""
+    if not buf or gain == 1.0:
+        return buf
+    if len(buf) % SAMPLE_WIDTH:
+        raise ValueError("PCM16 buffer length must be a multiple of 2 bytes")
+
+    samples = array.array('h')
+    samples.frombytes(buf)
+    if sys.byteorder != 'little':
+        samples.byteswap()
+
+    for idx, sample in enumerate(samples):
+        product = sample * gain
+        scaled = math.floor(product)
+        if scaled > INT16_MAX:
+            scaled = INT16_MAX
+        elif scaled < INT16_MIN:
+            scaled = INT16_MIN
+        samples[idx] = scaled
+
+    if sys.byteorder != 'little':
+        samples.byteswap()
+    return samples.tobytes()
 
 TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
@@ -102,7 +152,7 @@ def is_voice(buf):
 
 
 def rms(buf):
-    return audioop.rms(buf, SAMPLE_WIDTH)
+    return pcm16_rms(buf)
 
 
 # ---------- Async writer worker ----------
@@ -461,9 +511,7 @@ class TimelineRecorder:
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
-        if GAIN == 1.0:
-            return buf
-        return audioop.mul(buf, SAMPLE_WIDTH, GAIN)
+        return pcm16_apply_gain(buf, GAIN)
 
     @staticmethod
     def _denoise(samples: bytes) -> bytes:
