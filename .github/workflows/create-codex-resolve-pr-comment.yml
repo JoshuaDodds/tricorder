@@ -221,6 +221,7 @@ jobs:
                   if [[ -n "$GIST_RESPONSE" ]]; then
                     GIST_ERRORS=$(printf '%s' "$GIST_RESPONSE" | jq -c '.errors // []' 2>/dev/null || printf '[]')
                     echo "Failed to create gist for $f; falling back to inline snippet. errors=${GIST_ERRORS}" >&2
+                  fi
 
                   ERROR_MESSAGE=""
                   if [[ -n "$GIST_RESPONSE" ]]; then
