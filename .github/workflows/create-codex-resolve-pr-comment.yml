@@ -218,6 +218,10 @@ jobs:
                     echo "Failed to parse gist URL for $f; falling back to inline snippet." >&2
                   fi
                 else
+                  if [[ -n "$GIST_RESPONSE" ]]; then
+                    GIST_ERRORS=$(printf '%s' "$GIST_RESPONSE" | jq -c '.errors // []' 2>/dev/null || printf '[]')
+                    echo "Failed to create gist for $f; falling back to inline snippet. errors=${GIST_ERRORS}" >&2
+
                   ERROR_MESSAGE=""
                   if [[ -n "$GIST_RESPONSE" ]]; then
                     ERROR_MESSAGE=$(printf '%s' "$GIST_RESPONSE" | jq -r '.message // empty' 2>/dev/null || true)
@@ -230,6 +234,7 @@ jobs:
                     else
                       echo "Failed to create gist for $f (HTTP $CURL_HTTP_STATUS); falling back to inline snippet." >&2
                     fi
+
                   else
                     echo "Failed to create gist for $f; falling back to inline snippet." >&2
                   fi
