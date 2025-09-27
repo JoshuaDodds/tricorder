@@ -82,7 +82,12 @@ _DEFAULTS: Dict[str, Any] = {
 }
 
 _cfg_cache: Dict[str, Any] | None = None
+_primary_config_path: Path | None = None
 _warned_yaml_missing = False
+
+
+class ConfigPersistenceError(Exception):
+    """Raised when configuration updates cannot be written to disk."""
 
 def _load_yaml_if_exists(path: Path) -> Dict[str, Any]:
     global _warned_yaml_missing
@@ -198,7 +203,7 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
             cfg.setdefault("dashboard", {})["web_service"] = value
 
 def get_cfg() -> Dict[str, Any]:
-    global _cfg_cache
+    global _cfg_cache, _primary_config_path
     if _cfg_cache is not None:
         return _cfg_cache
 
@@ -231,8 +236,68 @@ def get_cfg() -> Dict[str, Any]:
     ])
 
     for p in search:
-        cfg = _deep_merge(cfg, _load_yaml_if_exists(p))
+        loaded = _load_yaml_if_exists(p)
+        if _primary_config_path is None and p.exists():
+            _primary_config_path = p
+        if loaded:
+            cfg = _deep_merge(cfg, loaded)
 
     _apply_env_overrides(cfg)
+    if _primary_config_path is None:
+        env_cfg = os.getenv("TRICORDER_CONFIG")
+        _primary_config_path = (
+            Path(env_cfg).expanduser().resolve()
+            if env_cfg
+            else Path("/apps/tricorder/config.yaml")
+        )
+
     _cfg_cache = cfg
     return cfg
+
+
+def primary_config_path() -> Path:
+    """Return the configuration file path that should be updated on writes."""
+
+    if _primary_config_path is None:
+        # Ensure the cache and primary path are populated
+        get_cfg()
+    assert _primary_config_path is not None
+    return _primary_config_path
+
+
+def reload_cfg() -> Dict[str, Any]:
+    """Force a reload of configuration data from disk."""
+
+    global _cfg_cache
+    _cfg_cache = None
+    return get_cfg()
+
+
+def update_archival_settings(settings: Dict[str, Any]) -> None:
+    """Persist archival configuration settings to the primary config file."""
+
+    if yaml is None:
+        raise ConfigPersistenceError("PyYAML is required to update configuration files")
+
+    path = primary_config_path()
+    existing: Dict[str, Any]
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                loaded = yaml.safe_load(handle) or {}
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ConfigPersistenceError(f"Unable to load configuration: {exc}") from exc
+        existing = loaded if isinstance(loaded, dict) else {}
+    else:
+        existing = {}
+
+    existing["archival"] = settings
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(existing, handle, sort_keys=False)
+    except Exception as exc:  # pragma: no cover - file permission issues
+        raise ConfigPersistenceError(f"Unable to write configuration: {exc}") from exc
+
+    reload_cfg()
