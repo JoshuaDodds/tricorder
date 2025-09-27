@@ -337,6 +337,13 @@ Select any recording in the dashboard preview pane to open the new **Clip editor
 
 Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and overwrite an existing clip only when you reuse its name; the source recording itself is never modified.
 
+To manually test the overwrite + undo workflow in the dashboard:
+
+1. Open a recording in the dashboard and create a clip with **Save clip**.
+2. Adjust the start/end markers and save again using the *same clip name* to overwrite the previous export.
+3. After the overwrite succeeds, an **Undo** button appears next to **Save clip** for that recording while its undo token is still valid (24 hours by default).
+4. Click **Undo** to restore the prior clip version from its backup; the button disappears once the history is used or expires.
+
 ### SD card recovery workflow
 
 When the SD card monitor flags persistent kernel errors, the dashboard banner now exposes a **Clone and replace the SD card** help link. The linked page lives on the recorder at `/static/docs/sd-card-recovery.html` and walks through:

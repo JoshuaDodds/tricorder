@@ -1623,14 +1623,35 @@ def build_app() -> web.Application:
             if candidate.is_file():
                 waveform_backup = candidate
 
+        temp_audio_path: Path | None = None
+        temp_waveform_path: Path | None = None
         try:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(audio_backup, resolved_target)
+            temp_audio_fd, temp_audio_name = tempfile.mkstemp(
+                dir=resolved_target.parent,
+                prefix=f".undo-{resolved_target.stem}-",
+                suffix=resolved_target.suffix or ".tmp",
+            )
+            os.close(temp_audio_fd)
+            temp_audio_path = Path(temp_audio_name)
+            shutil.copy2(audio_backup, temp_audio_path)
+            os.replace(temp_audio_path, resolved_target)
+            temp_audio_path = None
+
             target_waveform = resolved_target.with_suffix(
                 resolved_target.suffix + ".waveform.json"
             )
             if waveform_backup is not None:
-                shutil.copy2(waveform_backup, target_waveform)
+                temp_wave_fd, temp_wave_name = tempfile.mkstemp(
+                    dir=target_waveform.parent,
+                    prefix=f".undo-{target_waveform.stem}-",
+                    suffix=target_waveform.suffix or ".tmp",
+                )
+                os.close(temp_wave_fd)
+                temp_waveform_path = Path(temp_wave_name)
+                shutil.copy2(waveform_backup, temp_waveform_path)
+                os.replace(temp_waveform_path, target_waveform)
+                temp_waveform_path = None
             else:
                 try:
                     target_waveform.unlink()
@@ -1638,8 +1659,19 @@ def build_app() -> web.Application:
                     pass
         except Exception as exc:
             raise ClipUndoError("Unable to restore clip from history.") from exc
-        finally:
+        else:
             shutil.rmtree(backup_dir, ignore_errors=True)
+        finally:
+            if temp_audio_path is not None:
+                try:
+                    temp_audio_path.unlink()
+                except FileNotFoundError:
+                    pass
+            if temp_waveform_path is not None:
+                try:
+                    temp_waveform_path.unlink()
+                except FileNotFoundError:
+                    pass
 
         try:
             rel_verified = resolved_target.relative_to(recordings_root_resolved)
