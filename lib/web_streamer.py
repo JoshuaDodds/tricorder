@@ -1788,7 +1788,10 @@ def build_app() -> web.Application:
         except OSError:
             return {"capturing": False, "updated_at": None}
 
-        status: dict[str, object] = {"capturing": bool(raw.get("capturing", False))}
+        status: dict[str, object] = {
+            "capturing": bool(raw.get("capturing", False)),
+            "service_running": False,
+        }
         updated_at = raw.get("updated_at")
         if isinstance(updated_at, (int, float)):
             status["updated_at"] = float(updated_at)
@@ -1846,6 +1849,22 @@ def build_app() -> web.Application:
         reason = raw.get("last_stop_reason")
         if isinstance(reason, str) and reason:
             status["last_stop_reason"] = reason
+
+        current_rms = raw.get("current_rms")
+        if isinstance(current_rms, (int, float)) and math.isfinite(current_rms):
+            status["current_rms"] = int(current_rms)
+
+        service_running_raw = raw.get("service_running")
+        if isinstance(service_running_raw, bool):
+            status["service_running"] = service_running_raw
+        elif isinstance(service_running_raw, (int, float)):
+            status["service_running"] = bool(service_running_raw)
+        elif isinstance(service_running_raw, str):
+            normalized = service_running_raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "running"}:
+                status["service_running"] = True
+            elif normalized in {"0", "false", "no", "off", "stopped"}:
+                status["service_running"] = False
 
         return status
 
