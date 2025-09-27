@@ -171,58 +171,7 @@ jobs:
           CONTEXT_LINES=5
           for f in $CONFLICT_FILES; do
             if [[ -f "$f" ]]; then
-              SNIPPET_CONTENT=$(python3 - "$f" "$CONTEXT_LINES" <<'PY'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-context = int(sys.argv[2])
-
-FALLBACK_MESSAGE = "(Binary or non-text content; conflict hunks unavailable.)"
-
-raw_text = ""
-try:
-    raw_text = path.read_bytes().decode("utf-8", errors="replace")
-except Exception as exc:  # pragma: no cover - defensive
-    print(f"Failed to read conflicted file: {exc}", file=sys.stderr)
-    raw_text = FALLBACK_MESSAGE
-
-if not raw_text:
-    raw_text = FALLBACK_MESSAGE
-
-lines = raw_text.splitlines()
-snippets = []
-line_count = len(lines)
-
-idx = 0
-while idx < line_count:
-    if lines[idx].startswith('<<<<<<< '):
-        start = max(0, idx - context)
-        end = idx
-        while end < line_count and not lines[end].startswith('>>>>>>> '):
-            end += 1
-        if end >= line_count:
-            end = line_count - 1
-        snippet_lines = lines[start:end + 1]
-        header = f"Lines {start + 1}-{end + 1}:"
-        snippets.append((header, '\n'.join(snippet_lines)))
-        idx = end + 1
-    else:
-        idx += 1
-
-if snippets:
-    parts = []
-    for header, snippet in snippets:
-        parts.append(header)
-        parts.append(snippet)
-        parts.append('')
-    output = '\n'.join(parts).rstrip()
-else:
-    output = raw_text if raw_text else FALLBACK_MESSAGE
-
-sys.stdout.write(output)
-PY
-)
+              SNIPPET_CONTENT=$(python3 -c $'import pathlib\nimport sys\n\nFALLBACK_MESSAGE = "(Binary or non-text content; conflict hunks unavailable.)"\n\npath = pathlib.Path(sys.argv[1])\ncontext = int(sys.argv[2])\n\ntry:\n    raw_text = path.read_bytes().decode("utf-8", errors="replace")\nexcept Exception as exc:  # pragma: no cover - defensive\n    print(f"Failed to read conflicted file: {exc}", file=sys.stderr)\n    raw_text = ""\n\nif not raw_text:\n    raw_text = FALLBACK_MESSAGE\n\nlines = raw_text.splitlines()\nsnippets = []\nline_count = len(lines)\n\nidx = 0\nwhile idx < line_count:\n    if lines[idx].startswith("<<<<<<< "):\n        start = max(0, idx - context)\n        end = idx\n        while end < line_count and not lines[end].startswith(">>>>>>> "):\n            end += 1\n        if end >= line_count:\n            end = line_count - 1\n        snippet_lines = lines[start:end + 1]\n        header = f"Lines {start + 1}-{end + 1}:"\n        snippets.append((header, "\\n".join(snippet_lines)))\n        idx = end + 1\n    else:\n        idx += 1\n\nif snippets:\n    parts = []\n    for header, snippet in snippets:\n        parts.append(header)\n        parts.append(snippet)\n        parts.append("")\n    output = "\\n".join(parts).rstrip()\nelse:\n    output = raw_text if raw_text else FALLBACK_MESSAGE\n\nsys.stdout.write(output)\n' "$f" "$CONTEXT_LINES")
 
               # Normalize Windows line endings if present
               SNIPPET_CONTENT=$(printf '%s' "$SNIPPET_CONTENT" | sed 's/\r$//')
