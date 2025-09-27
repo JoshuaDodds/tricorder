@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from fractions import Fraction
 from typing import Dict, Optional, TYPE_CHECKING
 
 try:
@@ -58,6 +59,8 @@ if _AIORTC_IMPORT_ERROR is None:
             self._sample_rate = int(sample_rate)
             self._frame_bytes = int(frame_bytes)
             self._silence = bytes(self._frame_bytes)
+            self._timestamp = 0
+            self._time_base = Fraction(1, self._sample_rate)
 
         async def recv(self) -> av.AudioFrame:
             loop = asyncio.get_running_loop()
@@ -69,9 +72,16 @@ if _AIORTC_IMPORT_ERROR is None:
             frame = av.AudioFrame(format="s16", layout="mono", samples=samples)
             frame.planes[0].update(frame_bytes)
             frame.sample_rate = self._sample_rate
-            pts, time_base = await super().next_timestamp()
-            frame.pts = pts
-            frame.time_base = time_base
+            super_obj = super()
+            next_timestamp = getattr(super_obj, "next_timestamp", None)
+            if next_timestamp is None:
+                frame.pts = self._timestamp
+                frame.time_base = self._time_base
+                self._timestamp += samples
+            else:
+                pts, time_base = await next_timestamp()
+                frame.pts = pts
+                frame.time_base = time_base
             return frame
 
         def stop(self) -> None:
