@@ -1196,6 +1196,10 @@ button.small {
   overflow-y: auto;
 }
 
+body[data-scroll-locked="true"] {
+  overflow: hidden;
+}
+
 .settings-modal[hidden] {
   display: none;
 }
