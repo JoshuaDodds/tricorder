@@ -333,9 +333,9 @@ Select any recording in the dashboard preview pane to open the new **Clip editor
 
 - Scrub the waveform or audio player, then use **Set from playhead** to capture precise start/end times. Times may also be entered manually as `MM:SS.mmm` (hours supported).
 - Adjust the generated clip name or supply your own; invalid characters are replaced automatically to match on-device storage rules.
-- Click **Save clip** to render a new `.opus` file and waveform sidecar via the existing ffmpeg/Opus pipeline. The new artifact appears alongside the original recording so you can review or delete either copy immediately.
+- Click **Save clip** to render a new `.opus` file and waveform sidecar via the existing ffmpeg/Opus pipeline. Reusing an existing clip name replaces that clip in place while leaving the source recording untouched, and each replacement keeps a short-lived undo history that can be restored from the editor.
 
-Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and never overwrite the source file.
+Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and overwrite an existing clip only when you reuse its name; the source recording itself is never modified.
 
 ### SD card recovery workflow
 
