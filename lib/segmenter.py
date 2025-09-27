@@ -449,7 +449,15 @@ class TimelineRecorder:
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
         self.event_started_epoch: float | None = None
-        self._update_capture_status(False, reason="idle")
+        self._metrics_interval = 0.5
+        self._last_metrics_update = 0.0
+        self._last_metrics_value: int | None = None
+        self._last_metrics_threshold: int | None = None
+        self._update_capture_status(
+            False,
+            reason="idle",
+            extra={"service_running": True, "current_rms": 0},
+        )
 
     def _update_capture_status(
         self,
@@ -458,16 +466,26 @@ class TimelineRecorder:
         event: dict | None = None,
         last_event: dict | None = None,
         reason: str | None = None,
+        extra: dict[str, object] | None = None,
     ) -> None:
-        payload: dict[str, object] = {
-            "capturing": bool(capturing),
-            "updated_at": time.time(),
-            "adaptive_rms_threshold": int(self._adaptive.threshold_linear),
-        }
+        payload: dict[str, object] = {}
+        if isinstance(self._status_cache, dict):
+            payload.update(self._status_cache)
+
+        payload.update(
+            {
+                "capturing": bool(capturing),
+                "updated_at": time.time(),
+                "adaptive_rms_threshold": int(self._adaptive.threshold_linear),
+            }
+        )
         if capturing and event:
             payload["event"] = event
+            payload.pop("last_event", None)
         if not capturing and last_event:
             payload["last_event"] = last_event
+        if not capturing and "event" in payload:
+            payload.pop("event", None)
         if reason:
             payload["last_stop_reason"] = reason
 
@@ -477,7 +495,15 @@ class TimelineRecorder:
             "last_event",
             "last_stop_reason",
             "adaptive_rms_threshold",
+            "current_rms",
+            "service_running",
         )
+        if extra:
+            for key, value in extra.items():
+                if value is None:
+                    payload.pop(key, None)
+                else:
+                    payload[key] = value
         if self._status_cache is not None:
             previous = {key: self._status_cache.get(key) for key in compare_keys}
             current = {key: payload.get(key) for key in compare_keys}
@@ -500,6 +526,55 @@ class TimelineRecorder:
                 pass
             if DEBUG_VERBOSE:
                 print(f"[segmenter] WARN: failed to write capture status: {exc!r}", flush=True)
+
+    def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
+        capturing = self.active
+        event: dict | None = None
+        last_event: dict | None = None
+        reason: str | None = None
+        if isinstance(self._status_cache, dict):
+            capturing = bool(self._status_cache.get("capturing", capturing))
+            cached_event = self._status_cache.get("event")
+            if isinstance(cached_event, dict):
+                event = cached_event
+            cached_last = self._status_cache.get("last_event")
+            if isinstance(cached_last, dict):
+                last_event = cached_last
+            cached_reason = self._status_cache.get("last_stop_reason")
+            if isinstance(cached_reason, str) and cached_reason:
+                reason = cached_reason
+        if capturing:
+            last_event = None
+        else:
+            event = None
+        return capturing, event, last_event, reason
+
+    def _maybe_update_live_metrics(self, rms_value: int) -> None:
+        now = time.monotonic()
+        whole = int(rms_value)
+        threshold = int(self._adaptive.threshold_linear)
+        if (
+            now - self._last_metrics_update < self._metrics_interval
+            and self._last_metrics_value == whole
+            and self._last_metrics_threshold == threshold
+        ):
+            return
+
+        self._last_metrics_update = now
+        self._last_metrics_value = whole
+        self._last_metrics_threshold = threshold
+
+        capturing, event, last_event, reason = self._status_snapshot()
+        self._update_capture_status(
+            capturing,
+            event=event,
+            last_event=last_event,
+            reason=reason,
+            extra={
+                "current_rms": whole,
+                "service_running": True,
+            },
+        )
 
     def _emit_threshold_update(self) -> None:
         cached = self._status_cache or {}
@@ -553,6 +628,8 @@ class TimelineRecorder:
         threshold_updated = self._adaptive.observe(rms_val, bool(voiced))
         if threshold_updated:
             self._emit_threshold_update()
+
+        self._maybe_update_live_metrics(rms_val)
 
         # once per-second debug (only if DEV enabled)
         now = time.monotonic()
@@ -753,7 +830,12 @@ class TimelineRecorder:
             cached_last = self._status_cache.get("last_event")
             if isinstance(cached_last, dict):
                 last_event = cached_last
-        self._update_capture_status(False, last_event=last_event, reason="shutdown")
+        self._update_capture_status(
+            False,
+            last_event=last_event,
+            reason="shutdown",
+            extra={"service_running": False, "current_rms": 0},
+        )
 
 
 def main():

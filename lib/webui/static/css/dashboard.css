@@ -436,6 +436,38 @@ body {
   min-width: 0;
 }
 
+.rms-indicator {
+  display: none;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--ghost-border-muted);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px -18px var(--surface-strong);
+}
+
+.rms-indicator[data-visible="true"] {
+  display: inline-flex;
+}
+
+.rms-indicator .label {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--text-subtle);
+}
+
+.rms-indicator .value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
 .recording-indicator {
   display: inline-flex;
   align-items: center;
