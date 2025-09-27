@@ -1148,6 +1148,8 @@ RECORDINGS_ROOT_KEY: AppKey[Path] = web.AppKey("recordings_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
 SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_services", list)
 AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
+STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
+WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
 
 _SYSTEMCTL_PROPERTIES = [
     "LoadState",
@@ -1435,7 +1437,7 @@ def build_app() -> web.Application:
     streaming_cfg = cfg.get("streaming", {})
     stream_mode_raw = str(streaming_cfg.get("mode", "hls")).strip().lower()
     stream_mode = stream_mode_raw if stream_mode_raw in {"hls", "webrtc"} else "hls"
-    app["stream_mode"] = stream_mode
+    app[STREAM_MODE_KEY] = stream_mode
 
     hls_dir: str | None = None
     webrtc_manager: Any = None
@@ -1462,7 +1464,7 @@ def build_app() -> web.Application:
             frame_bytes=frame_bytes,
             history_seconds=history_seconds,
         )
-    app["webrtc_manager"] = webrtc_manager
+    app[WEBRTC_MANAGER_KEY] = webrtc_manager
     recordings_root = Path(cfg["paths"]["recordings_dir"])
     try:
         recordings_root.mkdir(parents=True, exist_ok=True)
@@ -2605,7 +2607,7 @@ def start_web_streamer_in_thread(
         loop.run_until_complete(site.start())
         runner_box["runner"] = runner
         app_box["app"] = app
-        mode = app.get("stream_mode", "hls")
+        mode = app.get(STREAM_MODE_KEY, "hls")
         log.info("web_streamer started on %s:%s (stream mode: %s)", host, port, mode)
         try:
             loop.run_forever()
