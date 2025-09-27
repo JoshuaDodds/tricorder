@@ -77,13 +77,18 @@ jobs:
           MERGE_CODE=$?
           set -e
 
-          # If there are staged changes without conflicts (fast-forward or clean merge), we still treat as "no conflicts"
-          if git ls-files -u | grep -q .; then
+          # Capture the index state without relying on pipeline exit codes so conflicts don't abort the script
+          conflict_index_output=$(git ls-files -u)
+
+          if [[ -n "$conflict_index_output" ]]; then
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ $MERGE_CODE -eq 0 ]]; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
             # Reset to clean state to avoid dirty workspace
             git merge --abort || git reset --hard
+          else
+            echo "Merge failed with exit $MERGE_CODE and no indexed conflicts detected." >&2
+            exit "$MERGE_CODE"
           fi
 
       - name: Prepare conflict comment (and create gists)
@@ -127,34 +132,45 @@ jobs:
           CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
           echo "Conflicted files: $CONFLICT_FILES" >&2
 
-          read -r -d '' PREAMBLE <<'TXT'
-          Automated context: attempted merging the repository default branch into `'"$BRANCH"'` produced merge conflicts. Tagging @codex to resolve.
+          PREAMBLE=$(python - <<'PY'
+            import os
+            from textwrap import dedent
 
-          ---
-          **Resolution instructions for @codex (follow exactly):**
+            branch = os.environ.get("BRANCH", "")
+            print(
+                dedent(
+                    f"""\
+                    Automated context: attempted merging the repository default branch into `{branch}` produced merge conflicts. Tagging @codex to resolve.
 
-          ```text
-          @codex You are resolving a Git merge conflict. I will provide the full file contents including conflict markers (<<<<<<<, =======, >>>>>>>).
+                    ---
+                    **Resolution instructions for @codex (follow exactly):**
 
-          Your task:
-              Combine both conflicting changes so that no functionality is lost.
-              Prefer keeping new code from both branches unless it is clearly redundant or incompatible.
-              Preserve function signatures, imports, and surrounding context exactly unless they must change for the code to run.
-              Ensure the final code is syntactically correct and logically consistent.
-              Do NOT remove new functionality from either branch unless it is duplicated.
-              Resolve without adding comments, explanations, and be sure to remove conflict markers.
+                    ```text
+                    @codex You are resolving a Git merge conflict. I will provide the full file contents including conflict markers (<<<<<<<, =======, >>>>>>>).
 
-          After producing the resolved file(s), overwrite the conflicted file(s) in the branch, then run (from the repo root):
-              git add <file> && git commit -m "chore: AI-resolved merge conflicts (automated)" && git push origin HEAD
+                    Your task:
+                        Combine both conflicting changes so that no functionality is lost.
+                        Prefer keeping new code from both branches unless it is clearly redundant or incompatible.
+                        Preserve function signatures, imports, and surrounding context exactly unless they must change for the code to run.
+                        Ensure the final code is syntactically correct and logically consistent.
+                        Do NOT remove new functionality from either branch unless it is duplicated.
+                        Resolve without adding comments, explanations, and be sure to remove conflict markers.
 
-          You should push using credentials that can push to this repository as the repository user.
+                    After producing the resolved file(s), overwrite the conflicted file(s) in the branch, then run (from the repo root):
+                        git add <file> && git commit -m "chore: AI-resolved merge conflicts (automated)" && git push origin HEAD
 
-          END OF INSTRUCTIONS.
-          ```
+                    You should push using credentials that can push to this repository as the repository user.
 
-          ---
+                    END OF INSTRUCTIONS.
+                    ```
 
-          TXT
+                    ---
+                    """
+                ),
+                end="",
+            )
+            PY
+          )
 
           GIST_LINES=""
           for f in $CONFLICT_FILES; do
@@ -244,17 +260,35 @@ jobs:
       - name: Post comment to PR
         if: steps.merge_try.outputs.conflicts == 'true' && steps.find_pr.outputs.pr_number != ''
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
           set -euo pipefail
+          payload_file=$(mktemp)
+          response_file=$(mktemp)
+          trap 'rm -f "$payload_file" "$response_file"' EXIT
+
           # Use the workflow GITHUB_TOKEN for repo comments
-          jq -n --arg body "${{ steps.prep_comment.outputs.prepared_comment }}" '{body:$body}' | \
-          curl -sS -X POST \
+          jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
+
+          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            -d @- "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments" >/dev/null
+            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${{ steps.find_pr.outputs.pr_number }}/comments")
+
+          if [[ "$status" != "201" ]]; then
+            echo "Failed to post PR comment (status $status). Response body:" >&2
+            cat "$response_file" >&2
+            exit 1
+          fi
+
+          echo "Posted merge-conflict instructions comment to PR #${{ steps.find_pr.outputs.pr_number }} (status $status)."
 
       - name: Echo prepared comment (no PR found)
         if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure')
         shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
         run: |
-          echo "${{ steps.prep_comment.outputs.prepared_comment }}"
+          set -euo pipefail
+          printf "%s\n" "$COMMENT_BODY"
