@@ -8,6 +8,11 @@ def make_frame(value: int = 1000):
     return value.to_bytes(2, 'little', signed=True) * (FRAME_BYTES // 2)
 
 
+def read_sample(buf: bytes, idx: int = 0) -> int:
+    start = idx * 2
+    return int.from_bytes(buf[start:start + 2], 'little', signed=True)
+
+
 def test_event_trigger_and_flush(tmp_path, monkeypatch):
     # Monkeypatch encoder so we don’t depend on /apps/tricorder/bin
     monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
@@ -129,3 +134,34 @@ def test_adaptive_threshold_recovery(monkeypatch):
     )
     expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
     assert lowered == expected_linear
+
+
+def test_rms_matches_constant_signal():
+    buf = make_frame(1200)
+    assert segmenter.rms(buf) == 1200
+
+
+def test_apply_gain_scales_and_clips(monkeypatch):
+    buf = (32000).to_bytes(2, 'little', signed=True) * 2
+    monkeypatch.setattr(segmenter, "GAIN", 0.5)
+    half = segmenter.TimelineRecorder._apply_gain(buf)
+    assert read_sample(half) == 16000
+
+    sample = (3).to_bytes(2, 'little', signed=True)
+    scaled_down = segmenter.TimelineRecorder._apply_gain(sample)
+    assert read_sample(scaled_down) == 1
+
+    monkeypatch.setattr(segmenter, "GAIN", 2.0)
+    doubled = segmenter.TimelineRecorder._apply_gain(buf)
+    assert read_sample(doubled) == segmenter.INT16_MAX
+    assert read_sample(doubled, 1) == segmenter.INT16_MAX
+
+    neg_buf = (-32000).to_bytes(2, 'little', signed=True)
+    monkeypatch.setattr(segmenter, "GAIN", 2.0)
+    clipped_neg = segmenter.TimelineRecorder._apply_gain(neg_buf)
+    assert read_sample(clipped_neg) == segmenter.INT16_MIN
+
+    monkeypatch.setattr(segmenter, "GAIN", 0.5)
+    neg_sample = (-3).to_bytes(2, 'little', signed=True)
+    scaled_neg = segmenter.TimelineRecorder._apply_gain(neg_sample)
+    assert read_sample(scaled_neg) == -2
