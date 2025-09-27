@@ -171,18 +171,30 @@ jobs:
           CONTEXT_LINES=5
           for f in $CONFLICT_FILES; do
             if [[ -f "$f" ]]; then
-              SNIPPET_CONTENT=$(python3 - "$f" "$CONTEXT_LINES" <<'PY'
+            SNIPPET_CONTENT=$(python3 - "$f" "$CONTEXT_LINES" <<'PY'
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
 context = int(sys.argv[2])
 
+FALLBACK_MESSAGE = "(Binary or non-text content; conflict hunks unavailable.)"
+
+raw_text = None
 try:
     raw_text = path.read_text()
+except UnicodeDecodeError:
+    try:
+        raw_text = path.read_bytes().decode("utf-8", errors="replace")
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Failed to decode conflicted file as text: {exc}", file=sys.stderr)
+        raw_text = FALLBACK_MESSAGE
 except Exception as exc:  # pragma: no cover - defensive
     print(f"Failed to read conflicted file: {exc}", file=sys.stderr)
-    sys.exit(1)
+    raw_text = FALLBACK_MESSAGE
+
+if raw_text is None:
+    raw_text = FALLBACK_MESSAGE
 
 lines = raw_text.splitlines()
 snippets = []
@@ -212,7 +224,7 @@ if snippets:
         parts.append('')
     output = '\n'.join(parts).rstrip()
 else:
-    output = raw_text
+    output = raw_text if raw_text else FALLBACK_MESSAGE
 
 sys.stdout.write(output)
 PY
