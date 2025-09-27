@@ -320,14 +320,36 @@ class _HLSController:
             return None
         try:
             with open(path, "r", encoding="utf-8") as handle:
-                state = json.load(handle)
+                raw = handle.read()
         except FileNotFoundError:
             return None
-        except (json.JSONDecodeError, OSError):
+        except OSError:
             return None
-        if not isinstance(state, dict):
-            return None
-        return state
+
+        def _parse(text: str) -> dict | None:
+            try:
+                candidate = json.loads(text)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(candidate, dict):
+                return None
+            return candidate
+
+        state = _parse(raw)
+        if state is not None:
+            return state
+
+        trimmed = raw.rstrip()
+        while trimmed.endswith("}"):
+            trimmed = trimmed[:-1].rstrip()
+            state = _parse(trimmed)
+            if state is not None:
+                print(
+                    f"[hls_controller] WARN: recovered truncated state file {path}",
+                    flush=True,
+                )
+                return state
+        return None
 
     def _set_encoder_running(self, running: bool) -> None:
         with self._lock:

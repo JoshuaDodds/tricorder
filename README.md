@@ -13,6 +13,7 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 - Live HLS streaming that powers up only when listeners are present and tears down when idle.
 - Web dashboard (aiohttp + Jinja) for monitoring recorder state, browsing recordings, previewing audio + waveform, deleting files, and inspecting configuration.
 - Dropbox-style ingest path for external recordings that reuses the segmentation + encoding pipeline.
+- Optional archival uploads to mounted network shares or rsync-over-SSH targets right after encoding.
 - Systemd-managed services and timers, including optional automatic updates driven by `tricorder_auto_update.sh`.
 - Persistent SD card health monitoring with automatic dashboard warnings when the card reports errors.
 - Utilities for deployment (`install.sh`), cleanup (`clear_logs.sh`), and environment tuning (`room_tuner.py`).
@@ -81,6 +82,19 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 | `main.py` | Development launcher that stops the systemd recorder, runs the live daemon in the foreground, and serves the dashboard on port 8080. |
 
 `updater.env-example` documents the environment file expected by the auto-update service (`/etc/tricorder/update.env`). Update this file whenever new updater tunables are introduced.
+
+---
+
+## Automatic archival uploads
+
+Freshly encoded recordings can be mirrored off-device for long-term storage using the new archival plug-ins. Configure the `archival` section in `config.yaml` to enable one of the backends (or open the dashboard’s ☰ menu → **Archival settings** to edit the same options in the UI — changes stay in sync with `config.yaml`):
+
+- **`network_share`** — copies files to a local mount (SMB/NFS/etc.). Point `archival.network_share.target_dir` at the mounted root and the recorder will mirror the per-day folder layout when pushing new files.
+- **`rsync`** — streams files to a remote SSH host using `rsync`. Set `archival.rsync.destination` (e.g. `user@server:/backups/tricorder`). Optional keys let you provide a dedicated SSH identity (`ssh_identity`), extra rsync arguments (`options`), and additional SSH flags (`ssh_options`).
+
+Waveform sidecars are skipped by default; enable `archival.include_waveform_sidecars` to upload the JSON previews alongside the audio.
+
+Uploads run immediately after the encoder finishes so recordings land in the archive while they are still hot in the filesystem cache. Failures are logged but do not block the local store, keeping the recorder resilient to temporary network outages.
 
 ---
 

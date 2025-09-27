@@ -42,16 +42,54 @@
       </div>
       <header class="app-header">
         <div class="titles">
+          <div class="app-menu-wrapper">
+            <button
+              id="app-menu-toggle"
+              class="icon-button app-menu-toggle"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="app-menu"
+            >
+              <span class="sr-only">Open menu</span>
+              <span aria-hidden="true" class="menu-icon">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            </button>
+            <div
+              id="app-menu"
+              class="app-menu"
+              role="menu"
+              aria-hidden="true"
+              aria-labelledby="app-menu-toggle"
+              hidden
+              data-visible="false"
+            >
+              <button
+                id="archival-open"
+                class="menu-item"
+                type="button"
+                role="menuitem"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+              >
+                Archival settings
+              </button>
+              <button
+                id="services-open"
+                class="menu-item"
+                type="button"
+                role="menuitem"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+              >
+                Services
+              </button>
+            </div>
+          </div>
           <h1>Dashboard</h1>
-          <button
-            id="services-open"
-            class="ghost-button"
-            type="button"
-            aria-haspopup="dialog"
-            aria-expanded="false"
-          >
-            Services
-          </button>
         </div>
         <div class="header-actions">
           <div class="header-status">
@@ -75,7 +113,6 @@
               data-visible="false"
             ></div>
           </div>
-          <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
           <div
             id="refresh-indicator"
             class="refresh-indicator"
@@ -480,6 +517,178 @@
           ></div>
           <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
         </div>
+      </div>
+    </div>
+    <div
+      id="archival-modal"
+      class="settings-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="archival-dialog"
+        class="settings-dialog card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="archival-dialog-title"
+        aria-describedby="archival-dialog-description"
+        tabindex="-1"
+      >
+        <div class="card-header settings-dialog-header">
+          <div class="card-heading">
+            <h2 id="archival-dialog-title">Archival settings</h2>
+            <p id="archival-dialog-description" class="card-subtitle">
+              Configure archival upload destinations and options.
+            </p>
+          </div>
+          <div class="settings-dialog-actions">
+            <button id="archival-close" class="ghost-button small" type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        <form id="archival-form" class="settings-form">
+          <div class="settings-dialog-body">
+            <section class="settings-section">
+              <div class="settings-section-header">
+                <h3 class="settings-section-title">Archival workflow</h3>
+                <p class="settings-section-description">
+                  Mirror new recordings to long-term storage immediately after encoding.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="archival-enabled" type="checkbox" />
+                  <label for="archival-enabled">Enable automatic uploads</label>
+                </div>
+                <p class="field-description">
+                  When enabled, each freshly encoded recording is copied using the selected backend.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="archival-backend">Transfer method</label>
+                <select id="archival-backend">
+                  <option value="network_share">Network share (local mount)</option>
+                  <option value="rsync">Rsync over SSH</option>
+                </select>
+                <p class="field-description">
+                  Choose how files are sent off the recorder for archival storage.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="archival-include-waveforms" type="checkbox" />
+                  <label for="archival-include-waveforms">Include waveform previews</label>
+                </div>
+                <p class="field-description">
+                  Upload waveform JSON sidecars along with audio files for richer previews.
+                </p>
+              </div>
+            </section>
+
+            <section
+              id="archival-network-share-section"
+              class="settings-section"
+              data-active="false"
+              aria-hidden="true"
+              hidden
+            >
+              <div class="settings-section-header">
+                <h3 class="settings-section-title">Network share</h3>
+                <p class="settings-section-description">
+                  Copy recordings into a mounted SMB/NFS directory on the local filesystem.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="archival-network-share-target">Share root</label>
+                <input id="archival-network-share-target" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Point to the mounted directory. Per-day folders are created automatically.
+                </p>
+              </div>
+            </section>
+
+            <section
+              id="archival-rsync-section"
+              class="settings-section"
+              data-active="false"
+              aria-hidden="true"
+              hidden
+            >
+              <div class="settings-section-header">
+                <h3 class="settings-section-title">Rsync over SSH</h3>
+                <p class="settings-section-description">
+                  Stream recordings to a remote rsync destination immediately after encoding completes.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="archival-rsync-destination">Destination</label>
+                <input
+                  id="archival-rsync-destination"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="user@example.com:/srv/tricorder/archive"
+                />
+                <p class="field-description">
+                  Use standard rsync syntax (user@host:/path). Required when rsync uploads are enabled.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="archival-rsync-identity">SSH identity (optional)</label>
+                <input
+                  id="archival-rsync-identity"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="/home/pi/.ssh/id_ed25519"
+                />
+                <p class="field-description">
+                  Leave blank to use the default SSH agent or system keys on the recorder.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="archival-rsync-options">Additional rsync options</label>
+                <textarea
+                  id="archival-rsync-options"
+                  rows="3"
+                  placeholder="-az"
+                ></textarea>
+                <p class="field-description">
+                  One flag per line. Leave empty to use the default <code>-az</code> arguments.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="archival-rsync-ssh-options">Extra SSH options</label>
+                <textarea
+                  id="archival-rsync-ssh-options"
+                  rows="3"
+                  placeholder="-oStrictHostKeyChecking=yes"
+                ></textarea>
+                <p class="field-description">
+                  Optional arguments appended to the rsync SSH command (one per line).
+                </p>
+              </div>
+            </section>
+          </div>
+          <footer class="settings-dialog-footer">
+            <div class="settings-footnote">
+              Saved to <code id="archival-config-path"></code>
+            </div>
+            <div class="settings-footer-actions">
+              <div
+                id="archival-status"
+                class="form-status"
+                role="status"
+                aria-live="polite"
+                aria-hidden="true"
+              ></div>
+              <div class="button-row">
+                <button id="archival-reset" class="ghost-button" type="button" disabled>Reset</button>
+                <button id="archival-save" class="primary-button" type="submit" disabled>Save changes</button>
+              </div>
+            </div>
+          </footer>
+        </form>
       </div>
     </div>
   </body>

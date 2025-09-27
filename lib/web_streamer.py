@@ -49,12 +49,222 @@ from typing import Any, Iterable, Sequence
 DEFAULT_RECORDINGS_LIMIT = 200
 MAX_RECORDINGS_LIMIT = 1000
 
+ARCHIVAL_BACKENDS = {"network_share", "rsync"}
+
+
+def _archival_defaults() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "backend": "network_share",
+        "network_share": {"target_dir": ""},
+        "rsync": {
+            "destination": "",
+            "ssh_identity": "",
+            "options": ["-az"],
+            "ssh_options": [],
+        },
+        "include_waveform_sidecars": False,
+    }
+
+
+def _bool_from_any(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _string_from_any(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _string_list_from_config(value: Any, *, default: list[str] | None = None) -> list[str]:
+    if value is None:
+        return list(default) if default is not None else []
+    items: list[str] = []
+    if isinstance(value, str):
+        lines = value.splitlines()
+        items = [line.strip() for line in lines if line.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    items.append(stripped)
+    return items if items else (list(default) if default is not None else [])
+
+
+def _string_list_from_payload(
+    value: Any, field: str, errors: list[str]
+) -> tuple[list[str], bool]:
+    if value is None:
+        return [], False
+    if isinstance(value, str):
+        items = [segment.strip() for segment in value.splitlines() if segment.strip()]
+        return items, True
+    if isinstance(value, (list, tuple)):
+        items: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if stripped:
+                    items.append(stripped)
+            elif entry is None:
+                continue
+            else:
+                errors.append(f"{field} entries must be strings")
+                return [], True
+        return items, True
+    errors.append(f"{field} must be a list of strings or newline-delimited text")
+    return [], True
+
+
+def _normalize_archival_config(raw: Any) -> dict[str, Any]:
+    result = _archival_defaults()
+    if not isinstance(raw, dict):
+        return result
+
+    result["enabled"] = _bool_from_any(raw.get("enabled"))
+    backend = _string_from_any(raw.get("backend"))
+    if backend in ARCHIVAL_BACKENDS:
+        result["backend"] = backend
+    result["include_waveform_sidecars"] = _bool_from_any(
+        raw.get("include_waveform_sidecars")
+    )
+
+    network_share = raw.get("network_share")
+    if isinstance(network_share, dict):
+        target = network_share.get("target_dir")
+        if isinstance(target, str):
+            result["network_share"]["target_dir"] = target.strip()
+
+    rsync = raw.get("rsync")
+    if isinstance(rsync, dict):
+        destination = rsync.get("destination")
+        if isinstance(destination, str):
+            result["rsync"]["destination"] = destination.strip()
+        identity = rsync.get("ssh_identity")
+        if isinstance(identity, str):
+            result["rsync"]["ssh_identity"] = identity.strip()
+        options = _string_list_from_config(rsync.get("options"), default=["-az"])
+        ssh_options = _string_list_from_config(rsync.get("ssh_options"), default=[])
+        result["rsync"]["options"] = options
+        result["rsync"]["ssh_options"] = ssh_options
+
+    return result
+
+
+def _normalize_archival_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _archival_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["enabled"] = _bool_from_any(payload.get("enabled"))
+    normalized["include_waveform_sidecars"] = _bool_from_any(
+        payload.get("include_waveform_sidecars")
+    )
+
+    backend = _string_from_any(payload.get("backend"))
+    if backend in ARCHIVAL_BACKENDS:
+        normalized["backend"] = backend
+    else:
+        errors.append("backend must be one of: network_share, rsync")
+
+    network_share_raw = payload.get("network_share")
+    if network_share_raw is None:
+        normalized["network_share"]["target_dir"] = ""
+    elif isinstance(network_share_raw, dict):
+        target_value = network_share_raw.get("target_dir")
+        if target_value is None:
+            normalized["network_share"]["target_dir"] = ""
+        elif isinstance(target_value, str):
+            normalized["network_share"]["target_dir"] = target_value.strip()
+        else:
+            errors.append("network_share.target_dir must be a string")
+    else:
+        errors.append("network_share must be an object")
+
+    rsync_raw = payload.get("rsync")
+    if rsync_raw is None:
+        normalized["rsync"] = {
+            "destination": "",
+            "ssh_identity": "",
+            "options": ["-az"],
+            "ssh_options": [],
+        }
+    elif isinstance(rsync_raw, dict):
+        destination_value = rsync_raw.get("destination")
+        if destination_value is None:
+            normalized["rsync"]["destination"] = ""
+        elif isinstance(destination_value, str):
+            normalized["rsync"]["destination"] = destination_value.strip()
+        else:
+            errors.append("rsync.destination must be a string")
+
+        identity_value = rsync_raw.get("ssh_identity")
+        if identity_value is None:
+            normalized["rsync"]["ssh_identity"] = ""
+        elif isinstance(identity_value, str):
+            normalized["rsync"]["ssh_identity"] = identity_value.strip()
+        else:
+            errors.append("rsync.ssh_identity must be a string")
+
+        options_value, options_present = _string_list_from_payload(
+            rsync_raw.get("options"), "rsync.options", errors
+        )
+        if options_present:
+            normalized["rsync"]["options"] = options_value or []
+        else:
+            normalized["rsync"]["options"] = ["-az"]
+
+        ssh_options_value, ssh_options_present = _string_list_from_payload(
+            rsync_raw.get("ssh_options"), "rsync.ssh_options", errors
+        )
+        if ssh_options_present:
+            normalized["rsync"]["ssh_options"] = ssh_options_value
+        else:
+            normalized["rsync"]["ssh_options"] = []
+    else:
+        errors.append("rsync must be an object")
+
+    if normalized["enabled"] and normalized["backend"] == "network_share":
+        target_dir = normalized["network_share"].get("target_dir", "")
+        if not target_dir:
+            errors.append("Provide a target directory for the network_share backend")
+
+    if normalized["enabled"] and normalized["backend"] == "rsync":
+        destination = normalized["rsync"].get("destination", "")
+        if not destination:
+            errors.append("Provide an rsync destination when the rsync backend is enabled")
+
+    return normalized, errors
+
+
+def _archival_response_payload(cfg: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_archival_config(cfg.get("archival", {}))
+    try:
+        path = str(primary_config_path())
+    except Exception:
+        path = None
+    return {"archival": normalized, "config_path": path}
+
 from aiohttp import web
 from aiohttp.web import AppKey
 
 from lib.hls_controller import controller
 from lib import webui, sd_card_health
-from lib.config import get_cfg
+from lib.config import (
+    ConfigPersistenceError,
+    get_cfg,
+    primary_config_path,
+    reload_cfg,
+    update_archival_settings,
+)
 from lib.waveform_cache import generate_waveform
 
 
@@ -1214,7 +1424,45 @@ def build_app() -> web.Application:
         return response
 
     async def config_snapshot(_: web.Request) -> web.Response:
-        return web.json_response(cfg)
+        refreshed = reload_cfg()
+        return web.json_response(refreshed)
+
+    async def config_archival_get(_: web.Request) -> web.Response:
+        refreshed = reload_cfg()
+        payload = _archival_response_payload(refreshed)
+        return web.json_response(payload)
+
+    async def config_archival_update(request: web.Request) -> web.Response:
+        log = logging.getLogger("web_streamer")
+        try:
+            data = await request.json()
+        except Exception as exc:
+            message = f"Invalid JSON payload: {exc}"
+            return web.json_response({"error": message}, status=400)
+
+        normalized, errors = _normalize_archival_payload(data)
+        if errors:
+            message = errors[0]
+            return web.json_response({"error": message, "errors": errors}, status=400)
+
+        try:
+            update_archival_settings(normalized)
+        except ConfigPersistenceError as exc:
+            log.warning("Unable to persist archival settings: %s", exc)
+            return web.json_response(
+                {"error": f"Unable to save archival settings: {exc}"},
+                status=500,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.exception("Unexpected archival settings failure: %s", exc)
+            return web.json_response(
+                {"error": "Unexpected error while saving archival settings"},
+                status=500,
+            )
+
+        refreshed = reload_cfg()
+        payload = _archival_response_payload(refreshed)
+        return web.json_response(payload)
 
     async def system_health(_: web.Request) -> web.Response:
         state = sd_card_health.load_state()
@@ -1372,6 +1620,8 @@ def build_app() -> web.Application:
     app.router.add_post("/api/recordings/clip", recordings_clip)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/config", config_snapshot)
+    app.router.add_get("/api/config/archival", config_archival_get)
+    app.router.add_post("/api/config/archival", config_archival_update)
     app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)

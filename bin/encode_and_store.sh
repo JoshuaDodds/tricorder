@@ -60,5 +60,9 @@ echo "[encode] Wrote waveform $waveform_file"
 
 rm -f "$in_wav"
 
+if ! "$VENV/bin/python" -m lib.archival "$outfile" "$waveform_file"; then
+  echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder
+fi
+
 echo "[encoder] Stored $outfile" | systemd-cat -t tricorder
 echo "[encode] Done"
