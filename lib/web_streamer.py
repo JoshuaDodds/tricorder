@@ -1390,7 +1390,7 @@ def build_app() -> web.Application:
             )
 
     else:
-        from aiortc import RTCSessionDescription
+        from lib.webrtc_stream import RTCSessionDescription
         import uuid
 
         assert webrtc_manager is not None
