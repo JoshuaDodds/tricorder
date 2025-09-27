@@ -19,8 +19,10 @@ warnings.filterwarnings(
 import webrtcvad    # noqa
 import audioop      # noqa
 from lib.config import get_cfg
+from lib.notifications import build_dispatcher
 
 cfg = get_cfg()
+NOTIFIER = build_dispatcher(cfg.get("notifications"))
 
 # ANSI colors for booleans (can be disabled via NO_COLOR env)
 ANSI_GREEN = "\033[32m"
@@ -654,7 +656,16 @@ class TimelineRecorder:
                 "etype": etype,
             }
 
+        last_event_status["end_reason"] = reason
         self._update_capture_status(False, last_event=last_event_status, reason=reason)
+        if NOTIFIER:
+            try:
+                NOTIFIER.handle_event(last_event_status)
+            except Exception as exc:
+                print(
+                    f"[segmenter] WARN: notification dispatch failed: {exc!r}",
+                    flush=True,
+                )
         self._reset_event_state()
 
     def _reset_event_state(self):
