@@ -70,6 +70,9 @@ archival:
   # When true, upload waveform JSON sidecars alongside audio.
   include_waveform_sidecars: false
 
+  # When true, upload transcript JSON sidecars alongside audio.
+  include_transcript_sidecars: true
+
 segmenter:
   # Pre-roll saved before trigger (milliseconds). Captures leading context (e.g., first spoken word).
   # Typical: 500–3000 ms. Higher uses more RAM/IO.
@@ -150,6 +153,28 @@ ingest:
 
   # Common suffixes indicating partial/incomplete downloads or temp files to ignore.
   ignore_suffixes: [".part", ".partial", ".tmp", ".incomplete", ".opdownload", ".crdownload"]
+
+transcription:
+  # Enable offline speech-to-text using the configured engine. When disabled no transcript files are written.
+  enabled: false
+
+  # Supported engines: "vosk" (default). Vosk runs entirely offline using a Kaldi acoustic model.
+  engine: "vosk"
+
+  # Only events tagged with these types are transcribed. Default restricts transcripts to Human-tagged segments.
+  types: ["Human"]
+
+  # Path to the unpacked Vosk model directory (download separately, e.g. vosk-model-small-en-us-0.15).
+  vosk_model_path: "/apps/tricorder/models/vosk-small-en-us-0.15"
+
+  # Audio is resampled to this sample rate before feeding the recognizer. 16000 Hz matches Vosk small English models.
+  target_sample_rate: 16000
+
+  # Include per-word timestamps/confidence values in the transcript payload (slightly larger JSON files).
+  include_words: true
+
+  # Set >0 to request alternative transcript hypotheses when supported by the model.
+  max_alternatives: 0
 
 logging:
   # Developer-mode verbose logging (equivalent to setting DEV=1 in the environment).
