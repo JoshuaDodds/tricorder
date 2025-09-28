@@ -898,8 +898,10 @@ class TimelineRecorder:
                 if hint_counter is not None and hint_timestamp:
                     existing = TimelineRecorder.event_counters[start_time]
                     if hint_counter > existing:
-                        TimelineRecorder.event_counters[start_time] = hint_counter
-                    count = hint_counter
+                        count = hint_counter
+                    else:
+                        count = existing + 1
+                    TimelineRecorder.event_counters[start_time] = count
                 else:
                     TimelineRecorder.event_counters[start_time] += 1
                     count = TimelineRecorder.event_counters[start_time]
