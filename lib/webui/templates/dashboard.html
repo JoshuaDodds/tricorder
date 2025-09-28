@@ -511,6 +511,12 @@
               <div class="table-actions">
                 <button id="select-all" class="ghost-button small" type="button">Select all</button>
                 <button id="clear-selection" class="ghost-button small" type="button">Clear</button>
+                <button id="download-selected" class="ghost-button small" type="button" disabled>
+                  Download selected
+                </button>
+                <button id="rename-selected" class="ghost-button small" type="button" disabled>
+                  Rename selected
+                </button>
                 <button id="delete-selected" class="danger-button small" type="button" disabled>Delete selected</button>
               </div>
             </div>
@@ -597,6 +603,35 @@
           <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
           <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
+      </div>
+    </div>
+    <div
+      id="rename-modal"
+      class="rename-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="rename-modal-dialog"
+        class="rename-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-modal-title"
+        tabindex="-1"
+      >
+        <h2 id="rename-modal-title" class="rename-title">Rename recording</h2>
+        <form id="rename-form" class="rename-form">
+          <label class="input-group">
+            <span>New name</span>
+            <input id="rename-input" type="text" autocomplete="off" required spellcheck="false" />
+          </label>
+          <p id="rename-error" class="rename-error" role="alert" hidden></p>
+          <div class="rename-actions">
+            <button id="rename-cancel" class="ghost-button" type="button">Cancel</button>
+            <button id="rename-confirm" class="primary-button" type="submit">Rename</button>
+          </div>
+        </form>
       </div>
     </div>
     <div
