@@ -146,7 +146,7 @@
                   aria-haspopup="dialog"
                   aria-expanded="false"
                 >
-                  Configuration snapshot
+                  Configuration
                 </button>
                 <button
                   id="archival-open"
@@ -175,17 +175,6 @@
         </div>
         <div class="header-actions">
           <div class="header-controls">
-            <div
-              id="rms-indicator"
-              class="rms-indicator"
-              role="status"
-              aria-live="polite"
-              aria-hidden="true"
-              data-visible="false"
-            >
-              <span class="label">RMS:</span>
-              <span id="rms-indicator-value" class="value">0</span>
-            </div>
             <button
               id="theme-toggle"
               class="ghost-button"
@@ -219,6 +208,15 @@
                 data-state="unknown"
               >
                 <span class="indicator-dot" aria-hidden="true"></span>
+                <span
+                  id="rms-indicator"
+                  class="rms-indicator"
+                  aria-hidden="true"
+                  data-visible="false"
+                >
+                  <span class="label">RMS</span>
+                  <span id="rms-indicator-value" class="value">0</span>
+                </span>
                 <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
               </div>
               <div
