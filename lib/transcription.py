@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 import time
 import wave
@@ -41,12 +42,28 @@ def _write_json_atomic(destination: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp_path, destination)
 
 
+_TAG_SANITIZE_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _normalize_event_tag(label: str) -> str:
+    if not label:
+        return ""
+    sanitized = _TAG_SANITIZE_PATTERN.sub("_", label.strip())
+    return sanitized.strip("_-")
+
+
 def _extract_event_type(base_name: str | None) -> str:
     if not base_name:
         return ""
+    prefix, sep, _ = base_name.partition("_RMS-")
+    if sep and prefix:
+        first_sep = prefix.find("_")
+        if first_sep != -1 and first_sep + 1 < len(prefix):
+            return prefix[first_sep + 1 :]
     tokens = base_name.split("_")
     if len(tokens) >= 2:
-        return tokens[1]
+        middle = "_".join(tokens[1:-1]) if len(tokens) > 2 else tokens[1]
+        return middle or tokens[1]
     return ""
 
 
@@ -238,6 +255,11 @@ def transcribe_audio(
         return False
 
     alias_map = event_type_aliases(cfg)
+    canonical_labels = {label for label in alias_map.values() if isinstance(label, str)}
+    for label in canonical_labels:
+        normalized = _normalize_event_tag(label)
+        if normalized:
+            alias_map.setdefault(normalized.lower(), label)
     allowed_types: set[str] = set()
     raw_types = section.get("types")
     if isinstance(raw_types, (list, tuple, set)):
@@ -254,7 +276,13 @@ def transcribe_audio(
     if event_type is None:
         event_type = _extract_event_type(base_name)
     event_type = (event_type or "").strip()
-    mapped_event_type = alias_map.get(event_type.lower(), event_type)
+    mapped_event_type = alias_map.get(event_type.lower())
+    if mapped_event_type is None:
+        normalized_event_type = _normalize_event_tag(event_type)
+        if normalized_event_type:
+            mapped_event_type = alias_map.get(normalized_event_type.lower())
+    if mapped_event_type is None:
+        mapped_event_type = event_type
 
     if allowed_types and mapped_event_type.lower() not in allowed_types:
         return False

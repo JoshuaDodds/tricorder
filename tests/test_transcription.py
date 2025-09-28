@@ -147,3 +147,46 @@ def test_transcription_honours_canonical_event_alias(monkeypatch, tmp_path):
 
     monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
     config.reload_cfg()
+
+
+@pytest.mark.parametrize(
+    ("label", "base_tag"),
+    [
+        ("Speech Human", "Speech_Human"),
+        ("Speech/Human", "Speech_Human"),
+    ],
+)
+def test_transcription_accepts_sanitized_event_tags(monkeypatch, tmp_path, label, base_tag):
+    model_dir = tmp_path / "vosk"
+    model_dir.mkdir()
+
+    wav_path = tmp_path / "event.wav"
+    _write_silence_wav(wav_path, seconds=0.1)
+
+    monkeypatch.setenv("EVENT_TAG_HUMAN", label)
+    monkeypatch.setenv("TRANSCRIPTION_ENABLED", "1")
+    monkeypatch.setenv("TRANSCRIPTION_TYPES", label)
+    monkeypatch.setenv("VOSK_MODEL_PATH", str(model_dir))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+
+    from lib import transcription
+
+    monkeypatch.setattr(
+        transcription,
+        "_transcribe_with_vosk",
+        lambda *args, **kwargs: ("example", {"duration_seconds": 0.25}),
+    )
+
+    output_path = tmp_path / "sanitized.json"
+    wrote = transcription.transcribe_audio(
+        wav_path,
+        output_path,
+        base_name=f"12-34-56_{base_tag}_RMS-100_1",
+    )
+
+    assert wrote is True
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["event_type"] == label
+
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    config.reload_cfg()
