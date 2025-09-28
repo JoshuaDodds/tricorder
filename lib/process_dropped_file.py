@@ -229,10 +229,7 @@ def _extract_ingest_hint(path: Path) -> RecorderIngestHint | None:
     counter: int | None = None
     for token in reversed(tokens):
         if COUNTER_TOKEN_RE.fullmatch(token):
-            try:
-                counter = int(token)
-            except ValueError:
-                counter = None
+            counter = int(token)
             break
 
     return RecorderIngestHint(timestamp=timestamp, event_counter=counter)
