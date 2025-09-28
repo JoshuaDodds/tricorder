@@ -2951,7 +2951,12 @@ def build_app() -> web.Application:
 
     async def config_snapshot(_: web.Request) -> web.Response:
         refreshed = reload_cfg()
-        return web.json_response(refreshed)
+        payload = dict(refreshed)
+        try:
+            payload["config_path"] = str(primary_config_path())
+        except Exception:
+            payload["config_path"] = None
+        return web.json_response(payload)
 
     async def config_archival_get(_: web.Request) -> web.Response:
         refreshed = reload_cfg()

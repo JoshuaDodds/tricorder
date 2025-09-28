@@ -5,9 +5,12 @@
 ---
 
 ## For Automated AI/LLM Agents
-IMPORTANT: 
+IMPORTANT:
 Before starting to work and after checking out code:
 1. Ensure the `origin` remote exists and points to the GitHub repo. Do not remove it! You will need it later. If it was removed, re-add it.
+
+Naming discipline when tickets are referenced:
+- If any instruction, attachment, or asset mentions a ticket identifier in the format `TR-<int>`, always create the working branch and the eventual PR title with that ticket identifier prepended (e.g., `TR-1234-description`). This reminder applies across the repo.
 
 Before pushing:
 1. Run: git fetch origin && git rebase origin/<base-branch>

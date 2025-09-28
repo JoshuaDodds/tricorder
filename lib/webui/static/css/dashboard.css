@@ -439,55 +439,48 @@ body {
 .header-status-group {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 0.4rem;
+  align-items: stretch;
+  gap: 0.6rem;
   width: 100%;
 }
 
 .status-labels {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.6rem;
+  width: 100%;
 }
 
 .rms-indicator {
-  display: none;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  border: 1px solid var(--ghost-border-muted);
-  background: var(--surface-muted);
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  box-shadow: 0 10px 24px -18px var(--surface-strong);
-}
-
-.rms-indicator[data-visible="true"] {
   display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-strong);
 }
 
-.rms-indicator .label {
-  text-transform: uppercase;
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
-  color: var(--text-subtle);
+.rms-indicator[data-visible="false"] {
+  display: none;
 }
 
 .rms-indicator .value {
   font-variant-numeric: tabular-nums;
-  color: var(--text-strong);
+  color: inherit;
 }
 
 .status-pill {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
+  justify-content: flex-start;
+  gap: 0.6rem;
   padding: 0.35rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--ghost-border-muted);
@@ -497,7 +490,6 @@ body {
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--text-muted);
-  white-space: nowrap;
 }
 
 .status-pill[data-visible="false"] {
@@ -505,11 +497,14 @@ body {
 }
 
 .status-pill .indicator-text {
-  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
 }
 
 .recording-indicator {
   color: var(--text-muted);
+  gap: 0.5rem;
 }
 
 .recording-indicator .indicator-dot {
@@ -556,6 +551,10 @@ body {
 .recording-indicator[data-state="unknown"] .indicator-dot {
   background: var(--ghost-border);
   box-shadow: 0 0 0 4px var(--divider);
+}
+
+.recording-indicator .indicator-text {
+  color: inherit;
 }
 
 @keyframes recording-pulse {
@@ -1162,8 +1161,14 @@ button.small {
   min-width: 8ch;
 }
 
+.clipper-name-group {
+  min-width: 0;
+}
+
 .clipper-name-group input {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .clipper-overwrite-row {
@@ -1546,16 +1551,20 @@ body[data-scroll-locked="true"] {
 
 .config-dialog {
   width: min(720px, 96vw);
+  max-height: 90vh;
 }
 
 .config-dialog-body {
   gap: 0.75rem;
+  min-height: 0;
 }
 
 .config-dialog-body .code-block {
   flex: 1 1 auto;
   margin: 0;
-  max-height: min(520px, 70vh);
+  max-height: none;
+  min-height: 0;
+  overflow: auto;
 }
 
 .recorder-section {
@@ -2400,11 +2409,11 @@ body[data-scroll-locked="true"] {
   }
 
   .header-status-group {
-    align-items: flex-start;
+    align-items: stretch;
   }
 
   .status-labels {
-    justify-content: flex-start;
+    align-items: stretch;
   }
 
   .connection-status {
