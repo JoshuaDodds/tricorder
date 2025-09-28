@@ -1166,6 +1166,73 @@ button.small {
   width: 100%;
 }
 
+.clipper-overwrite-row {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.clipper-overwrite-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.clipper-overwrite-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.clipper-overwrite-slider {
+  position: relative;
+  width: 2.1rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.3);
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.clipper-overwrite-slider::after {
+  content: "";
+  position: absolute;
+  top: 0.15rem;
+  left: 0.15rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.clipper-overwrite-toggle input:checked + .clipper-overwrite-slider {
+  background: var(--primary);
+}
+
+.clipper-overwrite-toggle input:checked + .clipper-overwrite-slider::after {
+  transform: translateX(1rem);
+}
+
+.clipper-overwrite-toggle input:focus-visible + .clipper-overwrite-slider {
+  box-shadow: 0 0 0 3px var(--input-focus-ring);
+}
+
+.clipper-overwrite-toggle input:disabled + .clipper-overwrite-slider {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.clipper-overwrite-toggle input:disabled + .clipper-overwrite-slider::after {
+  box-shadow: none;
+}
+
 .clipper-footer {
   display: flex;
   flex-wrap: wrap;
