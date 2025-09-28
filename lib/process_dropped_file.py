@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import json
 import os
 import subprocess
 import sys
 import time
 import wave
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -22,8 +24,11 @@ STABLE_CHECKS = int(cfg["ingest"]["stable_checks"])
 STABLE_INTERVAL_SEC = float(cfg["ingest"]["stable_interval_sec"])
 DROPBOX_DIR = Path(cfg["paths"]["dropbox_dir"])
 WORK_DIR = Path(cfg["paths"]["ingest_work_dir"])
+REC_DIR = Path(cfg["paths"]["recordings_dir"])
 ALLOWED_EXT = set(x.lower() for x in cfg["ingest"]["allowed_ext"])
 IGNORE_SUFFIXES = set(cfg["ingest"]["ignore_suffixes"])
+RETRY_SUFFIX = "-RETRY"
+OUTPUT_SUFFIXES = (".opus",)
 
 
 def _should_lower_priority() -> bool:
@@ -177,6 +182,10 @@ def _prepare_work_area() -> None:
 
 def _handle_work_file(work_file: Path) -> None:
     try:
+        try:
+            _cleanup_retry_artifacts(work_file)
+        except Exception as exc:  # noqa: BLE001 - log and continue
+            print(f"[ingest] retry cleanup failed for {work_file}: {exc}", flush=True)
         process_file(str(work_file))
     except Exception as e:
         print(f"[ingest] processing failed for {work_file}: {e}", flush=True)
@@ -196,6 +205,160 @@ def _retry_stalled_work_files() -> None:
             continue
         print(f"[ingest] retrying stalled work item {work_file}", flush=True)
         _handle_work_file(work_file)
+
+
+def _iter_existing_recordings(base_name: str):
+    if not base_name or not REC_DIR.exists():
+        return
+    try:
+        day_dirs = sorted(p for p in REC_DIR.iterdir() if p.is_dir())
+    except FileNotFoundError:
+        return
+    for day_dir in day_dirs:
+        for suffix in OUTPUT_SUFFIXES:
+            candidate = day_dir / f"{base_name}{suffix}"
+            if candidate.exists():
+                yield candidate
+
+
+def _read_waveform_duration(waveform_path: Path) -> float | None:
+    try:
+        with waveform_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = payload.get("duration_seconds") if isinstance(payload, dict) else None
+    if isinstance(raw, (int, float)) and raw > 0:
+        return float(raw)
+    return None
+
+
+def _probe_audio_duration(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5.0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    duration_text = (result.stdout or "").strip()
+    if not duration_text:
+        return None
+    try:
+        duration = float(duration_text)
+    except ValueError:
+        return None
+    if duration <= 0:
+        return None
+    return duration
+
+
+def _duration_mismatch(expected: float, actual: float) -> bool:
+    diff = abs(expected - actual)
+    tolerance = max(0.5, expected * 0.1, actual * 0.1)
+    return diff > tolerance
+
+
+def _write_placeholder(day_dir: Path, base_name: str, reason: str, extra: dict | None = None) -> Path:
+    day_dir.mkdir(parents=True, exist_ok=True)
+    target = day_dir / f"{base_name}-CORRUPTED_RECORDING.json"
+    payload = {
+        "status": "corrupted",
+        "base_name": base_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "reason": reason,
+        "detected_by": "ingest-retry-scan",
+    }
+    if extra:
+        payload.update(extra)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.write("\n")
+    os.replace(tmp, target)
+    return target
+
+
+def _quarantine_recording(
+    audio_path: Path,
+    *,
+    reason: str,
+    waveform_duration: float | None,
+    audio_duration: float | None,
+) -> None:
+    base_name = audio_path.stem
+    day_dir = audio_path.parent
+    extras: dict[str, object] = {
+        "action": "removed-before-retry",
+    }
+    if waveform_duration is not None:
+        extras["waveform_duration_seconds"] = waveform_duration
+    if audio_duration is not None:
+        extras["audio_duration_seconds"] = audio_duration
+    if waveform_duration is not None and audio_duration is not None:
+        extras["duration_diff_seconds"] = waveform_duration - audio_duration
+
+    related = [audio_path]
+    waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+    transcript_path = audio_path.with_suffix(audio_path.suffix + ".transcript.json")
+    related.append(waveform_path)
+    related.append(transcript_path)
+
+    for candidate in related:
+        try:
+            candidate.unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001 - log and continue
+            print(f"[ingest] failed to remove {candidate}: {exc}", flush=True)
+
+    placeholder = _write_placeholder(day_dir, base_name, reason, extras)
+    print(
+        (
+            f"[ingest] quarantined {audio_path} (reason={reason}, "
+            f"waveform={waveform_duration}, audio={audio_duration}) -> {placeholder.name}"
+        ),
+        flush=True,
+    )
+
+
+def _cleanup_retry_artifacts(work_file: Path) -> None:
+    stem = work_file.stem
+    if not stem.endswith(RETRY_SUFFIX):
+        return
+    base_name = stem[: -len(RETRY_SUFFIX)]
+    if not base_name:
+        return
+    for audio_path in _iter_existing_recordings(base_name):
+        waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+        waveform_duration = _read_waveform_duration(waveform_path)
+        if waveform_duration is None:
+            _quarantine_recording(
+                audio_path,
+                reason="missing-waveform",
+                waveform_duration=None,
+                audio_duration=None,
+            )
+            continue
+        audio_duration = _probe_audio_duration(audio_path)
+        if audio_duration is None:
+            continue
+        if _duration_mismatch(waveform_duration, audio_duration):
+            _quarantine_recording(
+                audio_path,
+                reason="duration-mismatch",
+                waveform_duration=waveform_duration,
+                audio_duration=audio_duration,
+            )
 
 
 def _move_to_work(p: Path) -> Path:
