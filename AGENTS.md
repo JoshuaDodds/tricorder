@@ -4,6 +4,26 @@
 
 ---
 
+## For Automated AI/LLM Agents
+IMPORTANT: 
+Before starting to work and after checking out code:
+1. Ensure the `origin` remote exists and points to the GitHub repo. Do not remove it! You will need it later. If it was removed, re-add it.
+
+Before pushing:
+1. Run: git fetch origin && git rebase origin/<base-branch>
+   - If rebase fails, discard local changes and re-run the implementation against the updated branch.
+2. Run tests (export DEV=1 && pytest -q). All tests must pass.
+3. Push back to the same branch on origin with:
+   git push origin HEAD:<branch-name>
+
+If you are review another Agent's PR:
+- Always leave a short review comment summarizing what you did, test results, and risk assessment.
+- If all tests pass and the PR is safe to merge, submit a formal GitHub PR review with "Approve" status (not just a 👍 reaction).
+- If there are issues or risks, submit a "Comment" or "Request changes" review instead, explaining why.
+- Reactions (👍) alone are not sufficient; every PR must have a visible comment and, when ready, a formal approval.
+
+---
+
 ## Design & Architecture Impression (high-level guidance)
 Tricorder is a moderately complex system where the complexity arises from its domain (real-time audio capture, concurrency, subprocess orchestration, and resource-constrained embedded deployment) rather than from ad-hoc structure. The project intentionally manages complexity by separating responsibilities into dedicated components (capture/segmenter, encoder, HLS tee, web streamer, ingest pipeline) and by using clear inter-process or inter-thread boundaries (queues, helper threads, subprocesses).
 

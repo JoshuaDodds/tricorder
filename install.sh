@@ -193,12 +193,19 @@ else
   say "DEV=1: skipping systemctl enable/start"
 fi
 
-say "Reloading systemd & and voice-recorder if running..."
+say "Reloading systemd and restarting active services..."
 sudo systemctl daemon-reload || true
 sudo systemctl restart web-streamer.service || true
 
-if systemctl is-active --quiet voice-recorder.service; then
-  sudo systemctl restart voice-recorder.service || true
-fi
+restart_if_active() {
+  local unit="$1"
+  if systemctl is-active --quiet "$unit"; then
+    sudo systemctl restart "$unit" || true
+  fi
+}
+
+restart_if_active voice-recorder.service
+restart_if_active dropbox.service
+restart_if_active dropbox.path
 
 say "Install complete"
