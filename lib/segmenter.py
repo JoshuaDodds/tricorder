@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import sys
 import time
 import collections
@@ -19,10 +20,11 @@ warnings.filterwarnings(
     message="pkg_resources is deprecated as an API.*"
 )
 import webrtcvad    # noqa
-from lib.config import get_cfg
+from lib.config import get_cfg, resolve_event_tags
 from lib.notifications import build_dispatcher
 
 cfg = get_cfg()
+EVENT_TAGS = resolve_event_tags(cfg)
 NOTIFIER = build_dispatcher(cfg.get("notifications"))
 
 # ANSI colors for booleans (can be disabled via NO_COLOR env)
@@ -49,6 +51,14 @@ FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
+
+SAFE_EVENT_TAG_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _sanitize_event_tag(tag: str) -> str:
+    sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
+    sanitized = sanitized.strip("_-")
+    return sanitized or "event"
 
 
 def pcm16_rms(buf: bytes) -> int:
@@ -918,7 +928,12 @@ class TimelineRecorder:
             self._reset_event_state()
             return
 
-        etype = "Both" if (self.saw_voiced and self.saw_loud) else ("Human" if self.saw_voiced else "Other")
+        if self.saw_voiced and self.saw_loud:
+            etype_label = EVENT_TAGS["both"]
+        elif self.saw_voiced:
+            etype_label = EVENT_TAGS["human"]
+        else:
+            etype_label = EVENT_TAGS["other"]
         avg_rms = (self.sum_rms / self.frames_written) if self.frames_written else 0.0
         trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 
@@ -934,7 +949,7 @@ class TimelineRecorder:
             print("[segmenter] WARN: writer did not close file within 5s", flush=True)
 
         print(
-            f"[segmenter] Event ended ({reason}). type={etype}, avg_rms={avg_rms:.1f}, frames={self.frames_written}"
+            f"[segmenter] Event ended ({reason}). type={etype_label}, avg_rms={avg_rms:.1f}, frames={self.frames_written}"
             + (f", q_drops={self.queue_drops}" if self.queue_drops else ""),
             flush=True
         )
@@ -945,7 +960,8 @@ class TimelineRecorder:
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
             event_ts = self.event_timestamp or base.split("_", 1)[0]
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
-            final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
+            safe_etype = _sanitize_event_tag(etype_label)
+            final_base = f"{event_ts}_{safe_etype}_RMS-{trigger_rms}_{event_count}"
             job_id = _enqueue_encode_job(tmp_wav_path, final_base)
             if job_id is not None and wait_for_encode_start:
                 started = ENCODING_STATUS.wait_for_start(job_id, SHUTDOWN_ENCODE_START_TIMEOUT)
@@ -966,7 +982,7 @@ class TimelineRecorder:
                 "duration_seconds": duration_seconds,
                 "avg_rms": avg_rms,
                 "trigger_rms": trigger_rms,
-                "etype": etype,
+                "etype": etype_label,
             }
         else:
             last_event_status = {
@@ -977,7 +993,7 @@ class TimelineRecorder:
                 "duration_seconds": duration_seconds,
                 "avg_rms": avg_rms,
                 "trigger_rms": trigger_rms,
-                "etype": etype,
+                "etype": etype_label,
             }
 
         last_event_status["end_reason"] = reason

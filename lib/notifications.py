@@ -8,12 +8,13 @@ import socket
 import ssl
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from lib.config import event_type_aliases, get_cfg
 
 def _as_int(value: Any, default: int | None = None) -> int | None:
     try:
@@ -34,15 +35,35 @@ def _as_list(value: Any) -> list[str]:
 class NotificationFilters:
     min_trigger_rms: int | None = None
     allowed_types: tuple[str, ...] = ()
+    alias_map: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_cfg(cls, cfg: dict[str, Any] | None) -> "NotificationFilters":
         cfg = cfg or {}
         min_trigger = _as_int(cfg.get("min_trigger_rms"))
-        allowed = tuple(
-            event_type for event_type in _as_list(cfg.get("allowed_event_types"))
+        allowed_input = _as_list(cfg.get("allowed_event_types"))
+        alias_map = event_type_aliases(get_cfg())
+
+        normalised: list[str] = []
+        for raw in allowed_input:
+            token = raw.strip()
+            if not token:
+                continue
+            mapped = alias_map.get(token.lower())
+            normalised.append(mapped if mapped else token)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in normalised:
+            if item not in seen:
+                deduped.append(item)
+                seen.add(item)
+
+        return cls(
+            min_trigger_rms=min_trigger,
+            allowed_types=tuple(deduped),
+            alias_map=dict(alias_map),
         )
-        return cls(min_trigger_rms=min_trigger, allowed_types=allowed)
 
     def matches(self, event: dict[str, Any]) -> bool:
         trigger = _as_int(event.get("trigger_rms"))
@@ -52,8 +73,10 @@ class NotificationFilters:
             return False
 
         if self.allowed_types:
-            etype = str(event.get("etype", ""))
-            if etype not in self.allowed_types:
+            raw_type = str(event.get("etype", ""))
+            lookup = raw_type.strip().lower()
+            mapped = self.alias_map.get(lookup, raw_type.strip())
+            if mapped not in self.allowed_types:
                 return False
 
         return True

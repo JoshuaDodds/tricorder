@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import audioop  # noqa: F401  (imported for side-effects + rate conversion)
+import re
 
-from lib.config import get_cfg
+from lib.config import event_type_aliases, get_cfg
 
 
 class TranscriptionError(Exception):
@@ -41,13 +42,27 @@ def _write_json_atomic(destination: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp_path, destination)
 
 
+SAFE_EVENT_TAG_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _sanitize_event_lookup(value: str | None) -> str:
+    if not value:
+        return ""
+    sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", value.strip())
+    return sanitized.strip("_-")
+
+
 def _extract_event_type(base_name: str | None) -> str:
     if not base_name:
         return ""
-    tokens = base_name.split("_")
-    if len(tokens) >= 2:
-        return tokens[1]
-    return ""
+    prefix = base_name
+    rms_index = prefix.find("_RMS-")
+    if rms_index != -1:
+        prefix = prefix[:rms_index]
+    first_sep = prefix.find("_")
+    if first_sep == -1:
+        return ""
+    return prefix[first_sep + 1 :]
 
 
 def _load_vosk_model(model_path: Path):  # pragma: no cover - exercised via stub
@@ -237,20 +252,48 @@ def transcribe_audio(
     if not _bool(section.get("enabled")):
         return False
 
-    allowed_types: set[str] = set()
+    allowed_tokens: set[str] = set()
     raw_types = section.get("types")
     if isinstance(raw_types, (list, tuple, set)):
         for token in raw_types:
             if isinstance(token, str) and token.strip():
-                allowed_types.add(token.strip().lower())
+                allowed_tokens.add(token.strip())
     elif isinstance(raw_types, str) and raw_types.strip():
-        allowed_types.add(raw_types.strip().lower())
+        allowed_tokens.add(raw_types.strip())
+
+    alias_map = event_type_aliases(cfg)
+    sanitized_alias_map: dict[str, str] = {}
+    for label in alias_map.values():
+        sanitized_label = _sanitize_event_lookup(label)
+        if sanitized_label:
+            sanitized_alias_map.setdefault(sanitized_label.lower(), label)
+    allowed_types: set[str] = set()
+    for token in allowed_tokens:
+        lookup = token.strip().lower()
+        if not lookup:
+            continue
+        mapped = alias_map.get(lookup)
+        allowed_types.add(mapped.lower() if mapped else lookup)
 
     if event_type is None:
         event_type = _extract_event_type(base_name)
     event_type = (event_type or "").strip()
 
-    if allowed_types and event_type.lower() not in allowed_types:
+    lookup_type = event_type.lower()
+    mapped_event = alias_map.get(lookup_type)
+    if not mapped_event and lookup_type:
+        spaced_lookup = lookup_type.replace("_", " ").strip()
+        if spaced_lookup:
+            mapped_event = alias_map.get(spaced_lookup) or alias_map.get(" ".join(spaced_lookup.split()))
+    if not mapped_event and event_type:
+        sanitized_lookup = _sanitize_event_lookup(event_type).lower()
+        if sanitized_lookup:
+            mapped_event = sanitized_alias_map.get(sanitized_lookup)
+    if mapped_event:
+        event_type = mapped_event
+        lookup_type = mapped_event.lower()
+
+    if allowed_types and lookup_type not in allowed_types:
         return False
 
     engine = str(section.get("engine", "vosk")).strip().lower()
