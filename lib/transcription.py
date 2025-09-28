@@ -16,7 +16,7 @@ from typing import Any, Sequence
 
 import audioop  # noqa: F401  (imported for side-effects + rate conversion)
 
-from lib.config import get_cfg
+from lib.config import event_type_aliases, get_cfg
 
 
 class TranscriptionError(Exception):
@@ -237,20 +237,35 @@ def transcribe_audio(
     if not _bool(section.get("enabled")):
         return False
 
-    allowed_types: set[str] = set()
+    allowed_tokens: set[str] = set()
     raw_types = section.get("types")
     if isinstance(raw_types, (list, tuple, set)):
         for token in raw_types:
             if isinstance(token, str) and token.strip():
-                allowed_types.add(token.strip().lower())
+                allowed_tokens.add(token.strip())
     elif isinstance(raw_types, str) and raw_types.strip():
-        allowed_types.add(raw_types.strip().lower())
+        allowed_tokens.add(raw_types.strip())
+
+    alias_map = event_type_aliases(cfg)
+    allowed_types: set[str] = set()
+    for token in allowed_tokens:
+        lookup = token.strip().lower()
+        if not lookup:
+            continue
+        mapped = alias_map.get(lookup)
+        allowed_types.add(mapped.lower() if mapped else lookup)
 
     if event_type is None:
         event_type = _extract_event_type(base_name)
     event_type = (event_type or "").strip()
 
-    if allowed_types and event_type.lower() not in allowed_types:
+    lookup_type = event_type.lower()
+    mapped_event = alias_map.get(lookup_type)
+    if mapped_event:
+        event_type = mapped_event
+        lookup_type = mapped_event.lower()
+
+    if allowed_types and lookup_type not in allowed_types:
         return False
 
     engine = str(section.get("engine", "vosk")).strip().lower()
