@@ -11,6 +11,7 @@ from datetime import datetime
 import threading
 import queue
 import warnings
+from collections.abc import Callable
 import array
 warnings.filterwarnings(
     "ignore",
@@ -245,6 +246,102 @@ _ENCODE_WORKER = None
 _ENCODE_LOCK = threading.Lock()
 
 
+class EncodingStatus:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: collections.deque[dict[str, object]] = collections.deque()
+        self._active: dict[str, object] | None = None
+        self._next_id = 1
+        self._listeners: list[Callable[[dict[str, object] | None], None]] = []
+
+    def register_listener(self, callback: Callable[[dict[str, object] | None], None]) -> None:
+        with self._lock:
+            self._listeners.append(callback)
+        try:
+            callback(self.snapshot())
+        except Exception:
+            pass
+
+    def snapshot(self) -> dict[str, object] | None:
+        with self._lock:
+            active = dict(self._active) if self._active else None
+            pending = [dict(entry) for entry in self._pending]
+        pending_payload = [
+            {
+                "id": entry.get("id"),
+                "base_name": entry.get("base_name", ""),
+                "queued_at": entry.get("queued_at"),
+                "status": "pending",
+            }
+            for entry in pending
+        ]
+        active_payload = None
+        if active:
+            active_payload = {
+                "id": active.get("id"),
+                "base_name": active.get("base_name", ""),
+                "queued_at": active.get("queued_at"),
+                "started_at": active.get("started_at"),
+                "status": "active",
+            }
+        if not pending_payload and not active_payload:
+            return None
+        return {"pending": pending_payload, "active": active_payload}
+
+    def _notify(self) -> None:
+        snapshot = self.snapshot()
+        with self._lock:
+            listeners = list(self._listeners)
+        for callback in listeners:
+            try:
+                callback(snapshot)
+            except Exception:
+                pass
+
+    def enqueue(self, base_name: str) -> int:
+        with self._lock:
+            job_id = self._next_id
+            self._next_id += 1
+            self._pending.append(
+                {
+                    "id": job_id,
+                    "base_name": base_name,
+                    "queued_at": time.time(),
+                }
+            )
+        self._notify()
+        return job_id
+
+    def mark_started(self, job_id: int, base_name: str) -> None:
+        with self._lock:
+            job = None
+            for entry in list(self._pending):
+                if entry.get("id") == job_id:
+                    job = entry
+                    self._pending.remove(entry)
+                    break
+            if job is None:
+                job = {
+                    "id": job_id,
+                    "base_name": base_name,
+                    "queued_at": time.time(),
+                }
+            else:
+                job["base_name"] = base_name
+            job["started_at"] = time.time()
+            self._active = job
+        self._notify()
+
+    def mark_finished(self, job_id: int) -> None:
+        with self._lock:
+            if self._active and self._active.get("id") == job_id:
+                self._active = None
+        self._notify()
+
+
+ENCODING_STATUS = EncodingStatus()
+
+
 class _EncoderWorker(threading.Thread):
     def __init__(self, job_queue: queue.Queue):
         super().__init__(daemon=True)
@@ -257,7 +354,16 @@ class _EncoderWorker(threading.Thread):
                 if item is None:
                     return
 
-                wav_path, base_name = item
+                job_id: int | None
+                wav_path: str
+                base_name: str
+                if isinstance(item, tuple) and len(item) == 3:
+                    job_id, wav_path, base_name = item
+                else:
+                    job_id = None
+                    wav_path, base_name = item
+                if job_id is not None:
+                    ENCODING_STATUS.mark_started(job_id, base_name)
                 cmd = [ENCODER, wav_path, base_name]
                 try:
                     subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -269,6 +375,9 @@ class _EncoderWorker(threading.Thread):
                         print(exc.stderr, flush=True)
                 except Exception as exc:  # noqa: BLE001 - log and continue
                     print(f"[encoder] unexpected error: {exc!r}", flush=True)
+                finally:
+                    if job_id is not None:
+                        ENCODING_STATUS.mark_finished(job_id)
             finally:
                 self.q.task_done()
 
@@ -285,10 +394,11 @@ def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> None:
     if not tmp_wav_path or not base_name:
         return
     _ensure_encoder_worker()
+    job_id = ENCODING_STATUS.enqueue(base_name)
     try:
-        ENCODE_QUEUE.put_nowait((tmp_wav_path, base_name))
+        ENCODE_QUEUE.put_nowait((job_id, tmp_wav_path, base_name))
     except queue.Full:
-        ENCODE_QUEUE.put((tmp_wav_path, base_name))
+        ENCODE_QUEUE.put((job_id, tmp_wav_path, base_name))
     print(f"[segmenter] queued encode job for {base_name}", flush=True)
 
 
@@ -448,6 +558,9 @@ class TimelineRecorder:
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
+        self._status_lock = threading.Lock()
+        self._encoding_status: dict[str, object] | None = None
+        ENCODING_STATUS.register_listener(self._handle_encoding_status_change)
         self.event_started_epoch: float | None = None
         self._metrics_interval = 0.5
         self._last_metrics_update = 0.0
@@ -456,7 +569,12 @@ class TimelineRecorder:
         self._update_capture_status(
             False,
             reason="idle",
-            extra={"service_running": True, "current_rms": 0},
+            extra={
+                "service_running": True,
+                "current_rms": 0,
+                "event_duration_seconds": None,
+                "event_size_bytes": None,
+            },
         )
 
     def _update_capture_status(
@@ -468,86 +586,121 @@ class TimelineRecorder:
         reason: str | None = None,
         extra: dict[str, object] | None = None,
     ) -> None:
-        payload: dict[str, object] = {}
-        if isinstance(self._status_cache, dict):
-            payload.update(self._status_cache)
+        with self._status_lock:
+            payload: dict[str, object] = {}
+            if isinstance(self._status_cache, dict):
+                payload.update(self._status_cache)
 
-        payload.update(
-            {
-                "capturing": bool(capturing),
-                "updated_at": time.time(),
-                "adaptive_rms_threshold": int(self._adaptive.threshold_linear),
-            }
-        )
-        if capturing and event:
-            payload["event"] = event
-            payload.pop("last_event", None)
-        if not capturing and last_event:
-            payload["last_event"] = last_event
-        if not capturing and "event" in payload:
-            payload.pop("event", None)
-        if reason:
-            payload["last_stop_reason"] = reason
+            payload.update(
+                {
+                    "capturing": bool(capturing),
+                    "updated_at": time.time(),
+                    "adaptive_rms_threshold": int(self._adaptive.threshold_linear),
+                }
+            )
+            if capturing and event:
+                payload["event"] = event
+                payload.pop("last_event", None)
+            if not capturing and last_event:
+                payload["last_event"] = last_event
+            if not capturing and "event" in payload:
+                payload.pop("event", None)
+            if reason:
+                payload["last_stop_reason"] = reason
 
-        compare_keys = (
-            "capturing",
-            "event",
-            "last_event",
-            "last_stop_reason",
-            "adaptive_rms_threshold",
-            "current_rms",
-            "service_running",
-        )
-        if extra:
-            for key, value in extra.items():
-                if value is None:
-                    payload.pop(key, None)
-                else:
-                    payload[key] = value
-        if self._status_cache is not None:
-            previous = {key: self._status_cache.get(key) for key in compare_keys}
-            current = {key: payload.get(key) for key in compare_keys}
-            if previous == current:
-                self._status_cache = payload
-                return
+            if self._encoding_status:
+                payload["encoding"] = self._encoding_status
+            else:
+                payload.pop("encoding", None)
 
-        self._status_cache = payload
-        tmp_path = f"{self.status_path}.tmp"
-        try:
-            os.makedirs(os.path.dirname(self.status_path), exist_ok=True)
-            with open(tmp_path, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle)
-                handle.write("\n")
-            os.replace(tmp_path, self.status_path)
-        except Exception as exc:  # pragma: no cover - diagnostics only in DEV builds
+            compare_keys = (
+                "capturing",
+                "event",
+                "last_event",
+                "last_stop_reason",
+                "adaptive_rms_threshold",
+                "current_rms",
+                "service_running",
+                "event_duration_seconds",
+                "event_size_bytes",
+                "encoding",
+            )
+            if extra:
+                for key, value in extra.items():
+                    if value is None:
+                        payload.pop(key, None)
+                    else:
+                        payload[key] = value
+            if self._status_cache is not None:
+                previous = {key: self._status_cache.get(key) for key in compare_keys}
+                current = {key: payload.get(key) for key in compare_keys}
+                if previous == current:
+                    self._status_cache = payload
+                    return
+
+            self._status_cache = payload
+            tmp_path = f"{self.status_path}.tmp"
             try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-            if DEBUG_VERBOSE:
-                print(f"[segmenter] WARN: failed to write capture status: {exc!r}", flush=True)
+                os.makedirs(os.path.dirname(self.status_path), exist_ok=True)
+                with open(tmp_path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+                    handle.write("\n")
+                os.replace(tmp_path, self.status_path)
+            except Exception as exc:  # pragma: no cover - diagnostics only in DEV builds
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+                if DEBUG_VERBOSE:
+                    print(f"[segmenter] WARN: failed to write capture status: {exc!r}", flush=True)
+
+    def _handle_encoding_status_change(self, snapshot: dict[str, object] | None) -> None:
+        with self._status_lock:
+            self._encoding_status = snapshot if snapshot else None
+            cache_ready = self._status_cache is not None
+        if cache_ready:
+            self._refresh_capture_status()
+
+    def _refresh_capture_status(self) -> None:
+        capturing, event, last_event, reason = self._status_snapshot()
+        self._update_capture_status(
+            capturing,
+            event=event,
+            last_event=last_event,
+            reason=reason,
+        )
 
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
-        capturing = self.active
-        event: dict | None = None
-        last_event: dict | None = None
-        reason: str | None = None
-        if isinstance(self._status_cache, dict):
-            capturing = bool(self._status_cache.get("capturing", capturing))
-            cached_event = self._status_cache.get("event")
-            if isinstance(cached_event, dict):
-                event = cached_event
-            cached_last = self._status_cache.get("last_event")
-            if isinstance(cached_last, dict):
-                last_event = cached_last
-            cached_reason = self._status_cache.get("last_stop_reason")
-            if isinstance(cached_reason, str) and cached_reason:
-                reason = cached_reason
+        with self._status_lock:
+            capturing = self.active
+            event: dict | None = None
+            last_event: dict | None = None
+            reason: str | None = None
+            if isinstance(self._status_cache, dict):
+                capturing = bool(self._status_cache.get("capturing", capturing))
+                cached_event = self._status_cache.get("event")
+                if isinstance(cached_event, dict):
+                    event = cached_event
+                cached_last = self._status_cache.get("last_event")
+                if isinstance(cached_last, dict):
+                    last_event = cached_last
+                cached_reason = self._status_cache.get("last_stop_reason")
+                if isinstance(cached_reason, str) and cached_reason:
+                    reason = cached_reason
         if capturing:
             last_event = None
         else:
             event = None
         return capturing, event, last_event, reason
+
+    def _current_event_size(self) -> int | None:
+        path = self.tmp_wav_path
+        if not path:
+            return None
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
 
     def _maybe_update_live_metrics(self, rms_value: int) -> None:
         now = time.monotonic()
@@ -573,6 +726,12 @@ class TimelineRecorder:
             extra={
                 "current_rms": whole,
                 "service_running": True,
+                "event_duration_seconds": (
+                    self.frames_written * (FRAME_MS / 1000.0)
+                    if capturing
+                    else None
+                ),
+                "event_size_bytes": self._current_event_size() if capturing else None,
             },
         )
 
@@ -782,7 +941,12 @@ class TimelineRecorder:
             }
 
         last_event_status["end_reason"] = reason
-        self._update_capture_status(False, last_event=last_event_status, reason=reason)
+        self._update_capture_status(
+            False,
+            last_event=last_event_status,
+            reason=reason,
+            extra={"event_duration_seconds": None, "event_size_bytes": None},
+        )
         if NOTIFIER:
             try:
                 NOTIFIER.handle_event(last_event_status)
@@ -834,7 +998,12 @@ class TimelineRecorder:
             False,
             last_event=last_event,
             reason="shutdown",
-            extra={"service_running": False, "current_rms": 0},
+            extra={
+                "service_running": False,
+                "current_rms": 0,
+                "event_duration_seconds": None,
+                "event_size_bytes": None,
+            },
         )
 
 

@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import wave
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -1833,12 +1834,31 @@ def build_app() -> web.Application:
                 return parsed
         return None
 
+    def _to_bool(value: object, default: bool = True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if not text:
+                return default
+            if text in {"0", "false", "no", "off"}:
+                return False
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        return bool(value)
+
     def _create_clip_sync(
         source_rel_path: str,
         start_seconds: float,
         end_seconds: float,
         clip_name: str | None,
         source_start_epoch: float | None,
+        allow_overwrite: bool = True,
     ) -> dict[str, object]:
         if not source_rel_path:
             raise ClipError("source path is required")
@@ -1882,6 +1902,9 @@ def build_app() -> web.Application:
 
         final_path = target_dir / f"{base_name}.opus"
         final_waveform = final_path.with_suffix(final_path.suffix + ".waveform.json")
+
+        if final_path.exists() and not allow_overwrite:
+            raise ClipError("clip already exists")
 
         try:
             rel_path = final_path.relative_to(recordings_root_resolved)
@@ -2165,6 +2188,68 @@ def build_app() -> web.Application:
             elif normalized in {"0", "false", "no", "off", "stopped"}:
                 status["service_running"] = False
 
+        duration_seconds = raw.get("event_duration_seconds")
+        if isinstance(duration_seconds, (int, float)) and math.isfinite(duration_seconds):
+            status["event_duration_seconds"] = max(0.0, float(duration_seconds))
+
+        event_size_bytes = raw.get("event_size_bytes")
+        if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
+            status["event_size_bytes"] = max(0, int(event_size_bytes))
+
+        encoding_raw = raw.get("encoding")
+        if isinstance(encoding_raw, dict):
+            encoding: dict[str, object] = {}
+
+            pending_entries: list[dict[str, object]] = []
+            pending_raw = encoding_raw.get("pending")
+            if isinstance(pending_raw, list):
+                for item in pending_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    entry: dict[str, object] = {}
+                    base_name = item.get("base_name")
+                    if isinstance(base_name, str) and base_name:
+                        entry["base_name"] = base_name
+                    job_id = item.get("id")
+                    if isinstance(job_id, (int, float)) and math.isfinite(job_id):
+                        entry["id"] = int(job_id)
+                    queued_at = item.get("queued_at")
+                    if isinstance(queued_at, (int, float)) and math.isfinite(queued_at):
+                        entry["queued_at"] = float(queued_at)
+                    status_value = item.get("status")
+                    if isinstance(status_value, str) and status_value:
+                        entry["status"] = status_value
+                    if entry:
+                        pending_entries.append(entry)
+            encoding["pending"] = pending_entries
+
+            active_raw = encoding_raw.get("active")
+            if isinstance(active_raw, dict):
+                active_entry: dict[str, object] = {}
+                base_name = active_raw.get("base_name")
+                if isinstance(base_name, str) and base_name:
+                    active_entry["base_name"] = base_name
+                job_id = active_raw.get("id")
+                if isinstance(job_id, (int, float)) and math.isfinite(job_id):
+                    active_entry["id"] = int(job_id)
+                queued_at = active_raw.get("queued_at")
+                if isinstance(queued_at, (int, float)) and math.isfinite(queued_at):
+                    active_entry["queued_at"] = float(queued_at)
+                started_at = active_raw.get("started_at")
+                if isinstance(started_at, (int, float)) and math.isfinite(started_at):
+                    active_entry["started_at"] = float(started_at)
+                duration_value = active_raw.get("duration_seconds")
+                if isinstance(duration_value, (int, float)) and math.isfinite(duration_value):
+                    active_entry["duration_seconds"] = max(0.0, float(duration_value))
+                status_value = active_raw.get("status")
+                if isinstance(status_value, str) and status_value:
+                    active_entry["status"] = status_value
+                if active_entry:
+                    encoding["active"] = active_entry
+
+            if encoding.get("pending") or encoding.get("active"):
+                status["encoding"] = encoding
+
         return status
 
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
@@ -2397,6 +2482,239 @@ def build_app() -> web.Application:
 
         return web.json_response({"deleted": deleted, "errors": errors})
 
+    async def recordings_rename(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        raw_item = data.get("item")
+        if not isinstance(raw_item, str) or not raw_item.strip():
+            raise web.HTTPBadRequest(reason="'item' must be a non-empty string")
+
+        raw_name = data.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise web.HTTPBadRequest(reason="'name' must be a non-empty string")
+
+        rel_item = raw_item.strip().strip("/")
+        candidate = recordings_root / rel_item
+        try:
+            source_resolved = candidate.resolve()
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound(reason="recording not found") from exc
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+
+        try:
+            source_resolved.relative_to(recordings_root_resolved)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(reason="outside recordings directory") from exc
+
+        if not source_resolved.is_file():
+            raise web.HTTPNotFound(reason="recording not found")
+
+        new_name = raw_name.strip()
+        if new_name in {".", ".."}:
+            raise web.HTTPBadRequest(reason="name is invalid")
+        if any(sep in new_name for sep in ("/", "\\", os.sep)):
+            raise web.HTTPBadRequest(reason="name cannot contain path separators")
+        name_component = Path(new_name).name
+        if name_component != new_name:
+            raise web.HTTPBadRequest(reason="name cannot contain path separators")
+
+        extension_override = None
+        extension_value = data.get("extension")
+        if isinstance(extension_value, str):
+            stripped = extension_value.strip()
+            if stripped:
+                extension_override = stripped if stripped.startswith(".") else f".{stripped}"
+
+        candidate_path = Path(name_component)
+        name_has_suffix = bool(candidate_path.suffix)
+        base_stem = candidate_path.stem if name_has_suffix else candidate_path.name
+
+        suffix = extension_override
+        if suffix is None:
+            suffix = candidate_path.suffix if name_has_suffix else source_resolved.suffix
+        if suffix and not suffix.startswith("."):
+            suffix = f".{suffix}"
+        suffix = suffix or ""
+
+        if name_has_suffix and extension_override is None:
+            target_filename = candidate_path.name
+        else:
+            target_filename = f"{base_stem}{suffix}"
+
+        target_path = source_resolved.with_name(target_filename)
+        try:
+            target_resolved = target_path.resolve()
+        except FileNotFoundError:
+            target_resolved = target_path
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+
+        try:
+            target_resolved.relative_to(recordings_root_resolved)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(reason="name resolves outside recordings directory") from exc
+
+        old_rel = source_resolved.relative_to(recordings_root_resolved).as_posix()
+        new_rel = target_resolved.relative_to(recordings_root_resolved).as_posix()
+
+        name_payload = Path(target_filename).stem
+        extension_payload = target_resolved.suffix.lstrip(".")
+
+        if target_resolved == source_resolved:
+            return web.json_response(
+                {
+                    "old_path": old_rel,
+                    "new_path": new_rel,
+                    "name": name_payload,
+                    "extension": extension_payload,
+                    "path": new_rel,
+                }
+            )
+
+        if target_resolved.exists():
+            raise web.HTTPConflict(reason="target already exists")
+
+        try:
+            os.replace(source_resolved, target_resolved)
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound(reason="recording not found") from exc
+        except FileExistsError:
+            raise web.HTTPConflict(reason="target already exists")
+        except Exception as exc:  # pragma: no cover - unexpected filesystem errors
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+
+        waveform_src = source_resolved.with_suffix(source_resolved.suffix + ".waveform.json")
+        waveform_dest = target_resolved.with_suffix(target_resolved.suffix + ".waveform.json")
+        if waveform_src.exists():
+            try:
+                os.replace(waveform_src, waveform_dest)
+            except Exception:
+                pass
+
+        transcript_src = source_resolved.with_suffix(source_resolved.suffix + ".transcript.json")
+        transcript_dest = target_resolved.with_suffix(target_resolved.suffix + ".transcript.json")
+        if transcript_src.exists():
+            try:
+                os.replace(transcript_src, transcript_dest)
+            except Exception:
+                pass
+
+        return web.json_response(
+            {
+                "old_path": old_rel,
+                "new_path": new_rel,
+                "name": name_payload,
+                "extension": extension_payload,
+                "path": new_rel,
+            }
+        )
+
+    async def recordings_bulk_download(request: web.Request) -> web.StreamResponse:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        items = data.get("items")
+        if not isinstance(items, list) or not items:
+            raise web.HTTPBadRequest(reason="'items' must be a non-empty list")
+
+        errors: list[dict[str, str]] = []
+        selected: dict[str, Path] = {}
+        for raw in items:
+            if not isinstance(raw, str) or not raw.strip():
+                errors.append({"item": str(raw), "error": "invalid path"})
+                continue
+            rel = raw.strip().strip("/")
+            candidate = recordings_root / rel
+            try:
+                resolved = candidate.resolve()
+            except FileNotFoundError:
+                errors.append({"item": rel, "error": "not found"})
+                continue
+            except Exception as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            try:
+                resolved.relative_to(recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "outside recordings directory"})
+                continue
+
+            if not resolved.is_file():
+                errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            key = rel.replace(os.sep, "/")
+            if key not in selected:
+                selected[key] = resolved
+
+        if errors:
+            return web.json_response({"errors": errors}, status=400)
+
+        if not selected:
+            return web.json_response(
+                {"errors": [{"item": "", "error": "no valid recordings"}]}, status=400
+            )
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        archive_name = f"tricorder-recordings-{timestamp}.zip"
+
+        tmp_dir = Path(tmp_root)
+        try:
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            tmp_dir = Path(tempfile.gettempdir())
+
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir=tmp_dir)
+        archive_path = Path(temp_file.name)
+        temp_file.close()
+
+        try:
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for rel, resolved in selected.items():
+                    arcname = Path(rel).as_posix()
+                    try:
+                        archive.write(resolved, arcname=arcname)
+                    except FileNotFoundError:
+                        continue
+                    for suffix in (".waveform.json", ".transcript.json"):
+                        sidecar = resolved.with_suffix(resolved.suffix + suffix)
+                        if sidecar.is_file():
+                            try:
+                                archive.write(sidecar, arcname=f"{arcname}{suffix}")
+                            except FileNotFoundError:
+                                pass
+
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": "application/zip",
+                    "Content-Disposition": f'attachment; filename="{archive_name}"',
+                },
+            )
+            await response.prepare(request)
+            with archive_path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    await response.write(chunk)
+            await response.write_eof()
+            return response
+        except Exception as exc:
+            raise web.HTTPInternalServerError(reason=str(exc)) from exc
+        finally:
+            try:
+                archive_path.unlink()
+            except Exception:
+                pass
+
     async def recordings_clip(request: web.Request) -> web.Response:
         try:
             data = await request.json()
@@ -2422,6 +2740,7 @@ def build_app() -> web.Application:
 
         loop = asyncio.get_running_loop()
         try:
+            allow_overwrite = _to_bool(data.get("allow_overwrite"), True)
             payload = await loop.run_in_executor(
                 None,
                 functools.partial(
@@ -2431,6 +2750,7 @@ def build_app() -> web.Application:
                     end_value,
                     clip_name,
                     source_start_epoch,
+                    allow_overwrite,
                 ),
             )
         except ClipError as exc:
@@ -2891,6 +3211,8 @@ def build_app() -> web.Application:
     app.router.add_get("/api/recordings", recordings_api)
     app.router.add_post("/api/recordings/delete", recordings_delete)
     app.router.add_post("/api/recordings/remove", recordings_delete)
+    app.router.add_post("/api/recordings/rename", recordings_rename)
+    app.router.add_post("/api/recordings/bulk-download", recordings_bulk_download)
     app.router.add_post("/api/recordings/clip", recordings_clip)
     app.router.add_post("/api/recordings/clip/undo", recordings_clip_undo)
     app.router.add_get("/recordings/{path:.*}", recordings_file)

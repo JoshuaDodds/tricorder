@@ -4,8 +4,10 @@ import os
 import json
 import time
 from datetime import datetime, timezone
+import io
 import shutil
 import wave
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -606,6 +608,57 @@ def test_recordings_clip_overwrite_and_undo(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_clip_rejects_conflicting_name_without_overwrite(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240108"
+        day_dir.mkdir()
+
+        source = day_dir / "source.wav"
+        _create_silent_wav(source, duration=2.5)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=2.5)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            initial_payload = {
+                "source_path": "20240108/source.wav",
+                "start_seconds": 0.0,
+                "end_seconds": 1.0,
+                "clip_name": "conflict-test",
+            }
+            resp = await client.post("/api/recordings/clip", json=initial_payload)
+            assert resp.status == 200
+            data = await resp.json()
+            clip_rel_path = data["path"]
+            clip_file = dashboard_env / clip_rel_path
+            assert clip_file.exists()
+            original_stat = clip_file.stat()
+
+            conflict_payload = {
+                "source_path": "20240108/source.wav",
+                "start_seconds": 1.0,
+                "end_seconds": 2.0,
+                "clip_name": "conflict-test",
+                "allow_overwrite": False,
+            }
+            resp_conflict = await client.post("/api/recordings/clip", json=conflict_payload)
+            assert resp_conflict.status == 400
+
+            # Ensure the existing clip was not replaced
+            after_stat = clip_file.stat()
+            assert after_stat.st_mtime == original_stat.st_mtime
+            assert after_stat.st_size == original_stat.st_size
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_validates_range(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
@@ -937,6 +990,113 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
             assert scheduled[0][2] == pytest.approx(0.5, rel=0, abs=1e-6)
             status = payload.get("status", {})
             assert status.get("unit") == "web-streamer.service"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_rename_endpoint(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240104"
+        day_dir.mkdir()
+
+        original = day_dir / "alpha.opus"
+        original.write_bytes(b"alpha")
+        _write_waveform_stub(original.with_suffix(original.suffix + ".waveform.json"))
+        transcript_original = original.with_suffix(original.suffix + ".transcript.json")
+        transcript_original.write_text(json.dumps({"text": "alpha"}), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/recordings/rename",
+                json={"item": f"{day_dir.name}/{original.name}", "name": "beta"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["old_path"].endswith("alpha.opus")
+            assert payload["new_path"].endswith("beta.opus")
+            renamed_path = day_dir / "beta.opus"
+            assert renamed_path.exists()
+            assert not original.exists()
+
+            new_waveform = renamed_path.with_suffix(renamed_path.suffix + ".waveform.json")
+            new_transcript = renamed_path.with_suffix(renamed_path.suffix + ".transcript.json")
+            assert new_waveform.exists()
+            assert new_transcript.exists()
+            assert not transcript_original.exists()
+
+            conflict_target = day_dir / "gamma.opus"
+            conflict_target.write_bytes(b"gamma")
+            conflict_resp = await client.post(
+                "/api/recordings/rename",
+                json={
+                    "item": f"{day_dir.name}/{renamed_path.name}",
+                    "name": conflict_target.stem,
+                },
+            )
+            assert conflict_resp.status == 409
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_bulk_download_includes_sidecars(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240105"
+        day_dir.mkdir()
+
+        first = day_dir / "alpha.opus"
+        second = day_dir / "beta.opus"
+        for path in (first, second):
+            path.write_bytes(path.stem.encode("utf-8"))
+            _write_waveform_stub(path.with_suffix(path.suffix + ".waveform.json"))
+            transcript = path.with_suffix(path.suffix + ".transcript.json")
+            transcript.write_text(json.dumps({"text": path.stem}), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/recordings/bulk-download",
+                json={
+                    "items": [
+                        f"{day_dir.name}/{first.name}",
+                        f"{day_dir.name}/{second.name}",
+                    ]
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "application/zip"
+            archive_bytes = await resp.read()
+            with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                names = sorted(archive.namelist())
+                assert names == sorted(
+                    [
+                        f"{day_dir.name}/{first.name}",
+                        f"{day_dir.name}/{first.name}.waveform.json",
+                        f"{day_dir.name}/{first.name}.transcript.json",
+                        f"{day_dir.name}/{second.name}",
+                        f"{day_dir.name}/{second.name}.waveform.json",
+                        f"{day_dir.name}/{second.name}.transcript.json",
+                    ]
+                )
+
+            error_resp = await client.post(
+                "/api/recordings/bulk-download",
+                json={"items": ["missing.opus"]},
+            )
+            assert error_resp.status == 400
+            error_payload = await error_resp.json()
+            assert isinstance(error_payload.get("errors"), list)
+            assert error_payload["errors"]
         finally:
             await client.close()
             await server.close()

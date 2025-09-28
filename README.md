@@ -249,7 +249,7 @@ Copy `updater.env-example` to `/etc/tricorder/update.env` (or another path refer
 - `TRICORDER_UPDATE_DIR` – Working directory for the updater checkout (default `/apps/tricorder/repo`).
 - `TRICORDER_INSTALL_BASE` / `TRICORDER_INSTALL_SCRIPT` – Override install location or script if needed.
 - `TRICORDER_UPDATE_SERVICES` – Space-separated units to restart after an update.
-- `DEV=1` – Disable the updater without removing the timer.
+- `DEV=1` – Disable the updater and mark the install as dev mode so the systemd unit stays inactive even after a reboot.
 
 The timer is configured for short intervals in tests; adjust to a longer cadence in production.
 
@@ -346,10 +346,11 @@ Common tunables include:
 Select any recording in the dashboard preview pane to open the new **Clip editor**. The inline tool lets you trim the beginning/end of a take or extract a sub-clip without leaving the browser:
 
 - Scrub the waveform or audio player, then use **Set from playhead** to capture precise start/end times. Times may also be entered manually as `MM:SS.mmm` (hours supported).
+- Leave **Overwrite existing?** enabled to replace the selected clip using its current name. Uncheck it to automatically swap in a unique filename; if you typed your own name we preserve it unless a suffix is needed to avoid collisions.
 - Adjust the generated clip name or supply your own; invalid characters are replaced automatically to match on-device storage rules.
 - Click **Save clip** to render a new `.opus` file and waveform sidecar via the existing ffmpeg/Opus pipeline. Reusing an existing clip name replaces that clip in place while leaving the source recording untouched, and each replacement keeps a short-lived undo history that can be restored from the editor.
 
-Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and overwrite an existing clip only when you reuse its name; the source recording itself is never modified.
+Clip requests preserve the original day folder, reuse the recording's timestamp (offset by the chosen start), and overwrite an existing clip when you keep **Overwrite existing?** checked; toggle it off to save the export beside the current clip instead. The source recording itself is never modified.
 
 To manually test the overwrite + undo workflow in the dashboard:
 

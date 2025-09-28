@@ -174,17 +174,73 @@
           <h1>Dashboard</h1>
         </div>
         <div class="header-actions">
-          <div class="header-status">
+          <div class="header-controls">
             <div
-              id="recording-indicator"
-              class="recording-indicator"
+              id="rms-indicator"
+              class="rms-indicator"
               role="status"
               aria-live="polite"
-              aria-hidden="false"
-              data-state="unknown"
+              aria-hidden="true"
+              data-visible="false"
             >
-              <span class="indicator-dot" aria-hidden="true"></span>
-              <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+              <span class="label">RMS:</span>
+              <span id="rms-indicator-value" class="value">0</span>
+            </div>
+            <button
+              id="theme-toggle"
+              class="ghost-button"
+              type="button"
+              aria-pressed="false"
+              aria-label="Toggle light and dark theme"
+            >
+              Toggle theme
+            </button>
+            <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
+            <div
+              id="refresh-indicator"
+              class="refresh-indicator"
+              role="status"
+              aria-live="polite"
+              aria-hidden="true"
+              data-visible="false"
+            >
+              <span class="refresh-spinner" aria-hidden="true"></span>
+              <span class="refresh-text">Refreshing…</span>
+            </div>
+          </div>
+          <div class="header-status-group">
+            <div class="status-labels">
+              <div
+                id="recording-indicator"
+                class="status-pill recording-indicator"
+                role="status"
+                aria-live="polite"
+                aria-hidden="false"
+                data-state="unknown"
+              >
+                <span class="indicator-dot" aria-hidden="true"></span>
+                <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+              </div>
+              <div
+                id="recording-meta"
+                class="status-pill"
+                role="status"
+                aria-live="polite"
+                aria-hidden="true"
+                data-visible="false"
+              >
+                <span id="recording-meta-text" class="indicator-text"></span>
+              </div>
+              <div
+                id="encoding-status"
+                class="status-pill"
+                role="status"
+                aria-live="polite"
+                aria-hidden="true"
+                data-visible="false"
+              >
+                <span id="encoding-status-text" class="indicator-text"></span>
+              </div>
             </div>
             <div
               id="connection-status"
@@ -195,38 +251,6 @@
               data-visible="false"
             ></div>
           </div>
-          <div
-            id="rms-indicator"
-            class="rms-indicator"
-            role="status"
-            aria-live="polite"
-            aria-hidden="true"
-            data-visible="false"
-          >
-            <span class="label">RMS:</span>
-            <span id="rms-indicator-value" class="value">0</span>
-          </div>
-          <button
-            id="theme-toggle"
-            class="ghost-button"
-            type="button"
-            aria-pressed="false"
-            aria-label="Toggle light and dark theme"
-          >
-            Toggle theme
-          </button>
-          <div
-            id="refresh-indicator"
-            class="refresh-indicator"
-            role="status"
-            aria-live="polite"
-            aria-hidden="true"
-            data-visible="false"
-          >
-            <span class="refresh-spinner" aria-hidden="true"></span>
-            <span class="refresh-text">Refreshing…</span>
-          </div>
-          <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
         </div>
       </header>
       <section class="status-bar">
@@ -411,6 +435,13 @@
                       placeholder="New clip name"
                     />
                   </label>
+                  <div class="clipper-overwrite-row">
+                    <label class="clipper-overwrite-toggle" for="clipper-overwrite-toggle">
+                      <input id="clipper-overwrite-toggle" type="checkbox" checked />
+                      <span class="clipper-overwrite-slider" aria-hidden="true"></span>
+                      <span class="clipper-overwrite-label">Overwrite existing?</span>
+                    </label>
+                  </div>
                 </div>
                 <div class="clipper-footer">
                   <div id="clipper-length" class="clipper-length" role="status" aria-live="polite">
@@ -480,6 +511,12 @@
               <div class="table-actions">
                 <button id="select-all" class="ghost-button small" type="button">Select all</button>
                 <button id="clear-selection" class="ghost-button small" type="button">Clear</button>
+                <button id="download-selected" class="ghost-button small" type="button" disabled>
+                  Download selected
+                </button>
+                <button id="rename-selected" class="ghost-button small" type="button" disabled>
+                  Rename selected
+                </button>
                 <button id="delete-selected" class="danger-button small" type="button" disabled>Delete selected</button>
               </div>
             </div>
@@ -566,6 +603,35 @@
           <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
           <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
+      </div>
+    </div>
+    <div
+      id="rename-modal"
+      class="rename-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="rename-modal-dialog"
+        class="rename-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-modal-title"
+        tabindex="-1"
+      >
+        <h2 id="rename-modal-title" class="rename-title">Rename recording</h2>
+        <form id="rename-form" class="rename-form">
+          <label class="input-group">
+            <span>New name</span>
+            <input id="rename-input" type="text" autocomplete="off" required spellcheck="false" />
+          </label>
+          <p id="rename-error" class="rename-error" role="alert" hidden></p>
+          <div class="rename-actions">
+            <button id="rename-cancel" class="ghost-button" type="button">Cancel</button>
+            <button id="rename-confirm" class="primary-button" type="submit">Rename</button>
+          </div>
+        </form>
       </div>
     </div>
     <div
