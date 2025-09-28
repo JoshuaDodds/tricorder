@@ -2165,6 +2165,68 @@ def build_app() -> web.Application:
             elif normalized in {"0", "false", "no", "off", "stopped"}:
                 status["service_running"] = False
 
+        duration_seconds = raw.get("event_duration_seconds")
+        if isinstance(duration_seconds, (int, float)) and math.isfinite(duration_seconds):
+            status["event_duration_seconds"] = max(0.0, float(duration_seconds))
+
+        event_size_bytes = raw.get("event_size_bytes")
+        if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
+            status["event_size_bytes"] = max(0, int(event_size_bytes))
+
+        encoding_raw = raw.get("encoding")
+        if isinstance(encoding_raw, dict):
+            encoding: dict[str, object] = {}
+
+            pending_entries: list[dict[str, object]] = []
+            pending_raw = encoding_raw.get("pending")
+            if isinstance(pending_raw, list):
+                for item in pending_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    entry: dict[str, object] = {}
+                    base_name = item.get("base_name")
+                    if isinstance(base_name, str) and base_name:
+                        entry["base_name"] = base_name
+                    job_id = item.get("id")
+                    if isinstance(job_id, (int, float)) and math.isfinite(job_id):
+                        entry["id"] = int(job_id)
+                    queued_at = item.get("queued_at")
+                    if isinstance(queued_at, (int, float)) and math.isfinite(queued_at):
+                        entry["queued_at"] = float(queued_at)
+                    status_value = item.get("status")
+                    if isinstance(status_value, str) and status_value:
+                        entry["status"] = status_value
+                    if entry:
+                        pending_entries.append(entry)
+            encoding["pending"] = pending_entries
+
+            active_raw = encoding_raw.get("active")
+            if isinstance(active_raw, dict):
+                active_entry: dict[str, object] = {}
+                base_name = active_raw.get("base_name")
+                if isinstance(base_name, str) and base_name:
+                    active_entry["base_name"] = base_name
+                job_id = active_raw.get("id")
+                if isinstance(job_id, (int, float)) and math.isfinite(job_id):
+                    active_entry["id"] = int(job_id)
+                queued_at = active_raw.get("queued_at")
+                if isinstance(queued_at, (int, float)) and math.isfinite(queued_at):
+                    active_entry["queued_at"] = float(queued_at)
+                started_at = active_raw.get("started_at")
+                if isinstance(started_at, (int, float)) and math.isfinite(started_at):
+                    active_entry["started_at"] = float(started_at)
+                duration_value = active_raw.get("duration_seconds")
+                if isinstance(duration_value, (int, float)) and math.isfinite(duration_value):
+                    active_entry["duration_seconds"] = max(0.0, float(duration_value))
+                status_value = active_raw.get("status")
+                if isinstance(status_value, str) and status_value:
+                    active_entry["status"] = status_value
+                if active_entry:
+                    encoding["active"] = active_entry
+
+            if encoding.get("pending") or encoding.get("active"):
+                status["encoding"] = encoding
+
         return status
 
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
