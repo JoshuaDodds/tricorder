@@ -491,6 +491,121 @@ def test_audio_settings_validation_error(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_transcription_settings_roundtrip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+transcription:
+  enabled: false
+  engine: vosk
+  types:
+    - Human
+  vosk_model_path: /models/vosk/en-us
+  target_sample_rate: 16000
+  include_words: true
+  max_alternatives: 0
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/transcription")
+            assert resp.status == 200
+            payload = await resp.json()
+            section = payload["transcription"]
+            assert section["engine"] == "vosk"
+            assert section["vosk_model_path"] == "/models/vosk/en-us"
+            assert section["types"] == ["Human"]
+
+            update_payload = {
+                "enabled": True,
+                "engine": "vosk",
+                "types": ["Human", "Both"],
+                "vosk_model_path": "/models/vosk/custom",
+                "target_sample_rate": 22050,
+                "include_words": False,
+                "max_alternatives": 2,
+            }
+
+            resp = await client.post("/api/config/transcription", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            section = updated["transcription"]
+            assert section["enabled"] is True
+            assert section["types"] == ["Human", "Both"]
+            assert section["target_sample_rate"] == 22050
+            assert section["include_words"] is False
+            assert section["max_alternatives"] == 2
+
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["transcription"]["enabled"] is True
+            assert persisted["transcription"]["vosk_model_path"] == "/models/vosk/custom"
+            assert persisted["transcription"]["types"] == ["Human", "Both"]
+            assert persisted["transcription"]["max_alternatives"] == 2
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_transcription_settings_require_model_path(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("transcription:\n  enabled: false\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "enabled": True,
+                "engine": "vosk",
+                "vosk_model_path": " ",
+            }
+            resp = await client.post("/api/config/transcription", json=payload)
+            assert resp.status == 400
+            data = await resp.json()
+            assert "error" in data
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
