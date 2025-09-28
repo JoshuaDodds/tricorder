@@ -2,11 +2,13 @@
 Description=Tricorder auto-update service
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=!/apps/tricorder/.dev-mode
 
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/tricorder/update.env
 WorkingDirectory=/apps/tricorder
+ExecCondition=/bin/sh -c '[ "${DEV:-0}" != "1" ]'
 ExecStart=/apps/tricorder/bin/tricorder_auto_update.sh
 
 [Install]
