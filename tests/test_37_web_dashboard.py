@@ -606,6 +606,57 @@ def test_recordings_clip_overwrite_and_undo(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_clip_rejects_conflicting_name_without_overwrite(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240108"
+        day_dir.mkdir()
+
+        source = day_dir / "source.wav"
+        _create_silent_wav(source, duration=2.5)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=2.5)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            initial_payload = {
+                "source_path": "20240108/source.wav",
+                "start_seconds": 0.0,
+                "end_seconds": 1.0,
+                "clip_name": "conflict-test",
+            }
+            resp = await client.post("/api/recordings/clip", json=initial_payload)
+            assert resp.status == 200
+            data = await resp.json()
+            clip_rel_path = data["path"]
+            clip_file = dashboard_env / clip_rel_path
+            assert clip_file.exists()
+            original_stat = clip_file.stat()
+
+            conflict_payload = {
+                "source_path": "20240108/source.wav",
+                "start_seconds": 1.0,
+                "end_seconds": 2.0,
+                "clip_name": "conflict-test",
+                "allow_overwrite": False,
+            }
+            resp_conflict = await client.post("/api/recordings/clip", json=conflict_payload)
+            assert resp_conflict.status == 400
+
+            # Ensure the existing clip was not replaced
+            after_stat = clip_file.stat()
+            assert after_stat.st_mtime == original_stat.st_mtime
+            assert after_stat.st_size == original_stat.st_size
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_validates_range(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")

@@ -1833,12 +1833,31 @@ def build_app() -> web.Application:
                 return parsed
         return None
 
+    def _to_bool(value: object, default: bool = True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if not text:
+                return default
+            if text in {"0", "false", "no", "off"}:
+                return False
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        return bool(value)
+
     def _create_clip_sync(
         source_rel_path: str,
         start_seconds: float,
         end_seconds: float,
         clip_name: str | None,
         source_start_epoch: float | None,
+        allow_overwrite: bool = True,
     ) -> dict[str, object]:
         if not source_rel_path:
             raise ClipError("source path is required")
@@ -1882,6 +1901,9 @@ def build_app() -> web.Application:
 
         final_path = target_dir / f"{base_name}.opus"
         final_waveform = final_path.with_suffix(final_path.suffix + ".waveform.json")
+
+        if final_path.exists() and not allow_overwrite:
+            raise ClipError("clip already exists")
 
         try:
             rel_path = final_path.relative_to(recordings_root_resolved)
@@ -2422,6 +2444,7 @@ def build_app() -> web.Application:
 
         loop = asyncio.get_running_loop()
         try:
+            allow_overwrite = _to_bool(data.get("allow_overwrite"), True)
             payload = await loop.run_in_executor(
                 None,
                 functools.partial(
@@ -2431,6 +2454,7 @@ def build_app() -> web.Application:
                     end_value,
                     clip_name,
                     source_start_epoch,
+                    allow_overwrite,
                 ),
             )
         except ClipError as exc:
