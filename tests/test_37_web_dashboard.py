@@ -659,6 +659,56 @@ def test_recordings_clip_rejects_conflicting_name_without_overwrite(dashboard_en
     asyncio.run(runner())
 
 
+def test_recordings_clip_rename_without_reencoding(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240109"
+        day_dir.mkdir()
+
+        original_clip = day_dir / "existing.opus"
+        original_clip.write_bytes(b"original-clip-data")
+        _write_waveform_stub(
+            original_clip.with_suffix(original_clip.suffix + ".waveform.json"), duration=1.0
+        )
+        os.utime(original_clip, (1_700_100_000, 1_700_100_000))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "source_path": f"{day_dir.name}/{original_clip.name}",
+                "start_seconds": 0.0,
+                "end_seconds": 1.0,
+                "clip_name": "renamed-clip",
+                "overwrite_existing": f"{day_dir.name}/{original_clip.name}",
+            }
+            resp = await client.post("/api/recordings/clip", json=payload)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["path"] == f"{day_dir.name}/renamed-clip.opus"
+            assert data.get("undo_token") is None
+            assert data.get("duration_seconds") == pytest.approx(1.0, rel=0.01)
+
+            renamed_path = day_dir / "renamed-clip.opus"
+            assert renamed_path.exists()
+            assert renamed_path.read_bytes() == b"original-clip-data"
+            assert not original_clip.exists()
+
+            renamed_waveform = renamed_path.with_suffix(renamed_path.suffix + ".waveform.json")
+            assert renamed_waveform.exists()
+            assert json.loads(renamed_waveform.read_text()).get("duration_seconds") == pytest.approx(
+                1.0, rel=0.01
+            )
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_validates_range(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
