@@ -3,6 +3,7 @@ import os
 
 import json
 import time
+from datetime import datetime, timezone
 import shutil
 import wave
 from pathlib import Path
@@ -120,6 +121,56 @@ def test_recordings_listing_filters(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_search_matches_transcripts(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240103"
+        day_dir.mkdir()
+
+        file_path = day_dir / "speech.opus"
+        file_path.write_bytes(b"sample")
+        _write_waveform_stub(file_path.with_suffix(file_path.suffix + ".waveform.json"))
+        os.utime(file_path, (1_700_030_000, 1_700_030_000))
+
+        transcript_payload = {
+            "version": 1,
+            "engine": "vosk",
+            "text": "Zebra crossing alert",
+            "event_type": "Human",
+        }
+        transcript_path = file_path.with_suffix(file_path.suffix + ".transcript.json")
+        transcript_path.write_text(json.dumps(transcript_payload), encoding="utf-8")
+        os.utime(transcript_path, (1_700_030_000, 1_700_030_000))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings?search=zebra")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["total"] == 1
+            item = payload["items"][0]
+            assert item["name"] == "speech"
+            assert item["has_transcript"] is True
+            assert item["transcript_event_type"] == "Human"
+            assert item["transcript_excerpt"].lower().startswith("zebra")
+            assert item["transcript_path"].endswith(".transcript.json")
+            expected_updated = 1_700_030_000
+            assert item["transcript_updated"] == pytest.approx(expected_updated, rel=0, abs=1e-6)
+            expected_iso = datetime.fromtimestamp(expected_updated, tz=timezone.utc).isoformat()
+            assert item["transcript_updated_iso"] == expected_iso
+
+            miss = await client.get("/api/recordings?search=walrus")
+            assert miss.status == 200
+            miss_payload = await miss.json()
+            assert miss_payload["total"] == 0
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_archival_settings_round_trip(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -154,11 +205,13 @@ archival:
                 == "/mnt/archive/tricorder"
             )
             assert payload["config_path"] == str(config_path)
+            assert payload["archival"]["include_transcript_sidecars"] is True
 
             update_payload = {
                 "enabled": True,
                 "backend": "rsync",
                 "include_waveform_sidecars": True,
+                "include_transcript_sidecars": False,
                 "network_share": {"target_dir": "/mnt/archive/tricorder"},
                 "rsync": {
                     "destination": "user@example.com:/srv/tricorder/archive",
@@ -178,6 +231,7 @@ archival:
                 == "user@example.com:/srv/tricorder/archive"
             )
             assert updated["archival"]["include_waveform_sidecars"] is True
+            assert updated["archival"]["include_transcript_sidecars"] is False
 
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["archival"]["backend"] == "rsync"
@@ -186,6 +240,9 @@ archival:
                 == "user@example.com:/srv/tricorder/archive"
             )
             assert persisted["archival"]["include_waveform_sidecars"] is True
+            assert (
+                persisted["archival"].get("include_transcript_sidecars") is False
+            )
         finally:
             await client.close()
             await server.close()
