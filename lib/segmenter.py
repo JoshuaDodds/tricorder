@@ -8,11 +8,13 @@ import time
 import collections
 import subprocess
 import wave
+from dataclasses import dataclass
 from datetime import datetime
 import threading
 import queue
 import warnings
 from collections.abc import Callable
+from typing import Optional
 import array
 warnings.filterwarnings(
     "ignore",
@@ -59,6 +61,12 @@ def _sanitize_event_tag(tag: str) -> str:
     sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
     sanitized = sanitized.strip("_-")
     return sanitized or "event"
+
+
+@dataclass(frozen=True)
+class RecorderIngestHint:
+    timestamp: str
+    event_counter: int | None = None
 
 
 def pcm16_rms(buf: bytes) -> int:
@@ -555,7 +563,7 @@ class AdaptiveRmsController:
 class TimelineRecorder:
     event_counters = collections.defaultdict(int)
 
-    def __init__(self):
+    def __init__(self, ingest_hint: Optional[RecorderIngestHint] = None):
         self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.active = False
         self.post_count = 0
@@ -594,6 +602,9 @@ class TimelineRecorder:
         self.sum_rms = 0
         self.saw_voiced = False
         self.saw_loud = False
+
+        self._ingest_hint: Optional[RecorderIngestHint] = ingest_hint
+        self._ingest_hint_used = False
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -872,9 +883,29 @@ class TimelineRecorder:
 
         if not self.active:
             if self.consec_active >= START_CONSECUTIVE:
-                start_time = datetime.now().strftime("%H-%M-%S")
-                TimelineRecorder.event_counters[start_time] += 1
-                count = TimelineRecorder.event_counters[start_time]
+                hint_timestamp: str | None = None
+                hint_counter: int | None = None
+                if self._ingest_hint and not self._ingest_hint_used:
+                    hint_timestamp = self._ingest_hint.timestamp
+                    hint_counter = self._ingest_hint.event_counter
+                    self._ingest_hint_used = True
+
+                if hint_timestamp:
+                    start_time = hint_timestamp
+                else:
+                    start_time = datetime.now().strftime("%H-%M-%S")
+
+                if hint_counter is not None and hint_timestamp:
+                    existing = TimelineRecorder.event_counters[start_time]
+                    if hint_counter > existing:
+                        count = hint_counter
+                    else:
+                        count = existing + 1
+                    TimelineRecorder.event_counters[start_time] = count
+                else:
+                    TimelineRecorder.event_counters[start_time] += 1
+                    count = TimelineRecorder.event_counters[start_time]
+
                 self.event_timestamp = start_time
                 self.event_counter = count
                 self.trigger_rms = int(rms_val)
@@ -1030,6 +1061,8 @@ class TimelineRecorder:
         self.event_counter = None
         self.trigger_rms = None
         self.event_started_epoch = None
+        self._ingest_hint = None
+        self._ingest_hint_used = True
 
     def flush(self, idx: int):
         if self.active:

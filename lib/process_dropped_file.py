@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from lib.segmenter import (
     ENCODING_STATUS,
     FRAME_BYTES,
+    RecorderIngestHint,
     SAMPLE_RATE,
     SAMPLE_WIDTH,
     TimelineRecorder,
@@ -29,6 +31,9 @@ ALLOWED_EXT = set(x.lower() for x in cfg["ingest"]["allowed_ext"])
 IGNORE_SUFFIXES = set(cfg["ingest"]["ignore_suffixes"])
 RETRY_SUFFIX = "-RETRY"
 OUTPUT_SUFFIXES = (".opus",)
+
+TIMESTAMP_TOKEN_RE = re.compile(r"^\d{2}-\d{2}-\d{2}$")
+COUNTER_TOKEN_RE = re.compile(r"^\d+$")
 
 
 def _should_lower_priority() -> bool:
@@ -368,6 +373,31 @@ def _move_to_work(p: Path) -> Path:
     os.replace(p, dest)  # atomic rename within the same filesystem
     return dest
 
+
+def _extract_ingest_hint(path: Path) -> RecorderIngestHint | None:
+    base = path.stem
+    if not base:
+        return None
+
+    normalized = base
+    lower = normalized.lower()
+    retry_suffix = RETRY_SUFFIX.lower()
+    if lower.endswith(retry_suffix):
+        normalized = normalized[: -len(RETRY_SUFFIX)]
+
+    tokens = [token for token in normalized.split("_") if token]
+    timestamp = next((tok for tok in tokens if TIMESTAMP_TOKEN_RE.fullmatch(tok)), None)
+    if not timestamp:
+        return None
+
+    counter: int | None = None
+    for token in reversed(tokens):
+        if COUNTER_TOKEN_RE.fullmatch(token):
+            counter = int(token)
+            break
+
+    return RecorderIngestHint(timestamp=timestamp, event_counter=counter)
+
 def scan_and_ingest() -> None:
     _prepare_work_area()
     _retry_stalled_work_files()
@@ -395,7 +425,8 @@ def process_file(path):
     path_obj = Path(path)
     print(f"[dropbox] Processing {path_obj}", flush=True)
 
-    rec = TimelineRecorder()
+    ingest_hint = _extract_ingest_hint(path_obj)
+    rec = TimelineRecorder(ingest_hint=ingest_hint)
     idx = 0
 
     with _pcm_source(path_obj) as stream:
