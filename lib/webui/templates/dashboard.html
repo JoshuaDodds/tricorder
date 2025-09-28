@@ -164,17 +164,73 @@
           <h1>Dashboard</h1>
         </div>
         <div class="header-actions">
-          <div class="header-status">
+          <div class="header-controls">
             <div
-              id="recording-indicator"
-              class="recording-indicator"
+              id="rms-indicator"
+              class="rms-indicator"
               role="status"
               aria-live="polite"
-              aria-hidden="false"
-              data-state="unknown"
+              aria-hidden="true"
+              data-visible="false"
             >
-              <span class="indicator-dot" aria-hidden="true"></span>
-              <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+              <span class="label">RMS:</span>
+              <span id="rms-indicator-value" class="value">0</span>
+            </div>
+            <button
+              id="theme-toggle"
+              class="ghost-button"
+              type="button"
+              aria-pressed="false"
+              aria-label="Toggle light and dark theme"
+            >
+              Toggle theme
+            </button>
+            <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
+            <div
+              id="refresh-indicator"
+              class="refresh-indicator"
+              role="status"
+              aria-live="polite"
+              aria-hidden="true"
+              data-visible="false"
+            >
+              <span class="refresh-spinner" aria-hidden="true"></span>
+              <span class="refresh-text">Refreshing…</span>
+            </div>
+          </div>
+          <div class="header-status-group">
+            <div class="status-labels">
+              <div
+                id="recording-indicator"
+                class="status-pill recording-indicator"
+                role="status"
+                aria-live="polite"
+                aria-hidden="false"
+                data-state="unknown"
+              >
+                <span class="indicator-dot" aria-hidden="true"></span>
+                <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+              </div>
+              <div
+                id="recording-meta"
+                class="status-pill"
+                role="status"
+                aria-live="polite"
+                aria-hidden="true"
+                data-visible="false"
+              >
+                <span id="recording-meta-text" class="indicator-text"></span>
+              </div>
+              <div
+                id="encoding-status"
+                class="status-pill"
+                role="status"
+                aria-live="polite"
+                aria-hidden="true"
+                data-visible="false"
+              >
+                <span id="encoding-status-text" class="indicator-text"></span>
+              </div>
             </div>
             <div
               id="connection-status"
@@ -185,38 +241,6 @@
               data-visible="false"
             ></div>
           </div>
-          <div
-            id="rms-indicator"
-            class="rms-indicator"
-            role="status"
-            aria-live="polite"
-            aria-hidden="true"
-            data-visible="false"
-          >
-            <span class="label">RMS:</span>
-            <span id="rms-indicator-value" class="value">0</span>
-          </div>
-          <button
-            id="theme-toggle"
-            class="ghost-button"
-            type="button"
-            aria-pressed="false"
-            aria-label="Toggle light and dark theme"
-          >
-            Toggle theme
-          </button>
-          <div
-            id="refresh-indicator"
-            class="refresh-indicator"
-            role="status"
-            aria-live="polite"
-            aria-hidden="true"
-            data-visible="false"
-          >
-            <span class="refresh-spinner" aria-hidden="true"></span>
-            <span class="refresh-text">Refreshing…</span>
-          </div>
-          <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
         </div>
       </header>
       <section class="status-bar">
