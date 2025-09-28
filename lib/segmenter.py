@@ -913,7 +913,7 @@ class TimelineRecorder:
         if self.post_count <= 0:
             self._finalize_event(reason=f"no active input for {POST_PAD}ms")
 
-    def _finalize_event(self, reason: str):
+    def _finalize_event(self, reason: str, wait_for_encode_start: bool = False):
         if self.frames_written <= 0 or not self.base_name:
             self._reset_event_state()
             return
@@ -947,7 +947,7 @@ class TimelineRecorder:
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
             job_id = _enqueue_encode_job(tmp_wav_path, final_base)
-            if job_id is not None:
+            if job_id is not None and wait_for_encode_start:
                 started = ENCODING_STATUS.wait_for_start(job_id, SHUTDOWN_ENCODE_START_TIMEOUT)
                 if not started:
                     print(
@@ -1018,7 +1018,7 @@ class TimelineRecorder:
     def flush(self, idx: int):
         if self.active:
             print(f"[segmenter] Flushing active event at frame {idx} (reason: shutdown)", flush=True)
-            self._finalize_event(reason="shutdown")
+            self._finalize_event(reason="shutdown", wait_for_encode_start=True)
         try:
             self.audio_q.put_nowait(None)
         except Exception:
