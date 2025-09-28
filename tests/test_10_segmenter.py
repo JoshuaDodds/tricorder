@@ -55,6 +55,50 @@ def test_flush_does_not_block_on_encode(monkeypatch):
     assert timeout == segmenter.SHUTDOWN_ENCODE_START_TIMEOUT
 
 
+def test_custom_event_tags_apply_to_recordings(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir.mkdir()
+    recordings_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(recordings_dir))
+    monkeypatch.setitem(segmenter.cfg["paths"], "tmp_dir", str(tmp_dir))
+    monkeypatch.setitem(segmenter.cfg["paths"], "recordings_dir", str(recordings_dir))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+
+    monkeypatch.setitem(segmenter.EVENT_TAGS, "both", "Eve")
+    monkeypatch.setitem(segmenter.EVENT_TAGS, "other", "Ambient")
+    monkeypatch.setattr(segmenter, "rms", lambda buf: 1200)
+    monkeypatch.setattr(segmenter, "is_voice", lambda buf: False)
+
+    captured: dict[str, str] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str) -> int:
+        captured["tmp"] = tmp_wav_path
+        captured["base"] = base_name
+        return 99
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+    monkeypatch.setattr(segmenter.ENCODING_STATUS, "wait_for_start", lambda job_id, timeout: True)
+
+    rec = TimelineRecorder()
+    frame = b"\x00\x00" * (FRAME_BYTES // 2)
+    rec.ingest(frame, 0)
+
+    assert rec.base_name is not None
+    assert rec.base_name.split("_")[1] == "Eve"
+
+    rec.flush(1)
+    rec.writer.join(timeout=1)
+
+    assert "base" in captured
+    assert captured["base"].split("_")[1] == "Ambient"
+
+
 def test_adaptive_threshold_updates(monkeypatch):
     fake_time = [0.0]
 
@@ -193,3 +237,9 @@ def test_apply_gain_scales_and_clips(monkeypatch):
     neg_sample = (-3).to_bytes(2, 'little', signed=True)
     scaled_neg = segmenter.TimelineRecorder._apply_gain(neg_sample)
     assert read_sample(scaled_neg) == -2
+
+
+def test_normalise_event_tag_sanitises_values():
+    assert segmenter._normalise_event_tag("  Eve & Friends  ", "Fallback") == "Eve-Friends"
+    assert segmenter._normalise_event_tag("", "Fallback") == "Fallback"
+    assert segmenter._normalise_event_tag(None, "Fallback") == "Fallback"

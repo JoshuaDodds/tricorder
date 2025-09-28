@@ -278,7 +278,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, and customizable event tags.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
@@ -337,6 +337,7 @@ Set `notifications.enabled` to `true` to emit callbacks after each recorded even
 Common tunables include:
 
 - `notifications.allowed_event_types` – restrict alerts to specific event classifications (e.g., `["Human", "Both"]`).
+- `segmenter.event_tags` – rename classification labels (e.g., `both: "Eve"`); adjust notification and transcription filters to match new names.
 - `notifications.min_trigger_rms` – only notify on clips that exceed the configured RMS threshold.
 - `notifications.webhook.headers` / `method` / `timeout_sec` – customize webhook POST requests for downstream services.
 - `notifications.email.subject_template` / `body_template` – adjust the rendered message content for email delivery.

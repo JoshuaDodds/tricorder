@@ -64,6 +64,11 @@ _DEFAULTS: Dict[str, Any] = {
         "denoise_before_vad": False,
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
+        "event_tags": {
+            "human": "Human",
+            "other": "Other",
+            "both": "Both",
+        },
     },
     "adaptive_rms": {
         "enabled": False,

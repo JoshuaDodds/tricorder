@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import sys
 import time
 import collections
@@ -24,6 +25,69 @@ from lib.notifications import build_dispatcher
 
 cfg = get_cfg()
 NOTIFIER = build_dispatcher(cfg.get("notifications"))
+
+_DEFAULT_EVENT_TAGS = {
+    "human": "Human",
+    "other": "Other",
+    "both": "Both",
+}
+
+_EVENT_TAG_ALIASES = {
+    "human": ("human", "voiced", "speech"),
+    "other": ("other", "ambient", "noise"),
+    "both": ("both", "combined", "hybrid"),
+}
+
+
+def _normalise_event_tag(value, fallback: str) -> str:
+    if isinstance(value, str):
+        candidate = value.strip()
+    elif value is None:
+        candidate = ""
+    else:
+        candidate = str(value).strip()
+
+    if not candidate:
+        return fallback
+
+    candidate = re.sub(r"\s+", "-", candidate)
+    candidate = re.sub(r"[^A-Za-z0-9-]", "", candidate)
+    candidate = re.sub(r"-+", "-", candidate)
+    candidate = candidate.strip("-")
+
+    return candidate or fallback
+
+
+def _load_event_tags(section) -> dict[str, str]:
+    if isinstance(section, dict):
+        lowered = {str(key).strip().lower(): value for key, value in section.items()}
+    else:
+        lowered = {}
+
+    resolved: dict[str, str] = {}
+    for canonical, fallback in _DEFAULT_EVENT_TAGS.items():
+        override = None
+        for alias in _EVENT_TAG_ALIASES.get(canonical, (canonical,)):
+            if alias in lowered:
+                override = lowered[alias]
+                break
+        resolved[canonical] = _normalise_event_tag(override, fallback)
+    return resolved
+
+
+EVENT_TAGS = _load_event_tags(cfg.get("segmenter", {}).get("event_tags"))
+
+
+def _event_tag(kind: str) -> str:
+    return EVENT_TAGS.get(kind, _DEFAULT_EVENT_TAGS[kind])
+
+
+def _classify_event_tag(saw_voiced: bool, saw_loud: bool) -> str:
+    if saw_voiced and saw_loud:
+        return _event_tag("both")
+    if saw_voiced:
+        return _event_tag("human")
+    return _event_tag("other")
 
 # ANSI colors for booleans (can be disabled via NO_COLOR env)
 ANSI_GREEN = "\033[32m"
@@ -868,7 +932,7 @@ class TimelineRecorder:
                 self.event_timestamp = start_time
                 self.event_counter = count
                 self.trigger_rms = int(rms_val)
-                self.base_name = f"{start_time}_Both_{count}"
+                self.base_name = f"{start_time}_{_event_tag('both')}_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
 
                 self._q_send(('open', self.base_name, self.tmp_wav_path))
@@ -918,7 +982,7 @@ class TimelineRecorder:
             self._reset_event_state()
             return
 
-        etype = "Both" if (self.saw_voiced and self.saw_loud) else ("Human" if self.saw_voiced else "Other")
+        etype = _classify_event_tag(self.saw_voiced, self.saw_loud)
         avg_rms = (self.sum_rms / self.frames_written) if self.frames_written else 0.0
         trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 
