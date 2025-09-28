@@ -12,6 +12,7 @@ from pathlib import Path
 
 from lib.segmenter import (
     ENCODING_STATUS,
+    ENCODE_QUEUE,
     FRAME_BYTES,
     RecorderIngestHint,
     SAMPLE_RATE,
@@ -435,12 +436,24 @@ def scan_and_ingest() -> None:
 
         _handle_work_file(work_file)
 
+
+def _wait_for_encode_completion() -> None:
+    try:
+        ENCODE_QUEUE.join()
+    except KeyboardInterrupt:
+        raise
+
+
 def process_file(path):
     path_obj = Path(path)
     print(f"[dropbox] Processing {path_obj}", flush=True)
 
     ingest_hint = _extract_ingest_hint(path_obj)
-    rec = TimelineRecorder(ingest_hint=ingest_hint)
+    rec = TimelineRecorder(
+        ingest_hint=ingest_hint,
+        status_mode="ingest",
+        recording_source="dropbox",
+    )
     idx = 0
 
     with _pcm_source(path_obj) as stream:
@@ -454,6 +467,7 @@ def process_file(path):
 
     # Ensure finalization of last segment(s)
     rec.flush(idx)
+    _wait_for_encode_completion()
     print(f"[dropbox] Finished processing {path_obj}", flush=True)
 
 if __name__ == "__main__":

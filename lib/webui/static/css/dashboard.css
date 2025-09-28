@@ -549,6 +549,17 @@ body[data-theme="light"] .app-menu-toggle {
   white-space: normal;
 }
 
+#recording-meta[data-state="active"] {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+  box-shadow: 0 10px 24px -18px var(--danger-ring);
+}
+
+#recording-meta[data-state="active"] .indicator-text {
+  color: inherit;
+}
+
 .recording-indicator {
   color: var(--text-muted);
   gap: 0.5rem;

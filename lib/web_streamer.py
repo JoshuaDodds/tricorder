@@ -2470,6 +2470,9 @@ def build_app() -> web.Application:
                     base_name = item.get("base_name")
                     if isinstance(base_name, str) and base_name:
                         entry["base_name"] = base_name
+                    source = item.get("source")
+                    if isinstance(source, str) and source:
+                        entry["source"] = source
                     job_id = item.get("id")
                     if isinstance(job_id, (int, float)) and math.isfinite(job_id):
                         entry["id"] = int(job_id)
@@ -2489,6 +2492,9 @@ def build_app() -> web.Application:
                 base_name = active_raw.get("base_name")
                 if isinstance(base_name, str) and base_name:
                     active_entry["base_name"] = base_name
+                source = active_raw.get("source")
+                if isinstance(source, str) and source:
+                    active_entry["source"] = source
                 job_id = active_raw.get("id")
                 if isinstance(job_id, (int, float)) and math.isfinite(job_id):
                     active_entry["id"] = int(job_id)

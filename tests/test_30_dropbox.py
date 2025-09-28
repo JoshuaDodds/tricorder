@@ -195,7 +195,7 @@ def test_process_file_uses_filename_timestamp(tmp_path, monkeypatch):
 
     captured: dict[str, str] = {}
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str) -> None:
+    def fake_enqueue(tmp_wav_path: str, base_name: str, **_kwargs) -> None:
         captured["base_name"] = base_name
         return None
 

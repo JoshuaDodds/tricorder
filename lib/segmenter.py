@@ -291,6 +291,7 @@ class EncodingStatus:
                 "id": entry.get("id"),
                 "base_name": entry.get("base_name", ""),
                 "queued_at": entry.get("queued_at"),
+                "source": entry.get("source"),
                 "status": "pending",
             }
             for entry in pending
@@ -302,6 +303,7 @@ class EncodingStatus:
                 "base_name": active.get("base_name", ""),
                 "queued_at": active.get("queued_at"),
                 "started_at": active.get("started_at"),
+                "source": active.get("source"),
                 "status": "active",
             }
         if not pending_payload and not active_payload:
@@ -318,7 +320,7 @@ class EncodingStatus:
             except Exception:
                 pass
 
-    def enqueue(self, base_name: str) -> int:
+    def enqueue(self, base_name: str, *, source: str = "live") -> int:
         with self._cond:
             job_id = self._next_id
             self._next_id += 1
@@ -327,6 +329,7 @@ class EncodingStatus:
                     "id": job_id,
                     "base_name": base_name,
                     "queued_at": time.time(),
+                    "source": source,
                 }
             )
             self._cond.notify_all()
@@ -346,9 +349,12 @@ class EncodingStatus:
                     "id": job_id,
                     "base_name": base_name,
                     "queued_at": time.time(),
+                    "source": "unknown",
                 }
             else:
                 job["base_name"] = base_name
+                if "source" not in job or not isinstance(job.get("source"), str):
+                    job["source"] = "unknown"
             job["started_at"] = time.time()
             self._active = job
             self._cond.notify_all()
@@ -436,11 +442,16 @@ def _ensure_encoder_worker() -> None:
             _ENCODE_WORKER.start()
 
 
-def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> int | None:
+def _enqueue_encode_job(
+    tmp_wav_path: str,
+    base_name: str,
+    *,
+    source: str = "live",
+) -> int | None:
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
-    job_id = ENCODING_STATUS.enqueue(base_name)
+    job_id = ENCODING_STATUS.enqueue(base_name, source=source)
     try:
         ENCODE_QUEUE.put_nowait((job_id, tmp_wav_path, base_name))
     except queue.Full:
@@ -563,7 +574,13 @@ class AdaptiveRmsController:
 class TimelineRecorder:
     event_counters = collections.defaultdict(int)
 
-    def __init__(self, ingest_hint: Optional[RecorderIngestHint] = None):
+    def __init__(
+        self,
+        ingest_hint: Optional[RecorderIngestHint] = None,
+        *,
+        status_mode: str = "live",
+        recording_source: str = "live",
+    ):
         self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
         self.active = False
         self.post_count = 0
@@ -610,22 +627,46 @@ class TimelineRecorder:
         self._status_cache: dict[str, object] | None = None
         self._status_lock = threading.Lock()
         self._encoding_status: dict[str, object] | None = None
+        normalized_mode = status_mode.strip().lower() if isinstance(status_mode, str) else "live"
+        if normalized_mode not in {"live", "ingest"}:
+            raise ValueError("status_mode must be 'live' or 'ingest'")
+        self._status_mode = normalized_mode
+        normalized_source = (
+            recording_source.strip().lower()
+            if isinstance(recording_source, str)
+            else "live"
+        )
+        self._recording_source = normalized_source or "live"
+        if self._status_mode == "ingest":
+            self._load_status_cache_from_disk()
         ENCODING_STATUS.register_listener(self._handle_encoding_status_change)
         self.event_started_epoch: float | None = None
         self._metrics_interval = 0.5
         self._last_metrics_update = 0.0
         self._last_metrics_value: int | None = None
         self._last_metrics_threshold: int | None = None
-        self._update_capture_status(
-            False,
-            reason="idle",
-            extra={
-                "service_running": True,
-                "current_rms": 0,
-                "event_duration_seconds": None,
-                "event_size_bytes": None,
-            },
-        )
+        if self._status_mode == "live":
+            self._update_capture_status(
+                False,
+                reason="idle",
+                extra={
+                    "service_running": True,
+                    "current_rms": 0,
+                    "event_duration_seconds": None,
+                    "event_size_bytes": None,
+                },
+            )
+
+    def _load_status_cache_from_disk(self) -> None:
+        if not self.status_path:
+            return
+        try:
+            with open(self.status_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        if isinstance(data, dict):
+            self._status_cache = data
 
     def _update_capture_status(
         self,
@@ -637,27 +678,33 @@ class TimelineRecorder:
         extra: dict[str, object] | None = None,
     ) -> None:
         with self._status_lock:
+            if self._status_mode == "ingest" and self._status_cache is None:
+                self._load_status_cache_from_disk()
             payload: dict[str, object] = {}
             if isinstance(self._status_cache, dict):
                 payload.update(self._status_cache)
 
-            payload.update(
-                {
-                    "capturing": bool(capturing),
-                    "updated_at": time.time(),
-                    "adaptive_rms_threshold": int(self._adaptive.threshold_linear),
-                }
-            )
-            if capturing and event:
-                payload["event"] = event
-                payload.pop("last_event", None)
-            if not capturing and last_event:
-                payload["last_event"] = last_event
-            if not capturing and "event" in payload:
-                payload.pop("event", None)
-            if reason:
-                payload["last_stop_reason"] = reason
+            effective_capturing = bool(capturing)
+            if self._status_mode == "ingest":
+                effective_capturing = bool(payload.get("capturing", False))
 
+            payload["capturing"] = effective_capturing
+            payload["updated_at"] = time.time()
+            if self._status_mode == "live":
+                payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
+            elif "adaptive_rms_threshold" not in payload:
+                payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
+
+            if self._status_mode == "live":
+                if effective_capturing and event:
+                    payload["event"] = event
+                    payload.pop("last_event", None)
+                if not effective_capturing and last_event:
+                    payload["last_event"] = last_event
+                if not effective_capturing and "event" in payload:
+                    payload.pop("event", None)
+                if reason:
+                    payload["last_stop_reason"] = reason
             if self._encoding_status:
                 payload["encoding"] = self._encoding_status
             else:
@@ -675,7 +722,7 @@ class TimelineRecorder:
                 "event_size_bytes",
                 "encoding",
             )
-            if extra:
+            if extra and self._status_mode == "live":
                 for key, value in extra.items():
                     if value is None:
                         payload.pop(key, None)
@@ -753,6 +800,8 @@ class TimelineRecorder:
             return None
 
     def _maybe_update_live_metrics(self, rms_value: int) -> None:
+        if self._status_mode != "live":
+            return
         now = time.monotonic()
         whole = int(rms_value)
         threshold = int(self._adaptive.threshold_linear)
@@ -786,6 +835,8 @@ class TimelineRecorder:
         )
 
     def _emit_threshold_update(self) -> None:
+        if self._status_mode != "live":
+            return
         cached = self._status_cache or {}
         capturing = bool(cached.get("capturing", self.active))
         event = cached.get("event") if capturing else None
@@ -937,7 +988,8 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
-                self._update_capture_status(True, event=event_status)
+                if self._status_mode == "live":
+                    self._update_capture_status(True, event=event_status)
             return
 
         self._q_send(bytes(buf))
@@ -993,7 +1045,11 @@ class TimelineRecorder:
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             safe_etype = _sanitize_event_tag(etype_label)
             final_base = f"{event_ts}_{safe_etype}_RMS-{trigger_rms}_{event_count}"
-            job_id = _enqueue_encode_job(tmp_wav_path, final_base)
+            job_id = _enqueue_encode_job(
+                tmp_wav_path,
+                final_base,
+                source=self._recording_source,
+            )
             if job_id is not None and wait_for_encode_start:
                 started = ENCODING_STATUS.wait_for_start(job_id, SHUTDOWN_ENCODE_START_TIMEOUT)
                 if not started:
@@ -1028,12 +1084,13 @@ class TimelineRecorder:
             }
 
         last_event_status["end_reason"] = reason
-        self._update_capture_status(
-            False,
-            last_event=last_event_status,
-            reason=reason,
-            extra={"event_duration_seconds": None, "event_size_bytes": None},
-        )
+        if self._status_mode == "live":
+            self._update_capture_status(
+                False,
+                last_event=last_event_status,
+                reason=reason,
+                extra={"event_duration_seconds": None, "event_size_bytes": None},
+            )
         if NOTIFIER:
             try:
                 NOTIFIER.handle_event(last_event_status)
@@ -1078,17 +1135,18 @@ class TimelineRecorder:
             cached_last = self._status_cache.get("last_event")
             if isinstance(cached_last, dict):
                 last_event = cached_last
-        self._update_capture_status(
-            False,
-            last_event=last_event,
-            reason="shutdown",
-            extra={
-                "service_running": False,
-                "current_rms": 0,
-                "event_duration_seconds": None,
-                "event_size_bytes": None,
-            },
-        )
+        if self._status_mode == "live":
+            self._update_capture_status(
+                False,
+                last_event=last_event,
+                reason="shutdown",
+                extra={
+                    "service_running": False,
+                    "current_rms": 0,
+                    "event_duration_seconds": None,
+                    "event_size_bytes": None,
+                },
+            )
 
 
 def main():
