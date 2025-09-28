@@ -244,11 +244,13 @@ class _WriterWorker(threading.Thread):
 ENCODE_QUEUE: queue.Queue = queue.Queue()
 _ENCODE_WORKER = None
 _ENCODE_LOCK = threading.Lock()
+SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
 
 
 class EncodingStatus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
         self._pending: collections.deque[dict[str, object]] = collections.deque()
         self._active: dict[str, object] | None = None
         self._next_id = 1
@@ -299,7 +301,7 @@ class EncodingStatus:
                 pass
 
     def enqueue(self, base_name: str) -> int:
-        with self._lock:
+        with self._cond:
             job_id = self._next_id
             self._next_id += 1
             self._pending.append(
@@ -309,11 +311,12 @@ class EncodingStatus:
                     "queued_at": time.time(),
                 }
             )
+            self._cond.notify_all()
         self._notify()
         return job_id
 
     def mark_started(self, job_id: int, base_name: str) -> None:
-        with self._lock:
+        with self._cond:
             job = None
             for entry in list(self._pending):
                 if entry.get("id") == job_id:
@@ -330,13 +333,38 @@ class EncodingStatus:
                 job["base_name"] = base_name
             job["started_at"] = time.time()
             self._active = job
+            self._cond.notify_all()
         self._notify()
 
     def mark_finished(self, job_id: int) -> None:
-        with self._lock:
+        with self._cond:
             if self._active and self._active.get("id") == job_id:
                 self._active = None
+            self._cond.notify_all()
         self._notify()
+
+    def wait_for_start(self, job_id: int, timeout: float | None = None) -> bool:
+        deadline: float | None = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+
+        with self._cond:
+            while True:
+                if self._active and self._active.get("id") == job_id:
+                    return True
+
+                if not any(entry.get("id") == job_id for entry in self._pending):
+                    return True
+
+                if timeout is None:
+                    self._cond.wait()
+                    continue
+
+                assert deadline is not None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
 
 
 ENCODING_STATUS = EncodingStatus()
@@ -390,9 +418,9 @@ def _ensure_encoder_worker() -> None:
             _ENCODE_WORKER.start()
 
 
-def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> None:
+def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> int | None:
     if not tmp_wav_path or not base_name:
-        return
+        return None
     _ensure_encoder_worker()
     job_id = ENCODING_STATUS.enqueue(base_name)
     try:
@@ -400,6 +428,7 @@ def _enqueue_encode_job(tmp_wav_path: str, base_name: str) -> None:
     except queue.Full:
         ENCODE_QUEUE.put((job_id, tmp_wav_path, base_name))
     print(f"[segmenter] queued encode job for {base_name}", flush=True)
+    return job_id
 
 
 class AdaptiveRmsController:
@@ -910,13 +939,24 @@ class TimelineRecorder:
             flush=True
         )
 
+        job_id: int | None = None
         if tmp_wav_path and base:
             day = time.strftime("%Y%m%d")
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
             event_ts = self.event_timestamp or base.split("_", 1)[0]
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
-            _enqueue_encode_job(tmp_wav_path, final_base)
+            job_id = _enqueue_encode_job(tmp_wav_path, final_base)
+            if job_id is not None:
+                started = ENCODING_STATUS.wait_for_start(job_id, SHUTDOWN_ENCODE_START_TIMEOUT)
+                if not started:
+                    print(
+                        (
+                            "[segmenter] WARN: encode worker did not start within "
+                            f"{SHUTDOWN_ENCODE_START_TIMEOUT:.1f}s (job {job_id})"
+                        ),
+                        flush=True,
+                    )
 
             last_event_status = {
                 "base_name": final_base,
@@ -981,11 +1021,6 @@ class TimelineRecorder:
             self._finalize_event(reason="shutdown")
         try:
             self.audio_q.put_nowait(None)
-        except Exception:
-            pass
-
-        try:
-            ENCODE_QUEUE.join()
         except Exception:
             pass
 
