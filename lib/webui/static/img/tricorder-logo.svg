@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Tricorder logo">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#4bdeff" stop-opacity="0.9" />
+      <stop offset="55%" stop-color="#1f5eb3" stop-opacity="0.65" />
+      <stop offset="100%" stop-color="#01102a" stop-opacity="0.85" />
+    </radialGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#65fff7" />
+      <stop offset="100%" stop-color="#0bb4d5" />
+    </linearGradient>
+  </defs>
+  <g transform="translate(4 4)">
+    <rect width="56" height="56" rx="14" fill="url(#glow)" />
+    <path
+      d="M12 38h8a1 1 0 0 0 1-1v-7.5l3.1 4.4a1 1 0 0 0 1.6 0l3.1-4.4 3.1 4.4a1 1 0 0 0 1.6 0l3.1-4.4V37a1 1 0 0 0 1 1h7"
+      fill="none"
+      stroke="#9bf4ff"
+      stroke-width="3"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M14 18h6c1.1 0 2 .9 2 2v6l-4-3-4 3v-6c0-1.1.9-2 2-2zm20.5 0h9a1.5 1.5 0 0 1 1.1 2.5L39.6 26l4.9 6.3A1.5 1.5 0 0 1 43.1 34h-8.6a1.5 1.5 0 0 1-1.5-1.5v-13a1.5 1.5 0 0 1 1.5-1.5z"
+      fill="url(#accent)"
+    />
+  </g>
+</svg>
