@@ -1,3 +1,4 @@
+import lib.config as config
 from lib.notifications import (
     NotificationDispatcher,
     NotificationFilters,
@@ -59,3 +60,18 @@ def test_dispatcher_matches(monkeypatch):
 
     dummy.handle_event({"trigger_rms": 400, "etype": "Both"})
     assert dummy.webhook_payloads and dummy.email_payloads
+
+
+def test_filters_resolve_custom_event_tags(monkeypatch):
+    monkeypatch.setenv("EVENT_TAG_HUMAN", "Speech")
+    config.reload_cfg()
+    try:
+        filters = NotificationFilters.from_cfg(
+            {"allowed_event_types": ["Human"], "min_trigger_rms": None}
+        )
+
+        assert filters.matches({"trigger_rms": 0, "etype": "Speech"})
+        assert not filters.matches({"trigger_rms": 0, "etype": "Other"})
+    finally:
+        monkeypatch.delenv("EVENT_TAG_HUMAN", raising=False)
+        config.reload_cfg()
