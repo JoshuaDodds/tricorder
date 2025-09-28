@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import sys
 import time
 import collections
@@ -50,6 +51,14 @@ FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
+
+SAFE_EVENT_TAG_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _sanitize_event_tag(tag: str) -> str:
+    sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
+    sanitized = sanitized.strip("_-")
+    return sanitized or "event"
 
 
 def pcm16_rms(buf: bytes) -> int:
@@ -921,7 +930,8 @@ class TimelineRecorder:
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
             event_ts = self.event_timestamp or base.split("_", 1)[0]
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
-            final_base = f"{event_ts}_{etype}_RMS-{trigger_rms}_{event_count}"
+            safe_etype = _sanitize_event_tag(etype)
+            final_base = f"{event_ts}_{safe_etype}_RMS-{trigger_rms}_{event_count}"
             _enqueue_encode_job(tmp_wav_path, final_base)
 
             last_event_status = {
