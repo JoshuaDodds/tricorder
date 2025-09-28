@@ -16,6 +16,12 @@ Before pushing:
 3. Push back to the same branch on origin with:
    git push origin HEAD:<branch-name>
 
+If you are review another Agent's PR:
+- Always leave a short review comment summarizing what you did, test results, and risk assessment.
+- If all tests pass and the PR is safe to merge, submit a formal GitHub PR review with "Approve" status (not just a 👍 reaction).
+- If there are issues or risks, submit a "Comment" or "Request changes" review instead, explaining why.
+- Reactions (👍) alone are not sufficient; every PR must have a visible comment and, when ready, a formal approval.
+
 ---
 
 ## Design & Architecture Impression (high-level guidance)
