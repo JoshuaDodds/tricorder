@@ -390,6 +390,28 @@ class EncodingStatus:
                     return False
                 self._cond.wait(remaining)
 
+    def wait_for_finish(self, job_id: int, timeout: float | None = None) -> bool:
+        deadline: float | None = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+
+        with self._cond:
+            while True:
+                active_match = self._active and self._active.get("id") == job_id
+                pending_match = any(entry.get("id") == job_id for entry in self._pending)
+                if not active_match and not pending_match:
+                    return True
+
+                if timeout is None:
+                    self._cond.wait()
+                    continue
+
+                assert deadline is not None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+
 
 ENCODING_STATUS = EncodingStatus()
 
@@ -622,6 +644,7 @@ class TimelineRecorder:
 
         self._ingest_hint: Optional[RecorderIngestHint] = ingest_hint
         self._ingest_hint_used = False
+        self._encode_jobs: list[int] = []
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -1050,6 +1073,8 @@ class TimelineRecorder:
                 final_base,
                 source=self._recording_source,
             )
+            if job_id is not None:
+                self._encode_jobs.append(job_id)
             if job_id is not None and wait_for_encode_start:
                 started = ENCODING_STATUS.wait_for_start(job_id, SHUTDOWN_ENCODE_START_TIMEOUT)
                 if not started:
@@ -1147,6 +1172,9 @@ class TimelineRecorder:
                     "event_size_bytes": None,
                 },
             )
+
+    def encode_job_ids(self) -> tuple[int, ...]:
+        return tuple(self._encode_jobs)
 
 
 def main():
