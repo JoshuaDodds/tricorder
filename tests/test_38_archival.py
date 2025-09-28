@@ -36,6 +36,8 @@ def test_network_share_upload_and_waveform_gate(tmp_path, monkeypatch):
     opus.write_bytes(b"opus")
     waveform = Path(f"{opus}.waveform.json")
     waveform.write_text("{}", encoding="utf-8")
+    transcript = Path(f"{opus}.transcript.json")
+    transcript.write_text("{\"text\": \"hello\"}", encoding="utf-8")
 
     config = {
         "paths": {"recordings_dir": str(recordings_dir)},
@@ -44,20 +46,29 @@ def test_network_share_upload_and_waveform_gate(tmp_path, monkeypatch):
             "backend": "network_share",
             "network_share": {"target_dir": str(archive_dir)},
             "include_waveform_sidecars": False,
+            "include_transcript_sidecars": True,
         },
     }
 
     monkeypatch.setattr(archival, "get_cfg", lambda: config)
-    archival.upload_paths([str(opus), str(waveform)])
+    archival.upload_paths([str(opus), str(waveform), str(transcript)])
 
     copied_audio = archive_dir / "20240101" / "foo.opus"
     assert copied_audio.exists()
     assert not (archive_dir / "20240101" / "foo.opus.waveform.json").exists()
+    copied_transcript = archive_dir / "20240101" / "foo.opus.transcript.json"
+    assert copied_transcript.exists()
 
     config["archival"]["include_waveform_sidecars"] = True
     monkeypatch.setattr(archival, "get_cfg", lambda: config)
     archival.upload_paths([str(waveform)])
     assert (archive_dir / "20240101" / "foo.opus.waveform.json").exists()
+
+    copied_transcript.unlink()
+    config["archival"]["include_transcript_sidecars"] = False
+    monkeypatch.setattr(archival, "get_cfg", lambda: config)
+    archival.upload_paths([str(transcript)])
+    assert not copied_transcript.exists()
     monkeypatch.undo()
 
 
