@@ -1,4 +1,5 @@
 import io
+import collections
 import math
 import struct
 import subprocess
@@ -181,4 +182,31 @@ def test_pcm_source_does_not_lower_priority_when_idle(tmp_path, monkeypatch):
 
     assert "-threads" in captured_cmd
     assert not nice_calls
+
+
+def test_process_file_uses_filename_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(
+        segmenter.TimelineRecorder,
+        "event_counters",
+        collections.defaultdict(int),
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str) -> None:
+        captured["base_name"] = base_name
+        return None
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    wav_path = tmp_path / "12-34-56_Test_3-RETRY.wav"
+    make_test_wav(wav_path)
+
+    process_dropped_file.process_file(str(wav_path))
+
+    assert "base_name" in captured
+    base = captured["base_name"]
+    assert base.startswith("12-34-56_")
+    assert base.rsplit("_", 1)[-1] == "3"
 
