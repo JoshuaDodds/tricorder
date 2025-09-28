@@ -15,6 +15,7 @@ VENV="$BASE/venv"
 SYSTEMD_DIR="/etc/systemd/system"
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE=$VENV/lib/python$PY_VER/site-packages
+DEV_SENTINEL="$BASE/.dev-mode"
 
 UNITS=(voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder.target)
 
@@ -172,6 +173,7 @@ if [[ "${DEV:-0}" == "1" ]]; then
 fi
 
 if [[ "${DEV:-0}" != "1" ]]; then
+  rm -f "$DEV_SENTINEL"
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
   for unit in voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service tmpfs-guard.service tricorder-auto-update.service; do
@@ -186,6 +188,8 @@ if [[ "${DEV:-0}" != "1" ]]; then
   sudo systemctl restart tricorder.target || true
 
 else
+  say "DEV=1: marking install as dev mode"
+  touch "$DEV_SENTINEL"
   say "DEV=1: skipping systemctl enable/start"
 fi
 
