@@ -1451,6 +1451,20 @@ body[data-scroll-locked="true"] {
   gap: 1.5rem;
 }
 
+.config-dialog {
+  width: min(720px, 96vw);
+}
+
+.config-dialog-body {
+  gap: 0.75rem;
+}
+
+.config-dialog-body .code-block {
+  flex: 1 1 auto;
+  margin: 0;
+  max-height: min(520px, 70vh);
+}
+
 .recorder-section {
   border-left: 2px solid transparent;
   padding-left: 1.35rem;
@@ -2345,10 +2359,6 @@ body[data-scroll-locked="true"] {
 
   .table-responsive {
     padding: 0 1.1rem 1.1rem;
-  }
-
-  .config-card {
-    display: none;
   }
 
   #recordings-table {
