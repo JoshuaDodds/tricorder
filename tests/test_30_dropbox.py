@@ -1,4 +1,6 @@
 import io
+import collections
+import json
 import math
 import struct
 import subprocess
@@ -181,4 +183,97 @@ def test_pcm_source_does_not_lower_priority_when_idle(tmp_path, monkeypatch):
 
     assert "-threads" in captured_cmd
     assert not nice_calls
+
+
+def test_process_file_uses_filename_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(
+        segmenter.TimelineRecorder,
+        "event_counters",
+        collections.defaultdict(int),
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, **_kwargs) -> None:
+        captured["base_name"] = base_name
+        return None
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    wav_path = tmp_path / "12-34-56_Test_3-RETRY.wav"
+    make_test_wav(wav_path)
+
+    process_dropped_file.process_file(str(wav_path))
+
+    assert "base_name" in captured
+    base = captured["base_name"]
+    assert base.startswith("12-34-56_")
+    assert base.rsplit("_", 1)[-1] == "3"
+
+
+def test_cleanup_retry_artifacts_detects_duration_mismatch(tmp_path, monkeypatch):
+    recordings_dir = tmp_path / "recordings"
+    day_dir = recordings_dir / "20240102"
+    day_dir.mkdir(parents=True)
+
+    audio_path = day_dir / "clip.opus"
+    audio_path.write_bytes(b"dummy")
+    waveform_path = audio_path.with_suffix(".opus.waveform.json")
+    waveform_payload = {"duration_seconds": 12.0}
+    waveform_path.write_text(json.dumps(waveform_payload))
+
+    monkeypatch.setattr(process_dropped_file, "REC_DIR", recordings_dir)
+    monkeypatch.setattr(process_dropped_file, "OUTPUT_SUFFIXES", (".opus",))
+
+    probe_calls: list[Path] = []
+
+    def fake_probe(path: Path) -> float:
+        probe_calls.append(path)
+        return 3.0
+
+    monkeypatch.setattr(process_dropped_file, "_probe_audio_duration", fake_probe)
+
+    work_dir = tmp_path / "ingest"
+    work_dir.mkdir()
+    work_file = work_dir / "clip-RETRY.wav"
+    work_file.write_bytes(b"input")
+
+    process_dropped_file._cleanup_retry_artifacts(work_file)
+
+    placeholder = day_dir / "clip-CORRUPTED_RECORDING.json"
+    assert placeholder.exists()
+    payload = json.loads(placeholder.read_text())
+    assert payload["reason"] == "duration-mismatch"
+    assert payload["audio_duration_seconds"] == 3.0
+    assert payload["waveform_duration_seconds"] == 12.0
+    assert probe_calls == [audio_path]
+    assert not audio_path.exists()
+    assert not waveform_path.exists()
+
+
+def test_cleanup_retry_artifacts_handles_missing_waveform(tmp_path, monkeypatch):
+    recordings_dir = tmp_path / "recordings"
+    day_dir = recordings_dir / "20240103"
+    day_dir.mkdir(parents=True)
+
+    audio_path = day_dir / "clip.opus"
+    audio_path.write_bytes(b"dummy")
+
+    monkeypatch.setattr(process_dropped_file, "REC_DIR", recordings_dir)
+    monkeypatch.setattr(process_dropped_file, "OUTPUT_SUFFIXES", (".opus",))
+    monkeypatch.setattr(process_dropped_file, "_probe_audio_duration", lambda path: 5.0)
+
+    work_dir = tmp_path / "ingest"
+    work_dir.mkdir(exist_ok=True)
+    work_file = work_dir / "clip-RETRY.wav"
+    work_file.write_bytes(b"input")
+
+    process_dropped_file._cleanup_retry_artifacts(work_file)
+
+    placeholder = day_dir / "clip-CORRUPTED_RECORDING.json"
+    assert placeholder.exists()
+    payload = json.loads(placeholder.read_text())
+    assert payload["reason"] == "missing-waveform"
+    assert not audio_path.exists()
 

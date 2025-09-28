@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ page_title }}</title>
+    <link rel="icon" href="{{ static_url('img/tricorder-logo.svg') }}" type="image/svg+xml" />
     <link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}" />
     <script>
       window.TRICORDER_API_BASE = {{ api_base | default('', true) | tojson }};
@@ -109,6 +110,15 @@
                   Ingest pipeline
                 </button>
                 <button
+                  id="recorder-menu-transcription"
+                  class="menu-item recorder-menu-item"
+                  type="button"
+                  role="menuitem"
+                  data-recorder-section="transcription"
+                >
+                  Transcription
+                </button>
+                <button
                   id="recorder-menu-logging"
                   class="menu-item recorder-menu-item"
                   type="button"
@@ -146,7 +156,7 @@
                   aria-haspopup="dialog"
                   aria-expanded="false"
                 >
-                  Configuration snapshot
+                  Configuration
                 </button>
                 <button
                   id="archival-open"
@@ -175,17 +185,6 @@
         </div>
         <div class="header-actions">
           <div class="header-controls">
-            <div
-              id="rms-indicator"
-              class="rms-indicator"
-              role="status"
-              aria-live="polite"
-              aria-hidden="true"
-              data-visible="false"
-            >
-              <span class="label">RMS:</span>
-              <span id="rms-indicator-value" class="value">0</span>
-            </div>
             <button
               id="theme-toggle"
               class="ghost-button"
@@ -219,6 +218,15 @@
                 data-state="unknown"
               >
                 <span class="indicator-dot" aria-hidden="true"></span>
+                <span
+                  id="rms-indicator"
+                  class="rms-indicator"
+                  aria-hidden="true"
+                  data-visible="false"
+                >
+                  <span class="label">RMS</span>
+                  <span id="rms-indicator-value" class="value">0</span>
+                </span>
                 <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
               </div>
               <div
@@ -1003,6 +1011,93 @@
                 <div class="button-row">
                   <button id="ingest-reset" class="ghost-button" type="button" disabled>Reset</button>
                   <button id="ingest-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="transcription"
+            aria-labelledby="recorder-transcription-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-transcription-title" class="settings-section-title">Transcription</h3>
+              <p class="settings-section-description">
+                Enable offline speech recognition and control how transcripts are generated.
+              </p>
+            </div>
+            <form id="transcription-form" class="settings-subform" novalidate>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="transcription-enabled" type="checkbox" />
+                  <label for="transcription-enabled">Enable transcription</label>
+                </div>
+                <p class="field-description">
+                  Runs Vosk locally during encoding to produce <code>.transcript.json</code> sidecars.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="transcription-engine">Engine</label>
+                <select id="transcription-engine">
+                  <option value="vosk">Vosk (offline)</option>
+                </select>
+                <p class="field-description">Tricorder currently supports the Vosk offline recognizer.</p>
+              </div>
+              <div class="settings-field">
+                <label for="transcription-types">Event types to transcribe</label>
+                <textarea id="transcription-types" rows="3"></textarea>
+                <p class="field-description">
+                  One event label per line (e.g. <code>Human</code> or <code>Both</code>). Only matching recordings are processed.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="transcription-model-path">Vosk model path</label>
+                <input id="transcription-model-path" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Absolute path to the unpacked Vosk model directory (download separately).
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="transcription-target-sample-rate">Target sample rate (Hz)</label>
+                <input
+                  id="transcription-target-sample-rate"
+                  type="number"
+                  min="8000"
+                  max="96000"
+                  step="1000"
+                />
+                <p class="field-description">
+                  Audio is resampled before recognition. 16000&nbsp;Hz matches the small English models.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="transcription-include-words" type="checkbox" />
+                  <label for="transcription-include-words">Include word timings</label>
+                </div>
+                <p class="field-description">
+                  Store per-word timestamps and confidence values alongside the transcript text.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="transcription-max-alternatives">Alternative transcripts</label>
+                <input id="transcription-max-alternatives" type="number" min="0" max="10" step="1" />
+                <p class="field-description">
+                  Request extra hypotheses when supported by the model (0 disables alternatives).
+                </p>
+              </div>
+              <div class="settings-section-footer">
+                <div
+                  id="transcription-status"
+                  class="form-status"
+                  role="status"
+                  aria-live="polite"
+                  aria-hidden="true"
+                ></div>
+                <div class="button-row">
+                  <button id="transcription-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="transcription-save" class="primary-button" type="submit" disabled>Save changes</button>
                 </div>
               </div>
             </form>

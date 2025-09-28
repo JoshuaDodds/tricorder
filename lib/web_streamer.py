@@ -268,6 +268,7 @@ def _archival_response_payload(cfg: dict[str, Any]) -> dict[str, Any]:
 _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
+_TRANSCRIPTION_ENGINES = {"vosk"}
 
 
 def _audio_defaults() -> dict[str, Any]:
@@ -334,6 +335,18 @@ def _streaming_defaults() -> dict[str, Any]:
 
 def _dashboard_defaults() -> dict[str, Any]:
     return {"api_base": ""}
+
+
+def _transcription_defaults() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "engine": "vosk",
+        "types": ["Human"],
+        "vosk_model_path": "/apps/tricorder/models/vosk-small-en-us-0.15",
+        "target_sample_rate": 16000,
+        "include_words": True,
+        "max_alternatives": 0,
+    }
 
 
 def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -490,6 +503,51 @@ def _canonical_dashboard_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         api_base = raw.get("api_base")
         if isinstance(api_base, str):
             result["api_base"] = api_base.strip()
+    return result
+
+
+def _canonical_transcription_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _transcription_defaults()
+    raw = cfg.get("transcription", {})
+    if not isinstance(raw, dict):
+        return result
+
+    enabled = raw.get("enabled")
+    if isinstance(enabled, bool):
+        result["enabled"] = enabled
+    elif enabled is not None:
+        result["enabled"] = _bool_from_any(enabled)
+
+    engine = raw.get("engine")
+    if isinstance(engine, str):
+        normalized_engine = engine.strip().lower()
+        if normalized_engine in _TRANSCRIPTION_ENGINES:
+            result["engine"] = normalized_engine
+
+    types = _string_list_from_config(raw.get("types"), default=result["types"])
+    if types:
+        result["types"] = types
+
+    model_path = raw.get("vosk_model_path") or raw.get("model_path")
+    if isinstance(model_path, str):
+        stripped = model_path.strip()
+        if stripped:
+            result["vosk_model_path"] = stripped
+
+    target_rate = raw.get("target_sample_rate") or raw.get("vosk_sample_rate")
+    if isinstance(target_rate, (int, float)) and not isinstance(target_rate, bool):
+        result["target_sample_rate"] = int(target_rate)
+
+    include_words = raw.get("include_words")
+    if isinstance(include_words, bool):
+        result["include_words"] = include_words
+    elif include_words is not None:
+        result["include_words"] = _bool_from_any(include_words)
+
+    max_alternatives = raw.get("max_alternatives")
+    if isinstance(max_alternatives, (int, float)) and not isinstance(max_alternatives, bool):
+        result["max_alternatives"] = max(0, int(max_alternatives))
+
     return result
 
 
@@ -792,6 +850,76 @@ def _normalize_ingest_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     return normalized, errors
 
 
+def _normalize_transcription_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _transcription_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["enabled"] = _bool_from_any(payload.get("enabled"))
+
+    engine_value = payload.get("engine")
+    if engine_value is None:
+        pass
+    elif isinstance(engine_value, str):
+        candidate = engine_value.strip().lower()
+        if candidate in _TRANSCRIPTION_ENGINES:
+            normalized["engine"] = candidate
+        elif candidate:
+            errors.append("engine must be one of: vosk")
+    else:
+        errors.append("engine must be a string")
+
+    types_value, provided_types = _string_list_from_payload(payload.get("types"), "types", errors)
+    if provided_types:
+        if types_value:
+            normalized["types"] = types_value
+        else:
+            errors.append("types must include at least one entry")
+
+    model_key = payload.get("vosk_model_path") or payload.get("model_path")
+    if model_key is None:
+        pass
+    elif isinstance(model_key, str):
+        stripped = model_key.strip()
+        if stripped:
+            normalized["vosk_model_path"] = stripped
+        else:
+            errors.append("vosk_model_path must be a non-empty string")
+    else:
+        errors.append("vosk_model_path must be a string")
+
+    target_rate = _coerce_int(
+        payload.get("target_sample_rate"),
+        "target_sample_rate",
+        errors,
+        min_value=8000,
+        max_value=96000,
+    )
+    if target_rate is not None:
+        normalized["target_sample_rate"] = target_rate
+
+    include_words_value = payload.get("include_words")
+    if include_words_value is not None:
+        normalized["include_words"] = _bool_from_any(include_words_value)
+
+    max_alternatives = _coerce_int(
+        payload.get("max_alternatives"),
+        "max_alternatives",
+        errors,
+        min_value=0,
+        max_value=10,
+    )
+    if max_alternatives is not None:
+        normalized["max_alternatives"] = max_alternatives
+
+    if normalized["enabled"] and not normalized["vosk_model_path"]:
+        errors.append("vosk_model_path must be a non-empty string when transcription is enabled")
+
+    return normalized, errors
+
+
 def _normalize_logging_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     normalized = _logging_defaults()
     errors: list[str] = []
@@ -918,6 +1046,7 @@ from lib.config import (
     update_logging_settings,
     update_segmenter_settings,
     update_streaming_settings,
+    update_transcription_settings,
 )
 from lib.waveform_cache import generate_waveform
 
@@ -1859,6 +1988,7 @@ def build_app() -> web.Application:
         clip_name: str | None,
         source_start_epoch: float | None,
         allow_overwrite: bool = True,
+        overwrite_existing_rel: str | None = None,
     ) -> dict[str, object]:
         if not source_rel_path:
             raise ClipError("source path is required")
@@ -1905,6 +2035,136 @@ def build_app() -> web.Application:
 
         if final_path.exists() and not allow_overwrite:
             raise ClipError("clip already exists")
+
+        overwrite_source: Path | None = None
+        overwrite_stat: os.stat_result | None = None
+        overwrite_waveform_meta: dict[str, object] | None = None
+        overwrite_duration: float | None = None
+
+        if isinstance(overwrite_existing_rel, str) and overwrite_existing_rel.strip():
+            overwrite_candidate = recordings_root / overwrite_existing_rel.strip().strip("/")
+            try:
+                overwrite_resolved = overwrite_candidate.resolve()
+            except FileNotFoundError:
+                overwrite_resolved = None
+            except Exception:
+                overwrite_resolved = None
+            if overwrite_resolved is not None:
+                try:
+                    overwrite_resolved.relative_to(recordings_root_resolved)
+                except ValueError:
+                    overwrite_resolved = None
+            if overwrite_resolved is not None and overwrite_resolved.is_file():
+                overwrite_source = overwrite_resolved
+                try:
+                    overwrite_stat = overwrite_resolved.stat()
+                except OSError:
+                    overwrite_stat = None
+                waveform_candidate = overwrite_resolved.with_suffix(
+                    overwrite_resolved.suffix + ".waveform.json"
+                )
+                try:
+                    with waveform_candidate.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                        if isinstance(payload, dict):
+                            overwrite_waveform_meta = payload
+                except (OSError, json.JSONDecodeError):
+                    overwrite_waveform_meta = None
+                if overwrite_waveform_meta is not None:
+                    raw_duration = overwrite_waveform_meta.get("duration_seconds")
+                    if isinstance(raw_duration, (int, float)) and raw_duration > 0:
+                        overwrite_duration = float(raw_duration)
+                if overwrite_duration is None and overwrite_stat is not None:
+                    overwrite_duration = _probe_duration(overwrite_resolved, overwrite_stat)
+
+        rename_allowed = False
+        if (
+            overwrite_source is not None
+            and overwrite_source == resolved
+            and overwrite_source.suffix.lower() == ".opus"
+            and final_path.suffix.lower() == ".opus"
+            and not final_path.exists()
+            and overwrite_duration is not None
+        ):
+            range_tolerance = max(0.05, float(overwrite_duration) * 0.01)
+            start_near_zero = abs(float(start_seconds)) <= range_tolerance
+            matches_duration = abs(duration - float(overwrite_duration)) <= range_tolerance
+            if start_near_zero and matches_duration:
+                rename_allowed = True
+
+        if rename_allowed:
+            try:
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ClipError("unable to create destination directory") from exc
+
+            source_waveform = overwrite_source.with_suffix(
+                overwrite_source.suffix + ".waveform.json"
+            )
+            final_transcript = final_path.with_suffix(final_path.suffix + ".transcript.json")
+            source_transcript = overwrite_source.with_suffix(
+                overwrite_source.suffix + ".transcript.json"
+            )
+
+            try:
+                os.replace(overwrite_source, final_path)
+            except Exception as exc:
+                raise ClipError("unable to move existing clip") from exc
+
+            try:
+                if source_waveform.exists():
+                    os.replace(source_waveform, final_waveform)
+            except Exception as exc:
+                try:
+                    os.replace(final_path, overwrite_source)
+                except Exception:
+                    pass
+                raise ClipError("unable to move existing clip") from exc
+
+            if source_transcript.exists():
+                try:
+                    os.replace(source_transcript, final_transcript)
+                except Exception:
+                    pass
+
+            try:
+                rel_path = final_path.relative_to(recordings_root_resolved)
+            except ValueError:
+                rel_path = final_path.relative_to(recordings_root)
+
+            clip_start_epoch = None
+            if overwrite_waveform_meta is not None:
+                raw_start = overwrite_waveform_meta.get("start_epoch")
+                if isinstance(raw_start, (int, float)) and raw_start > 0:
+                    clip_start_epoch = float(raw_start)
+                else:
+                    raw_started = overwrite_waveform_meta.get("started_epoch")
+                    if isinstance(raw_started, (int, float)) and raw_started > 0:
+                        clip_start_epoch = float(raw_started)
+            if clip_start_epoch is None:
+                stat_source = overwrite_stat
+                if stat_source is None:
+                    try:
+                        stat_source = final_path.stat()
+                    except OSError:
+                        stat_source = None
+                if stat_source is not None and hasattr(stat_source, "st_mtime"):
+                    clip_start_epoch = float(stat_source.st_mtime)
+
+            rel_posix = rel_path.as_posix()
+            day = rel_path.parts[0] if rel_path.parts else ""
+
+            payload: dict[str, object] = {
+                "path": rel_posix,
+                "name": final_path.stem,
+                "duration_seconds": float(overwrite_duration),
+                "day": day,
+            }
+            if clip_start_epoch and clip_start_epoch > 0:
+                payload["start_epoch"] = clip_start_epoch
+
+            _cleanup_clip_undo_storage()
+            return payload
 
         try:
             rel_path = final_path.relative_to(recordings_root_resolved)
@@ -2210,6 +2470,9 @@ def build_app() -> web.Application:
                     base_name = item.get("base_name")
                     if isinstance(base_name, str) and base_name:
                         entry["base_name"] = base_name
+                    source = item.get("source")
+                    if isinstance(source, str) and source:
+                        entry["source"] = source
                     job_id = item.get("id")
                     if isinstance(job_id, (int, float)) and math.isfinite(job_id):
                         entry["id"] = int(job_id)
@@ -2229,6 +2492,9 @@ def build_app() -> web.Application:
                 base_name = active_raw.get("base_name")
                 if isinstance(base_name, str) and base_name:
                     active_entry["base_name"] = base_name
+                source = active_raw.get("source")
+                if isinstance(source, str) and source:
+                    active_entry["source"] = source
                 job_id = active_raw.get("id")
                 if isinstance(job_id, (int, float)) and math.isfinite(job_id):
                     active_entry["id"] = int(job_id)
@@ -2737,6 +3003,12 @@ def build_app() -> web.Application:
         clip_name = str(name_value) if isinstance(name_value, str) else None
 
         source_start_epoch = _to_float(data.get("source_start_epoch"))
+        overwrite_value = data.get("overwrite_existing")
+        overwrite_existing = (
+            str(overwrite_value)
+            if isinstance(overwrite_value, str) and overwrite_value.strip()
+            else None
+        )
 
         loop = asyncio.get_running_loop()
         try:
@@ -2751,6 +3023,7 @@ def build_app() -> web.Application:
                     clip_name,
                     source_start_epoch,
                     allow_overwrite,
+                    overwrite_existing,
                 ),
             )
         except ClipError as exc:
@@ -2813,7 +3086,12 @@ def build_app() -> web.Application:
 
     async def config_snapshot(_: web.Request) -> web.Response:
         refreshed = reload_cfg()
-        return web.json_response(refreshed)
+        payload = dict(refreshed)
+        try:
+            payload["config_path"] = str(primary_config_path())
+        except Exception:
+            payload["config_path"] = None
+        return web.json_response(payload)
 
     async def config_archival_get(_: web.Request) -> web.Response:
         refreshed = reload_cfg()
@@ -2857,6 +3135,7 @@ def build_app() -> web.Application:
         "segmenter": ["voice-recorder.service"],
         "adaptive_rms": ["voice-recorder.service"],
         "ingest": ["dropbox.path", "dropbox.service"],
+        "transcription": ["voice-recorder.service"],
         "logging": ["voice-recorder.service"],
         "streaming": ["voice-recorder.service", "web-streamer.service"],
         "dashboard": ["web-streamer.service"],
@@ -2961,6 +3240,19 @@ def build_app() -> web.Application:
             normalize=_normalize_ingest_payload,
             update_func=update_ingest_settings,
             canonical_fn=_canonical_ingest_settings,
+        )
+
+    async def config_transcription_get(request: web.Request) -> web.Response:
+        return await _settings_get("transcription", _canonical_transcription_settings)
+
+    async def config_transcription_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="transcription",
+            section_label="transcription",
+            normalize=_normalize_transcription_payload,
+            update_func=update_transcription_settings,
+            canonical_fn=_canonical_transcription_settings,
         )
 
     async def config_logging_get(request: web.Request) -> web.Response:
@@ -3227,6 +3519,8 @@ def build_app() -> web.Application:
     app.router.add_post("/api/config/adaptive-rms", config_adaptive_rms_update)
     app.router.add_get("/api/config/ingest", config_ingest_get)
     app.router.add_post("/api/config/ingest", config_ingest_update)
+    app.router.add_get("/api/config/transcription", config_transcription_get)
+    app.router.add_post("/api/config/transcription", config_transcription_update)
     app.router.add_get("/api/config/logging", config_logging_get)
     app.router.add_post("/api/config/logging", config_logging_update)
     app.router.add_get("/api/config/streaming", config_streaming_get)

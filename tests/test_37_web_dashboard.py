@@ -491,6 +491,121 @@ def test_audio_settings_validation_error(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_transcription_settings_roundtrip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+transcription:
+  enabled: false
+  engine: vosk
+  types:
+    - Human
+  vosk_model_path: /models/vosk/en-us
+  target_sample_rate: 16000
+  include_words: true
+  max_alternatives: 0
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/transcription")
+            assert resp.status == 200
+            payload = await resp.json()
+            section = payload["transcription"]
+            assert section["engine"] == "vosk"
+            assert section["vosk_model_path"] == "/models/vosk/en-us"
+            assert section["types"] == ["Human"]
+
+            update_payload = {
+                "enabled": True,
+                "engine": "vosk",
+                "types": ["Human", "Both"],
+                "vosk_model_path": "/models/vosk/custom",
+                "target_sample_rate": 22050,
+                "include_words": False,
+                "max_alternatives": 2,
+            }
+
+            resp = await client.post("/api/config/transcription", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            section = updated["transcription"]
+            assert section["enabled"] is True
+            assert section["types"] == ["Human", "Both"]
+            assert section["target_sample_rate"] == 22050
+            assert section["include_words"] is False
+            assert section["max_alternatives"] == 2
+
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["transcription"]["enabled"] is True
+            assert persisted["transcription"]["vosk_model_path"] == "/models/vosk/custom"
+            assert persisted["transcription"]["types"] == ["Human", "Both"]
+            assert persisted["transcription"]["max_alternatives"] == 2
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_transcription_settings_require_model_path(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("transcription:\n  enabled: false\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "enabled": True,
+                "engine": "vosk",
+                "vosk_model_path": " ",
+            }
+            resp = await client.post("/api/config/transcription", json=payload)
+            assert resp.status == 400
+            data = await resp.json()
+            assert "error" in data
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
@@ -652,6 +767,56 @@ def test_recordings_clip_rejects_conflicting_name_without_overwrite(dashboard_en
             after_stat = clip_file.stat()
             assert after_stat.st_mtime == original_stat.st_mtime
             assert after_stat.st_size == original_stat.st_size
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_clip_rename_without_reencoding(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240109"
+        day_dir.mkdir()
+
+        original_clip = day_dir / "existing.opus"
+        original_clip.write_bytes(b"original-clip-data")
+        _write_waveform_stub(
+            original_clip.with_suffix(original_clip.suffix + ".waveform.json"), duration=1.0
+        )
+        os.utime(original_clip, (1_700_100_000, 1_700_100_000))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "source_path": f"{day_dir.name}/{original_clip.name}",
+                "start_seconds": 0.0,
+                "end_seconds": 1.0,
+                "clip_name": "renamed-clip",
+                "overwrite_existing": f"{day_dir.name}/{original_clip.name}",
+            }
+            resp = await client.post("/api/recordings/clip", json=payload)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["path"] == f"{day_dir.name}/renamed-clip.opus"
+            assert data.get("undo_token") is None
+            assert data.get("duration_seconds") == pytest.approx(1.0, rel=0.01)
+
+            renamed_path = day_dir / "renamed-clip.opus"
+            assert renamed_path.exists()
+            assert renamed_path.read_bytes() == b"original-clip-data"
+            assert not original_clip.exists()
+
+            renamed_waveform = renamed_path.with_suffix(renamed_path.suffix + ".waveform.json")
+            assert renamed_waveform.exists()
+            assert json.loads(renamed_waveform.read_text()).get("duration_seconds") == pytest.approx(
+                1.0, rel=0.01
+            )
         finally:
             await client.close()
             await server.close()
