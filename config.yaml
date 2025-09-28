@@ -114,6 +114,13 @@ segmenter:
   # Keep modest to avoid memory spikes. Typical: 256–1024.
   max_queue_frames: 512
 
+  # Optional custom labels for event classifications. These strings are embedded in filenames,
+  # notification payloads, and transcript metadata.
+  event_tags:
+    human: "Human"
+    other: "Other"
+    both: "Both"
+
 adaptive_rms:
   # Enable adaptive thresholding to track background RMS levels. When false, the fixed
   # segmenter.rms_threshold is used.
