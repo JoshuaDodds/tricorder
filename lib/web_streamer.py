@@ -268,6 +268,7 @@ def _archival_response_payload(cfg: dict[str, Any]) -> dict[str, Any]:
 _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
+_TRANSCRIPTION_ENGINES = {"vosk"}
 
 
 def _audio_defaults() -> dict[str, Any]:
@@ -334,6 +335,18 @@ def _streaming_defaults() -> dict[str, Any]:
 
 def _dashboard_defaults() -> dict[str, Any]:
     return {"api_base": ""}
+
+
+def _transcription_defaults() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "engine": "vosk",
+        "types": ["Human"],
+        "vosk_model_path": "/apps/tricorder/models/vosk-small-en-us-0.15",
+        "target_sample_rate": 16000,
+        "include_words": True,
+        "max_alternatives": 0,
+    }
 
 
 def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -490,6 +503,51 @@ def _canonical_dashboard_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         api_base = raw.get("api_base")
         if isinstance(api_base, str):
             result["api_base"] = api_base.strip()
+    return result
+
+
+def _canonical_transcription_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _transcription_defaults()
+    raw = cfg.get("transcription", {})
+    if not isinstance(raw, dict):
+        return result
+
+    enabled = raw.get("enabled")
+    if isinstance(enabled, bool):
+        result["enabled"] = enabled
+    elif enabled is not None:
+        result["enabled"] = _bool_from_any(enabled)
+
+    engine = raw.get("engine")
+    if isinstance(engine, str):
+        normalized_engine = engine.strip().lower()
+        if normalized_engine in _TRANSCRIPTION_ENGINES:
+            result["engine"] = normalized_engine
+
+    types = _string_list_from_config(raw.get("types"), default=result["types"])
+    if types:
+        result["types"] = types
+
+    model_path = raw.get("vosk_model_path") or raw.get("model_path")
+    if isinstance(model_path, str):
+        stripped = model_path.strip()
+        if stripped:
+            result["vosk_model_path"] = stripped
+
+    target_rate = raw.get("target_sample_rate") or raw.get("vosk_sample_rate")
+    if isinstance(target_rate, (int, float)) and not isinstance(target_rate, bool):
+        result["target_sample_rate"] = int(target_rate)
+
+    include_words = raw.get("include_words")
+    if isinstance(include_words, bool):
+        result["include_words"] = include_words
+    elif include_words is not None:
+        result["include_words"] = _bool_from_any(include_words)
+
+    max_alternatives = raw.get("max_alternatives")
+    if isinstance(max_alternatives, (int, float)) and not isinstance(max_alternatives, bool):
+        result["max_alternatives"] = max(0, int(max_alternatives))
+
     return result
 
 
@@ -792,6 +850,76 @@ def _normalize_ingest_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     return normalized, errors
 
 
+def _normalize_transcription_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _transcription_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["enabled"] = _bool_from_any(payload.get("enabled"))
+
+    engine_value = payload.get("engine")
+    if engine_value is None:
+        pass
+    elif isinstance(engine_value, str):
+        candidate = engine_value.strip().lower()
+        if candidate in _TRANSCRIPTION_ENGINES:
+            normalized["engine"] = candidate
+        elif candidate:
+            errors.append("engine must be one of: vosk")
+    else:
+        errors.append("engine must be a string")
+
+    types_value, provided_types = _string_list_from_payload(payload.get("types"), "types", errors)
+    if provided_types:
+        if types_value:
+            normalized["types"] = types_value
+        else:
+            errors.append("types must include at least one entry")
+
+    model_key = payload.get("vosk_model_path") or payload.get("model_path")
+    if model_key is None:
+        pass
+    elif isinstance(model_key, str):
+        stripped = model_key.strip()
+        if stripped:
+            normalized["vosk_model_path"] = stripped
+        else:
+            errors.append("vosk_model_path must be a non-empty string")
+    else:
+        errors.append("vosk_model_path must be a string")
+
+    target_rate = _coerce_int(
+        payload.get("target_sample_rate"),
+        "target_sample_rate",
+        errors,
+        min_value=8000,
+        max_value=96000,
+    )
+    if target_rate is not None:
+        normalized["target_sample_rate"] = target_rate
+
+    include_words_value = payload.get("include_words")
+    if include_words_value is not None:
+        normalized["include_words"] = _bool_from_any(include_words_value)
+
+    max_alternatives = _coerce_int(
+        payload.get("max_alternatives"),
+        "max_alternatives",
+        errors,
+        min_value=0,
+        max_value=10,
+    )
+    if max_alternatives is not None:
+        normalized["max_alternatives"] = max_alternatives
+
+    if normalized["enabled"] and not normalized["vosk_model_path"]:
+        errors.append("vosk_model_path must be a non-empty string when transcription is enabled")
+
+    return normalized, errors
+
+
 def _normalize_logging_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     normalized = _logging_defaults()
     errors: list[str] = []
@@ -918,6 +1046,7 @@ from lib.config import (
     update_logging_settings,
     update_segmenter_settings,
     update_streaming_settings,
+    update_transcription_settings,
 )
 from lib.waveform_cache import generate_waveform
 
@@ -2857,6 +2986,7 @@ def build_app() -> web.Application:
         "segmenter": ["voice-recorder.service"],
         "adaptive_rms": ["voice-recorder.service"],
         "ingest": ["dropbox.path", "dropbox.service"],
+        "transcription": ["voice-recorder.service"],
         "logging": ["voice-recorder.service"],
         "streaming": ["voice-recorder.service", "web-streamer.service"],
         "dashboard": ["web-streamer.service"],
@@ -2961,6 +3091,19 @@ def build_app() -> web.Application:
             normalize=_normalize_ingest_payload,
             update_func=update_ingest_settings,
             canonical_fn=_canonical_ingest_settings,
+        )
+
+    async def config_transcription_get(request: web.Request) -> web.Response:
+        return await _settings_get("transcription", _canonical_transcription_settings)
+
+    async def config_transcription_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="transcription",
+            section_label="transcription",
+            normalize=_normalize_transcription_payload,
+            update_func=update_transcription_settings,
+            canonical_fn=_canonical_transcription_settings,
         )
 
     async def config_logging_get(request: web.Request) -> web.Response:
@@ -3227,6 +3370,8 @@ def build_app() -> web.Application:
     app.router.add_post("/api/config/adaptive-rms", config_adaptive_rms_update)
     app.router.add_get("/api/config/ingest", config_ingest_get)
     app.router.add_post("/api/config/ingest", config_ingest_update)
+    app.router.add_get("/api/config/transcription", config_transcription_get)
+    app.router.add_post("/api/config/transcription", config_transcription_update)
     app.router.add_get("/api/config/logging", config_logging_get)
     app.router.add_post("/api/config/logging", config_logging_update)
     app.router.add_get("/api/config/streaming", config_streaming_get)

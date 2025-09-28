@@ -531,6 +531,10 @@ def update_ingest_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("ingest", settings, merge=True)
 
 
+def update_transcription_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("transcription", settings, merge=True)
+
+
 def update_logging_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("logging", settings, merge=True)
 

@@ -126,6 +126,8 @@ Waveform JSON is loaded on demand and cached client-side. Missing or stale sidec
 
 Transcripts default to Human-tagged events only; adjust `transcription.types` to include other event tags such as `Both` if desired. The web dashboard exposes `transcript_excerpt`, `transcript_path`, and timestamps through `/api/recordings`, and searches include transcript text in addition to filenames. Because Vosk models are not bundled with the project, download the desired language model separately and update `transcription.vosk_model_path` to point at the unpacked folder.
 
+Open the dashboard’s ☰ menu → **Recorder configuration** → **Transcription** to adjust these settings without editing YAML; changes remain synchronized with `config.yaml`.
+
 ### Running locally
 
 ```bash
