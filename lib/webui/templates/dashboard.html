@@ -139,6 +139,16 @@
               <div class="menu-section" role="none">
                 <div class="menu-section-title" role="presentation">Operations</div>
                 <button
+                  id="config-open"
+                  class="menu-item"
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                >
+                  Configuration snapshot
+                </button>
+                <button
                   id="archival-open"
                   class="menu-item"
                   type="button"
@@ -557,13 +567,6 @@
           </div>
         </div>
       </section>
-      <section class="card config-card">
-        <div class="card-header">
-          <h2>Configuration snapshot</h2>
-          <div class="card-subtitle">Read-only view of merged configuration.</div>
-        </div>
-        <div id="config-viewer" class="code-block" role="region" aria-live="polite"></div>
-      </section>
     </div>
     <div
       id="confirm-modal"
@@ -633,6 +636,43 @@
             aria-label="Service statuses"
           ></div>
           <div id="services-empty" class="services-empty" hidden>No managed services configured.</div>
+        </div>
+      </div>
+    </div>
+    <div
+      id="config-modal"
+      class="settings-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="config-dialog"
+        class="settings-dialog card config-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="config-dialog-title"
+        aria-describedby="config-dialog-description"
+        tabindex="-1"
+      >
+        <div class="card-header settings-dialog-header">
+          <div class="card-heading">
+            <h2 id="config-dialog-title">Configuration snapshot</h2>
+            <p id="config-dialog-description" class="card-subtitle">
+              Read-only view of merged configuration.
+            </p>
+          </div>
+          <div class="settings-dialog-actions">
+            <button id="config-close" class="ghost-button small" type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        <div class="settings-dialog-body config-dialog-body">
+          <div class="settings-footnote">
+            Loaded from <code id="config-dialog-path"></code>
+          </div>
+          <div id="config-viewer" class="code-block" role="region" aria-live="polite"></div>
         </div>
       </div>
     </div>
