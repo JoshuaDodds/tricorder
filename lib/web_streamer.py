@@ -989,6 +989,7 @@ def _scan_recordings_worker(
         if allowed_ext and suffix not in allowed_ext:
             continue
         waveform_path = path.with_suffix(path.suffix + ".waveform.json")
+        transcript_path = path.with_suffix(path.suffix + ".transcript.json")
         try:
             waveform_stat = waveform_path.stat()
         except FileNotFoundError:
@@ -1004,6 +1005,42 @@ def _scan_recordings_worker(
             waveform_rel = waveform_path.relative_to(recordings_root)
         except ValueError:
             continue
+
+        transcript_path_rel = ""
+        transcript_text = ""
+        transcript_event_type = ""
+        transcript_updated: float | None = None
+        transcript_updated_iso = ""
+        try:
+            transcript_stat = transcript_path.stat()
+        except FileNotFoundError:
+            transcript_stat = None
+        except OSError:
+            transcript_stat = None
+        if transcript_stat and transcript_stat.st_size > 0:
+            try:
+                transcript_path_rel = transcript_path.relative_to(recordings_root).as_posix()
+            except ValueError:
+                transcript_path_rel = ""
+            try:
+                with transcript_path.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                    if isinstance(payload, dict):
+                        raw_text = payload.get("text")
+                        if isinstance(raw_text, str):
+                            transcript_text = raw_text.strip()
+                        raw_type = payload.get("event_type")
+                        if isinstance(raw_type, str):
+                            transcript_event_type = raw_type.strip()
+            except (OSError, json.JSONDecodeError):
+                transcript_path_rel = ""
+                transcript_text = ""
+                transcript_event_type = ""
+            else:
+                transcript_updated = float(transcript_stat.st_mtime)
+                transcript_updated_iso = datetime.fromtimestamp(
+                    transcript_stat.st_mtime, tz=timezone.utc
+                ).isoformat()
 
         try:
             stat = path.stat()
@@ -1068,6 +1105,12 @@ def _scan_recordings_worker(
                 "waveform_path": waveform_rel.as_posix(),
                 "start_epoch": start_epoch,
                 "started_at": started_at_iso,
+                "has_transcript": bool(transcript_path_rel),
+                "transcript_path": transcript_path_rel,
+                "transcript_text": transcript_text,
+                "transcript_event_type": transcript_event_type,
+                "transcript_updated": transcript_updated,
+                "transcript_updated_iso": transcript_updated_iso,
             }
         )
 
@@ -2132,6 +2175,17 @@ def build_app() -> web.Application:
         day_filter = _collect("day")
         ext_filter = {token.lower().lstrip(".") for token in _collect("ext")}
 
+        def _excerpt(text: str, limit: int = 240) -> str:
+            normalized = " ".join(text.split())
+            if not normalized:
+                return ""
+            if len(normalized) <= limit:
+                return normalized
+            truncated = normalized[:limit]
+            if " " in truncated:
+                truncated = truncated.rsplit(" ", 1)[0]
+            return truncated + "…"
+
         try:
             limit = int(query.get("limit", str(DEFAULT_RECORDINGS_LIMIT)))
         except ValueError:
@@ -2151,8 +2205,16 @@ def build_app() -> web.Application:
             path = str(item.get("path", ""))
             day = str(item.get("day", ""))
             ext = str(item.get("extension", ""))
+            transcript_text = ""
+            raw_transcript_text = item.get("transcript_text")
+            if isinstance(raw_transcript_text, str):
+                transcript_text = raw_transcript_text
 
-            if search and search not in name.lower() and search not in path.lower():
+            haystacks = [name.lower(), path.lower()]
+            if transcript_text:
+                haystacks.append(transcript_text.lower())
+
+            if search and all(search not in candidate for candidate in haystacks):
                 continue
             if day_filter and day not in day_filter:
                 continue
@@ -2197,6 +2259,28 @@ def build_app() -> web.Application:
                     if isinstance(entry.get("started_at"), str)
                     else ""
                 ),
+                "has_transcript": bool(entry.get("has_transcript")),
+                "transcript_path": (
+                    str(entry.get("transcript_path"))
+                    if entry.get("transcript_path")
+                    else ""
+                ),
+                "transcript_event_type": (
+                    str(entry.get("transcript_event_type"))
+                    if entry.get("transcript_event_type")
+                    else ""
+                ),
+                "transcript_updated": (
+                    float(entry.get("transcript_updated", 0.0))
+                    if isinstance(entry.get("transcript_updated"), (int, float))
+                    else None
+                ),
+                "transcript_updated_iso": (
+                    str(entry.get("transcript_updated_iso"))
+                    if isinstance(entry.get("transcript_updated_iso"), str)
+                    else ""
+                ),
+                "transcript_excerpt": _excerpt(str(entry.get("transcript_text", ""))),
             }
             for entry in window
         ]
@@ -2272,6 +2356,13 @@ def build_app() -> web.Application:
                 waveform_sidecar = resolved.with_suffix(resolved.suffix + ".waveform.json")
                 try:
                     waveform_sidecar.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+                transcript_sidecar = resolved.with_suffix(resolved.suffix + ".transcript.json")
+                try:
+                    transcript_sidecar.unlink()
                 except FileNotFoundError:
                     pass
                 except OSError:

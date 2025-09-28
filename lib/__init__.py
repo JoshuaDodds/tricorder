@@ -5,4 +5,5 @@ __all__ = [
     "segmenter",
     "sd_card_health",
     "sd_card_monitor",
+    "transcription",
 ]
