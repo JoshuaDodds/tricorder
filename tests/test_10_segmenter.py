@@ -27,6 +27,34 @@ def test_event_trigger_and_flush(tmp_path, monkeypatch):
     assert rec.base_name is None
 
 
+def test_flush_does_not_block_on_encode(monkeypatch):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 5)
+
+    rec = TimelineRecorder()
+    for i in range(40):
+        rec.ingest(make_frame(2000), i)
+
+    def fail_join():  # pragma: no cover - defensive guard
+        raise AssertionError("flush should not wait for encode queue")
+
+    monkeypatch.setattr(segmenter.ENCODE_QUEUE, "join", fail_join)
+
+    observed = {}
+
+    def fake_wait(job_id: int, timeout: float | None) -> bool:
+        observed["call"] = (job_id, timeout)
+        return True
+
+    monkeypatch.setattr(segmenter.ENCODING_STATUS, "wait_for_start", fake_wait)
+
+    rec.flush(100)
+
+    job_id, timeout = observed["call"]
+    assert job_id > 0
+    assert timeout == segmenter.SHUTDOWN_ENCODE_START_TIMEOUT
+
+
 def test_adaptive_threshold_updates(monkeypatch):
     fake_time = [0.0]
 
