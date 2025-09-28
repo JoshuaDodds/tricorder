@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
+from typing import Iterable
+
 from lib.segmenter import (
     ENCODING_STATUS,
     FRAME_BYTES,
@@ -435,12 +437,42 @@ def scan_and_ingest() -> None:
 
         _handle_work_file(work_file)
 
+
+def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
+    jobs = [job_id for job_id in job_ids if isinstance(job_id, int)]
+    if not jobs:
+        return
+
+    for job_id in jobs:
+        while True:
+            try:
+                finished = ENCODING_STATUS.wait_for_finish(job_id, timeout=10.0)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                print(
+                    f"[dropbox] WARN: failed waiting for encode job {job_id}: {exc}",
+                    flush=True,
+                )
+                break
+            if finished:
+                break
+            print(
+                f"[dropbox] Waiting for encode job {job_id} to finish...",
+                flush=True,
+            )
+
+
 def process_file(path):
     path_obj = Path(path)
     print(f"[dropbox] Processing {path_obj}", flush=True)
 
     ingest_hint = _extract_ingest_hint(path_obj)
-    rec = TimelineRecorder(ingest_hint=ingest_hint)
+    rec = TimelineRecorder(
+        ingest_hint=ingest_hint,
+        status_mode="ingest",
+        recording_source="dropbox",
+    )
     idx = 0
 
     with _pcm_source(path_obj) as stream:
@@ -454,6 +486,7 @@ def process_file(path):
 
     # Ensure finalization of last segment(s)
     rec.flush(idx)
+    _wait_for_encode_completion(rec.encode_job_ids())
     print(f"[dropbox] Finished processing {path_obj}", flush=True)
 
 if __name__ == "__main__":
