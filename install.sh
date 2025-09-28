@@ -15,6 +15,7 @@ VENV="$BASE/venv"
 SYSTEMD_DIR="/etc/systemd/system"
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE=$VENV/lib/python$PY_VER/site-packages
+DEV_SENTINEL="$BASE/.dev-mode"
 
 UNITS=(voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder.target)
 
@@ -172,6 +173,7 @@ if [[ "${DEV:-0}" == "1" ]]; then
 fi
 
 if [[ "${DEV:-0}" != "1" ]]; then
+  rm -f "$DEV_SENTINEL"
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
   for unit in voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service tmpfs-guard.service tricorder-auto-update.service; do
@@ -186,15 +188,24 @@ if [[ "${DEV:-0}" != "1" ]]; then
   sudo systemctl restart tricorder.target || true
 
 else
+  say "DEV=1: marking install as dev mode"
+  touch "$DEV_SENTINEL"
   say "DEV=1: skipping systemctl enable/start"
 fi
 
-say "Reloading systemd & and voice-recorder if running..."
+say "Reloading systemd and restarting active services..."
 sudo systemctl daemon-reload || true
 sudo systemctl restart web-streamer.service || true
 
-if systemctl is-active --quiet voice-recorder.service; then
-  sudo systemctl restart voice-recorder.service || true
-fi
+restart_if_active() {
+  local unit="$1"
+  if systemctl is-active --quiet "$unit"; then
+    sudo systemctl restart "$unit" || true
+  fi
+}
+
+restart_if_active voice-recorder.service
+restart_if_active dropbox.service
+restart_if_active dropbox.path
 
 say "Install complete"

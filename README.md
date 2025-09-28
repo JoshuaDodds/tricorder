@@ -249,7 +249,7 @@ Copy `updater.env-example` to `/etc/tricorder/update.env` (or another path refer
 - `TRICORDER_UPDATE_DIR` – Working directory for the updater checkout (default `/apps/tricorder/repo`).
 - `TRICORDER_INSTALL_BASE` / `TRICORDER_INSTALL_SCRIPT` – Override install location or script if needed.
 - `TRICORDER_UPDATE_SERVICES` – Space-separated units to restart after an update.
-- `DEV=1` – Disable the updater without removing the timer.
+- `DEV=1` – Disable the updater and mark the install as dev mode so the systemd unit stays inactive even after a reboot.
 
 The timer is configured for short intervals in tests; adjust to a longer cadence in production.
 
