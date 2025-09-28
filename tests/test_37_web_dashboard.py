@@ -205,11 +205,13 @@ archival:
                 == "/mnt/archive/tricorder"
             )
             assert payload["config_path"] == str(config_path)
+            assert payload["archival"]["include_transcript_sidecars"] is True
 
             update_payload = {
                 "enabled": True,
                 "backend": "rsync",
                 "include_waveform_sidecars": True,
+                "include_transcript_sidecars": False,
                 "network_share": {"target_dir": "/mnt/archive/tricorder"},
                 "rsync": {
                     "destination": "user@example.com:/srv/tricorder/archive",
@@ -229,6 +231,7 @@ archival:
                 == "user@example.com:/srv/tricorder/archive"
             )
             assert updated["archival"]["include_waveform_sidecars"] is True
+            assert updated["archival"]["include_transcript_sidecars"] is False
 
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["archival"]["backend"] == "rsync"
@@ -237,6 +240,9 @@ archival:
                 == "user@example.com:/srv/tricorder/archive"
             )
             assert persisted["archival"]["include_waveform_sidecars"] is True
+            assert (
+                persisted["archival"].get("include_transcript_sidecars") is False
+            )
         finally:
             await client.close()
             await server.close()

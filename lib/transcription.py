@@ -103,13 +103,19 @@ def _transcribe_with_vosk(
     if include_words:
         try:
             recognizer.SetWords(True)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"[transcription] WARNING: failed to enable word timing output: {exc}",
+                flush=True,
+            )
     if max_alternatives > 0:
         try:
             recognizer.SetMaxAlternatives(int(max_alternatives))
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"[transcription] WARNING: failed to enable alternative transcripts: {exc}",
+                flush=True,
+            )
 
     with contextlib.closing(wave.open(str(source), "rb")) as wav_file:
         channels = wav_file.getnchannels()

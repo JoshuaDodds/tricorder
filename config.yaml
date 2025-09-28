@@ -70,6 +70,9 @@ archival:
   # When true, upload waveform JSON sidecars alongside audio.
   include_waveform_sidecars: false
 
+  # When true, upload transcript JSON sidecars alongside audio.
+  include_transcript_sidecars: true
+
 segmenter:
   # Pre-roll saved before trigger (milliseconds). Captures leading context (e.g., first spoken word).
   # Typical: 500–3000 ms. Higher uses more RAM/IO.

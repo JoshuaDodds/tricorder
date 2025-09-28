@@ -140,6 +140,7 @@ def _load_plugin() -> _ArchivalPlugin | None:
 def upload_paths(raw_paths: Iterable[str]) -> None:
     arch_cfg = (get_cfg().get("archival") or {}).copy()
     include_waveforms = bool(arch_cfg.get("include_waveform_sidecars", False))
+    include_transcripts = bool(arch_cfg.get("include_transcript_sidecars", True))
 
     plugin = _load_plugin()
     if not plugin:
@@ -150,8 +151,11 @@ def upload_paths(raw_paths: Iterable[str]) -> None:
         if not path.exists():
             print(f"[archival] skip missing file: {path}", flush=True)
             continue
-        if path.suffix == ".json" and path.name.endswith(".waveform.json") and not include_waveforms:
-            continue
+        if path.suffix == ".json":
+            if path.name.endswith(".waveform.json") and not include_waveforms:
+                continue
+            if path.name.endswith(".transcript.json") and not include_transcripts:
+                continue
         plugin.upload(path)
 
 

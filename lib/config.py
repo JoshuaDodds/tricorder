@@ -50,6 +50,7 @@ _DEFAULTS: Dict[str, Any] = {
             "ssh_options": [],
         },
         "include_waveform_sidecars": False,
+        "include_transcript_sidecars": True,
     },
     "segmenter": {
         "pre_pad_ms": 2000,

@@ -65,6 +65,7 @@ def _archival_defaults() -> dict[str, Any]:
             "ssh_options": [],
         },
         "include_waveform_sidecars": False,
+        "include_transcript_sidecars": True,
     }
 
 
@@ -132,9 +133,12 @@ def _normalize_archival_config(raw: Any) -> dict[str, Any]:
     backend = _string_from_any(raw.get("backend"))
     if backend in ARCHIVAL_BACKENDS:
         result["backend"] = backend
-    result["include_waveform_sidecars"] = _bool_from_any(
-        raw.get("include_waveform_sidecars")
-    )
+    waveform_value = raw.get("include_waveform_sidecars")
+    if waveform_value is not None:
+        result["include_waveform_sidecars"] = _bool_from_any(waveform_value)
+    transcript_value = raw.get("include_transcript_sidecars")
+    if transcript_value is not None:
+        result["include_transcript_sidecars"] = _bool_from_any(transcript_value)
 
     network_share = raw.get("network_share")
     if isinstance(network_share, dict):
@@ -166,9 +170,14 @@ def _normalize_archival_payload(payload: Any) -> tuple[dict[str, Any], list[str]
         return normalized, ["Request body must be a JSON object"]
 
     normalized["enabled"] = _bool_from_any(payload.get("enabled"))
-    normalized["include_waveform_sidecars"] = _bool_from_any(
-        payload.get("include_waveform_sidecars")
-    )
+    waveform_payload = payload.get("include_waveform_sidecars")
+    if waveform_payload is not None:
+        normalized["include_waveform_sidecars"] = _bool_from_any(waveform_payload)
+    transcript_payload = payload.get("include_transcript_sidecars")
+    if transcript_payload is not None:
+        normalized["include_transcript_sidecars"] = _bool_from_any(
+            transcript_payload
+        )
 
     backend = _string_from_any(payload.get("backend"))
     if backend in ARCHIVAL_BACKENDS:

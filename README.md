@@ -94,6 +94,7 @@ Freshly encoded recordings can be mirrored off-device for long-term storage usin
 - **`rsync`** — streams files to a remote SSH host using `rsync`. Set `archival.rsync.destination` (e.g. `user@server:/backups/tricorder`). Optional keys let you provide a dedicated SSH identity (`ssh_identity`), extra rsync arguments (`options`), and additional SSH flags (`ssh_options`).
 
 Waveform sidecars are skipped by default; enable `archival.include_waveform_sidecars` to upload the JSON previews alongside the audio.
+Transcript sidecars are archived by default so backups stay searchable; set `archival.include_transcript_sidecars` to `false` to opt out.
 
 Uploads run immediately after the encoder finishes so recordings land in the archive while they are still hot in the filesystem cache. Failures are logged but do not block the local store, keeping the recorder resilient to temporary network outages.
 
