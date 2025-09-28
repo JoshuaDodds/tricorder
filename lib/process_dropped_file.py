@@ -7,7 +7,13 @@ import wave
 from contextlib import contextmanager
 from pathlib import Path
 
-from lib.segmenter import FRAME_BYTES, SAMPLE_RATE, SAMPLE_WIDTH, TimelineRecorder
+from lib.segmenter import (
+    ENCODING_STATUS,
+    FRAME_BYTES,
+    SAMPLE_RATE,
+    SAMPLE_WIDTH,
+    TimelineRecorder,
+)
 from lib.config import get_cfg
 
 cfg = get_cfg()
@@ -20,13 +26,60 @@ ALLOWED_EXT = set(x.lower() for x in cfg["ingest"]["allowed_ext"])
 IGNORE_SUFFIXES = set(cfg["ingest"]["ignore_suffixes"])
 
 
+def _should_lower_priority() -> bool:
+    try:
+        snapshot = ENCODING_STATUS.snapshot()
+    except Exception:
+        return False
+    if not snapshot:
+        return False
+    active = snapshot.get("active")
+    return bool(active)
+
+
+def _set_single_core_affinity() -> None:
+    try:
+        if hasattr(os, "sched_getaffinity"):
+            try:
+                available = os.sched_getaffinity(0)
+            except OSError:
+                available = None
+        else:
+            available = None
+        target_cpu = 0
+        if available:
+            try:
+                target_cpu = min(int(cpu) for cpu in available)
+            except (TypeError, ValueError):
+                target_cpu = 0
+        if hasattr(os, "sched_setaffinity"):
+            os.sched_setaffinity(0, {int(target_cpu)})
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def _ffmpeg_preexec(lower_priority: bool):
+    def _apply():
+        if lower_priority:
+            try:
+                os.nice(5)
+            except OSError:
+                pass
+        _set_single_core_affinity()
+
+    return _apply
+
+
 @contextmanager
 def _pcm_source(path: Path):
+    lower_priority = _should_lower_priority()
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
+        "-threads",
+        "1",
         "-i",
         str(path),
         "-ac",
@@ -38,7 +91,13 @@ def _pcm_source(path: Path):
         "-",
     ]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        if lower_priority:
+            print("[dropbox] Detected active encoder; lowering ffmpeg priority", flush=True)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            preexec_fn=_ffmpeg_preexec(lower_priority),
+        )
     except FileNotFoundError:
         if path.suffix.lower() != ".wav":
             raise
@@ -115,6 +174,30 @@ def _is_stable(p: Path) -> bool:
 def _prepare_work_area() -> None:
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _handle_work_file(work_file: Path) -> None:
+    try:
+        process_file(str(work_file))
+    except Exception as e:
+        print(f"[ingest] processing failed for {work_file}: {e}", flush=True)
+    else:
+        try:
+            if work_file.exists():
+                work_file.unlink()
+        except Exception as e:
+            print(f"[ingest] cleanup failed for {work_file}: {e}", flush=True)
+
+
+def _retry_stalled_work_files() -> None:
+    if not WORK_DIR.exists():
+        return
+    for work_file in sorted(WORK_DIR.iterdir()):
+        if not _is_candidate(work_file):
+            continue
+        print(f"[ingest] retrying stalled work item {work_file}", flush=True)
+        _handle_work_file(work_file)
+
+
 def _move_to_work(p: Path) -> Path:
     dest = WORK_DIR / p.name
     if dest.exists():
@@ -124,6 +207,7 @@ def _move_to_work(p: Path) -> Path:
 
 def scan_and_ingest() -> None:
     _prepare_work_area()
+    _retry_stalled_work_files()
     if not DROPBOX_DIR.exists():
         print(f"[ingest] DROPBOX_DIR does not exist: {DROPBOX_DIR}", flush=True)
         return
@@ -142,17 +226,7 @@ def scan_and_ingest() -> None:
             print(f"[ingest] move failed for {p}: {e}", flush=True)
             continue
 
-        try:
-            process_file(str(work_file))
-        except Exception as e:
-            print(f"[ingest] processing failed for {work_file}: {e}", flush=True)
-            # Leave the file in WORK_DIR for later inspection/retry
-        else:
-            try:
-                if work_file.exists():
-                    work_file.unlink()
-            except Exception as e:
-                print(f"[ingest] cleanup failed for {work_file}: {e}", flush=True)
+        _handle_work_file(work_file)
 
 def process_file(path):
     path_obj = Path(path)
