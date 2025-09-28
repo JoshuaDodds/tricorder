@@ -1,8 +1,5 @@
-from lib.notifications import (
-    NotificationDispatcher,
-    NotificationFilters,
-    build_dispatcher,
-)
+import lib.config as config
+from lib.notifications import NotificationDispatcher, NotificationFilters, build_dispatcher
 
 
 def test_filters_require_threshold_and_type():
@@ -59,3 +56,19 @@ def test_dispatcher_matches(monkeypatch):
 
     dummy.handle_event({"trigger_rms": 400, "etype": "Both"})
     assert dummy.webhook_payloads and dummy.email_payloads
+
+
+def test_filters_resolve_custom_event_tags(monkeypatch):
+    monkeypatch.setenv("EVENT_TAG_HUMAN", "Speech")
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    config.reload_cfg()
+
+    filters = NotificationFilters.from_cfg(
+        {"allowed_event_types": ["Human"], "min_trigger_rms": None}
+    )
+
+    assert filters.matches({"trigger_rms": 0, "etype": "Speech"})
+    assert not filters.matches({"trigger_rms": 0, "etype": "Other"})
+
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    config.reload_cfg()

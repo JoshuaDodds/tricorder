@@ -17,12 +17,19 @@ import copy
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 try:
     import yaml
 except Exception:
     yaml = None  # pyyaml should be installed; if not, only defaults will be used.
+
+EVENT_TAG_DEFAULTS: Dict[str, str] = {
+    "human": "Human",
+    "other": "Other",
+    "both": "Both",
+}
+
 
 _DEFAULTS: Dict[str, Any] = {
     "audio": {
@@ -64,6 +71,7 @@ _DEFAULTS: Dict[str, Any] = {
         "denoise_before_vad": False,
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
+        "event_tags": EVENT_TAG_DEFAULTS.copy(),
     },
     "adaptive_rms": {
         "enabled": False,
@@ -277,6 +285,19 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
             except Exception:
                 pass
 
+    tag_env = {
+        "EVENT_TAG_HUMAN": "human",
+        "EVENT_TAG_OTHER": "other",
+        "EVENT_TAG_BOTH": "both",
+    }
+    for env_key, tag_key in tag_env.items():
+        if env_key in os.environ:
+            value = os.environ[env_key].strip()
+            if value:
+                segmenter = cfg.setdefault("segmenter", {})
+                tags = segmenter.setdefault("event_tags", {})
+                tags[tag_key] = value
+
     adaptive_env = {
         "ADAPTIVE_RMS_ENABLED": ("enabled", _parse_bool),
         "ADAPTIVE_RMS_MIN_THRESH": ("min_thresh", float),
@@ -326,6 +347,39 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         value = os.environ["DASHBOARD_WEB_SERVICE"].strip()
         if value:
             cfg.setdefault("dashboard", {})["web_service"] = value
+
+
+def resolve_event_tags(cfg: Mapping[str, Any]) -> Dict[str, str]:
+    segmenter_section = cfg.get("segmenter") if isinstance(cfg, Mapping) else None
+    raw_tags = {}
+    if isinstance(segmenter_section, Mapping):
+        maybe_tags = segmenter_section.get("event_tags")
+        if isinstance(maybe_tags, Mapping):
+            raw_tags = maybe_tags
+
+    resolved: Dict[str, str] = {}
+    for key, default in EVENT_TAG_DEFAULTS.items():
+        value: str | None = None
+        if raw_tags:
+            for alias in {key, key.lower(), key.upper(), key.capitalize(), default}:
+                candidate = raw_tags.get(alias)
+                if isinstance(candidate, str) and candidate.strip():
+                    value = candidate.strip()
+                    break
+        resolved[key] = value or default
+    return resolved
+
+
+def event_type_aliases(cfg: Mapping[str, Any]) -> Dict[str, str]:
+    tags = resolve_event_tags(cfg)
+    aliases: Dict[str, str] = {}
+    for key, label in tags.items():
+        aliases[key.lower()] = label
+        aliases[label.lower()] = label
+    for key, default in EVENT_TAG_DEFAULTS.items():
+        aliases.setdefault(default.lower(), tags[key])
+    return aliases
+
 
 def get_cfg() -> Dict[str, Any]:
     global _cfg_cache, _search_paths, _active_config_path, _primary_config_path

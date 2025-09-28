@@ -19,10 +19,11 @@ warnings.filterwarnings(
     message="pkg_resources is deprecated as an API.*"
 )
 import webrtcvad    # noqa
-from lib.config import get_cfg
+from lib.config import get_cfg, resolve_event_tags
 from lib.notifications import build_dispatcher
 
 cfg = get_cfg()
+EVENT_TAGS = resolve_event_tags(cfg)
 NOTIFIER = build_dispatcher(cfg.get("notifications"))
 
 # ANSI colors for booleans (can be disabled via NO_COLOR env)
@@ -889,7 +890,12 @@ class TimelineRecorder:
             self._reset_event_state()
             return
 
-        etype = "Both" if (self.saw_voiced and self.saw_loud) else ("Human" if self.saw_voiced else "Other")
+        if self.saw_voiced and self.saw_loud:
+            etype = EVENT_TAGS["both"]
+        elif self.saw_voiced:
+            etype = EVENT_TAGS["human"]
+        else:
+            etype = EVENT_TAGS["other"]
         avg_rms = (self.sum_rms / self.frames_written) if self.frames_written else 0.0
         trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 

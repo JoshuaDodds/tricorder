@@ -16,7 +16,7 @@ from typing import Any, Sequence
 
 import audioop  # noqa: F401  (imported for side-effects + rate conversion)
 
-from lib.config import get_cfg
+from lib.config import event_type_aliases, get_cfg
 
 
 class TranscriptionError(Exception):
@@ -237,20 +237,26 @@ def transcribe_audio(
     if not _bool(section.get("enabled")):
         return False
 
+    alias_map = event_type_aliases(cfg)
     allowed_types: set[str] = set()
     raw_types = section.get("types")
     if isinstance(raw_types, (list, tuple, set)):
         for token in raw_types:
             if isinstance(token, str) and token.strip():
-                allowed_types.add(token.strip().lower())
+                lowered = token.strip().lower()
+                mapped = alias_map.get(lowered)
+                allowed_types.add((mapped or token.strip()).lower())
     elif isinstance(raw_types, str) and raw_types.strip():
-        allowed_types.add(raw_types.strip().lower())
+        lowered = raw_types.strip().lower()
+        mapped = alias_map.get(lowered)
+        allowed_types.add((mapped or raw_types.strip()).lower())
 
     if event_type is None:
         event_type = _extract_event_type(base_name)
     event_type = (event_type or "").strip()
+    mapped_event_type = alias_map.get(event_type.lower(), event_type)
 
-    if allowed_types and event_type.lower() not in allowed_types:
+    if allowed_types and mapped_event_type.lower() not in allowed_types:
         return False
 
     engine = str(section.get("engine", "vosk")).strip().lower()
@@ -294,7 +300,7 @@ def transcribe_audio(
         "engine": engine,
         "model_path": str(model_path.resolve()),
         "base_name": base_name or "",
-        "event_type": event_type,
+        "event_type": mapped_event_type,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "text": text,
     }

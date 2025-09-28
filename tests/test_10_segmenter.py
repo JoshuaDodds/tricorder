@@ -1,6 +1,10 @@
 # tests/test_10_segmenter.py
-from lib.segmenter import TimelineRecorder, FRAME_BYTES
+import importlib
+import queue
+
+import lib.config as config
 import lib.segmenter as segmenter
+from lib.segmenter import FRAME_BYTES, TimelineRecorder
 
 
 def make_frame(value: int = 1000):
@@ -165,3 +169,51 @@ def test_apply_gain_scales_and_clips(monkeypatch):
     neg_sample = (-3).to_bytes(2, 'little', signed=True)
     scaled_neg = segmenter.TimelineRecorder._apply_gain(neg_sample)
     assert read_sample(scaled_neg) == -2
+
+
+def test_custom_event_tags_used_for_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVENT_TAG_HUMAN", "Speech")
+    monkeypatch.setenv("EVENT_TAG_OTHER", "Noise")
+    monkeypatch.setenv("EVENT_TAG_BOTH", "SpeechNoise")
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    importlib.reload(segmenter)
+
+    captured: dict[str, str] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str) -> None:
+        captured["base"] = base_name
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    def fake_status(self, capturing, *, event=None, last_event=None, reason=None, extra=None):
+        if last_event:
+            captured["last_event"] = last_event
+
+    monkeypatch.setattr(segmenter.TimelineRecorder, "_update_capture_status", fake_status, raising=False)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "_q_send", lambda self, item: None, raising=False)
+
+    try:
+        recorder = segmenter.TimelineRecorder()
+        recorder.active = True
+        recorder.base_name = "20250101T000000"
+        recorder.event_timestamp = "20250101-000000"
+        recorder.event_counter = 1
+        recorder.trigger_rms = 640
+        recorder.frames_written = 50
+        recorder.sum_rms = 32000
+        recorder.saw_voiced = True
+        recorder.saw_loud = False
+        recorder.event_started_epoch = 0.0
+        recorder.done_q = queue.Queue()
+        recorder.done_q.put((str(tmp_path / "tmp.wav"), "tmp_base"))
+
+        recorder._finalize_event(reason="test")
+
+        assert captured["last_event"]["etype"] == "Speech"
+        assert "Speech" in captured["base"]
+    finally:
+        monkeypatch.delenv("EVENT_TAG_HUMAN", raising=False)
+        monkeypatch.delenv("EVENT_TAG_OTHER", raising=False)
+        monkeypatch.delenv("EVENT_TAG_BOTH", raising=False)
+        monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+        importlib.reload(segmenter)

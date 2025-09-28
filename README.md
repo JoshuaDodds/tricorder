@@ -273,12 +273,13 @@ Environment variables override YAML values. Common overrides include:
 - `REC_DIR`, `TMP_DIR`, `DROPBOX_DIR` — paths for recordings, tmpfs, and dropbox.
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
 - `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.
+- `EVENT_TAG_HUMAN`, `EVENT_TAG_OTHER`, `EVENT_TAG_BOTH` — override event labels without editing YAML.
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, custom event tags.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
@@ -336,7 +337,7 @@ Set `notifications.enabled` to `true` to emit callbacks after each recorded even
 
 Common tunables include:
 
-- `notifications.allowed_event_types` – restrict alerts to specific event classifications (e.g., `["Human", "Both"]`).
+- `notifications.allowed_event_types` – restrict alerts to specific event classifications (e.g., `["Human", "Both"]`), and canonical names still work if the segmenter tags are renamed.
 - `notifications.min_trigger_rms` – only notify on clips that exceed the configured RMS threshold.
 - `notifications.webhook.headers` / `method` / `timeout_sec` – customize webhook POST requests for downstream services.
 - `notifications.email.subject_template` / `body_template` – adjust the rendered message content for email delivery.

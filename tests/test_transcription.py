@@ -111,3 +111,39 @@ def test_transcription_with_stub_vosk(tmp_path, monkeypatch):
     assert any(entry.get("word") == "zebra" for entry in data["words"])
     assert data.get("alternatives") and data["alternatives"][0]["text"] == "hello zebra"
     assert Path(data["model_path"]).resolve() == model_dir.resolve()
+
+
+def test_transcription_honours_canonical_event_alias(monkeypatch, tmp_path):
+    model_dir = tmp_path / "vosk"
+    model_dir.mkdir()
+
+    wav_path = tmp_path / "event.wav"
+    _write_silence_wav(wav_path, seconds=0.1)
+
+    monkeypatch.setenv("EVENT_TAG_HUMAN", "Speech")
+    monkeypatch.setenv("TRANSCRIPTION_ENABLED", "1")
+    monkeypatch.setenv("TRANSCRIPTION_TYPES", "Human")
+    monkeypatch.setenv("VOSK_MODEL_PATH", str(model_dir))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+
+    from lib import transcription
+
+    monkeypatch.setattr(
+        transcription,
+        "_transcribe_with_vosk",
+        lambda *args, **kwargs: ("example", {"duration_seconds": 0.5}),
+    )
+
+    output_path = tmp_path / "alias.json"
+    wrote = transcription.transcribe_audio(
+        wav_path,
+        output_path,
+        base_name="12-34-56_Speech_RMS-100_1",
+    )
+
+    assert wrote is True
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["event_type"] == "Speech"
+
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    config.reload_cfg()
