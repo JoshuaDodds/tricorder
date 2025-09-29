@@ -293,6 +293,19 @@ audio:
   frame_ms: 20
   gain: 2.0
   vad_aggressiveness: 2
+  filter_chain:
+    highpass:
+      enabled: true
+      cutoff_hz: 110.0
+    lowpass:
+      enabled: false
+      cutoff_hz: 9500.0
+    noise_gate:
+      enabled: true
+      threshold_db: -44.0
+  calibration:
+    auto_noise_profile: true
+    auto_gain: false
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -324,6 +337,12 @@ audio:
             payload = await resp.json()
             assert payload["audio"]["device"] == "hw:1,0"
             assert payload["audio"]["sample_rate"] == 32000
+            assert payload["audio"]["filter_chain"]["highpass"]["enabled"] is True
+            assert (
+                payload["audio"]["filter_chain"]["highpass"]["cutoff_hz"]
+                == pytest.approx(110.0)
+            )
+            assert payload["audio"]["calibration"]["auto_noise_profile"] is True
 
             update_payload = {
                 "device": "hw:CARD=Device,DEV=0",
@@ -331,6 +350,12 @@ audio:
                 "frame_ms": 10,
                 "gain": 1.5,
                 "vad_aggressiveness": 3,
+                "filter_chain": {
+                    "highpass": {"enabled": True, "cutoff_hz": 140.0},
+                    "lowpass": {"enabled": True, "cutoff_hz": 14500.0},
+                    "noise_gate": {"enabled": False, "threshold_db": -37.0},
+                },
+                "calibration": {"auto_noise_profile": False, "auto_gain": True},
             }
 
             resp = await client.post("/api/config/audio", json=update_payload)
@@ -339,6 +364,13 @@ audio:
             assert updated["audio"]["frame_ms"] == 10
             assert updated["audio"]["gain"] == pytest.approx(1.5)
             assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
+            assert updated["audio"]["filter_chain"]["lowpass"]["enabled"] is True
+            assert (
+                updated["audio"]["filter_chain"]["lowpass"]["cutoff_hz"]
+                == pytest.approx(14500.0)
+            )
+            assert updated["audio"]["calibration"]["auto_noise_profile"] is False
+            assert updated["audio"]["calibration"]["auto_gain"] is True
 
             assert systemctl_calls == [
                 ["is-active", "voice-recorder.service"],
@@ -348,6 +380,18 @@ audio:
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["audio"]["gain"] == 1.5
             assert persisted["audio"]["frame_ms"] == 10
+            assert persisted["audio"]["filter_chain"]["highpass"]["enabled"] is True
+            assert (
+                persisted["audio"]["filter_chain"]["highpass"]["cutoff_hz"]
+                == pytest.approx(140.0)
+            )
+            assert persisted["audio"]["filter_chain"]["noise_gate"]["enabled"] is False
+            assert (
+                persisted["audio"]["filter_chain"]["noise_gate"]["threshold_db"]
+                == pytest.approx(-37.0)
+            )
+            assert persisted["audio"]["calibration"]["auto_noise_profile"] is False
+            assert persisted["audio"]["calibration"]["auto_gain"] is True
         finally:
             await client.close()
             await server.close()
@@ -479,11 +523,17 @@ def test_audio_settings_validation_error(tmp_path, monkeypatch):
                 "frame_ms": 15,
                 "gain": -1,
                 "vad_aggressiveness": 7,
+                "filter_chain": {
+                    "highpass": {"enabled": True, "cutoff_hz": 5},
+                },
             }
             resp = await client.post("/api/config/audio", json=payload)
             assert resp.status == 400
             data = await resp.json()
             assert data["error"]
+            assert any(
+                "filter_chain.highpass.cutoff_hz" in err for err in data.get("errors", [])
+            )
         finally:
             await client.close()
             await server.close()

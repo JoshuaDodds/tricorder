@@ -24,6 +24,28 @@ audio:
   # Suggested: 1–2 for quiet/controlled spaces; 2–3 for noisy rooms if false positives are a problem.
   vad_aggressiveness: 3
 
+  # Optional filter stages applied to the live capture stream. Each stage can be enabled
+  # independently to tame troublesome frequency bands before event detection.
+  filter_chain:
+    highpass:
+      # Remove low-frequency rumble from HVAC systems or desk bumps. Suggested 60–160 Hz.
+      enabled: false
+      cutoff_hz: 90.0
+    lowpass:
+      # Trim hiss above speech fundamentals. Suggested 6000–12000 Hz for speech-focused installs.
+      enabled: false
+      cutoff_hz: 12000.0
+    noise_gate:
+      # Suppress beds of constant noise between events. Threshold in dBFS (0 = full scale).
+      enabled: false
+      threshold_db: -45.0
+
+  # Toggle optional capture-time calibration helpers. When enabled the dashboard exposes quick
+  # actions to capture a fresh noise profile or recompute gain using the room tuner utility.
+  calibration:
+    auto_noise_profile: false
+    auto_gain: false
+
 paths:
   # Scratch space for temporary WAVs and working files. Prefer tmpfs if available.
   tmp_dir: "/apps/tricorder/tmp"
