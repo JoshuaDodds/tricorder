@@ -269,6 +269,11 @@ _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
 _TRANSCRIPTION_ENGINES = {"vosk"}
+AUDIO_FILTER_STAGE_SPECS: dict[str, tuple[str, float | None, float | None]] = {
+    "highpass": ("cutoff_hz", 20.0, 2000.0),
+    "lowpass": ("cutoff_hz", 2000.0, 20000.0),
+    "noise_gate": ("threshold_db", -90.0, 0.0),
+}
 
 
 def _audio_defaults() -> dict[str, Any]:
@@ -388,12 +393,7 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(stages, dict):
                 stages = {}
                 result["filter_chain"] = stages
-            stage_specs = {
-                "highpass": ("cutoff_hz", 20.0, 2000.0),
-                "lowpass": ("cutoff_hz", 2000.0, 20000.0),
-                "noise_gate": ("threshold_db", -90.0, 0.0),
-            }
-            for key, (value_field, min_value, max_value) in stage_specs.items():
+            for key, (value_field, min_value, max_value) in AUDIO_FILTER_STAGE_SPECS.items():
                 target = stages.get(key)
                 if not isinstance(target, dict):
                     target = {value_field: None}
@@ -785,12 +785,7 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(stages, dict):
             stages = {}
             normalized["filter_chain"] = stages
-        stage_specs = {
-            "highpass": ("cutoff_hz", 20.0, 2000.0),
-            "lowpass": ("cutoff_hz", 2000.0, 20000.0),
-            "noise_gate": ("threshold_db", -90.0, 0.0),
-        }
-        for stage_key, (value_field, min_value, max_value) in stage_specs.items():
+        for stage_key, (value_field, min_value, max_value) in AUDIO_FILTER_STAGE_SPECS.items():
             stage_payload = filters_payload.get(stage_key)
             if stage_payload is None:
                 continue
