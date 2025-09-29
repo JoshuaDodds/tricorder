@@ -18,6 +18,13 @@ audio:
   # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
   gain: 2.5
 
+  # Optional notch filters applied during capture. Each entry should specify:
+  #   - type: "notch"
+  #   - frequency: center frequency in Hz (float)
+  #   - q: quality factor (float)
+  #   - gain_db: attenuation in decibels (negative to cut)
+  filter_chain: []
+
   # WebRTC VAD aggressiveness. # WebRTC VAD aggressiveness (0..3).
   # 0 = least aggressive (most permissive, more false positives, fewer misses).
   # 3 = most aggressive (strictest, fewer false positives, more misses).
