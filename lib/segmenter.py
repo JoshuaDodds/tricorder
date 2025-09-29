@@ -597,6 +597,9 @@ class AdaptiveRmsController:
         release_val = ordered[rel_idx]
         candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
         if (
+            # Require both gates to move upward before raising the threshold.
+            # This avoids ping-ponging when the long-tail release sample still
+            # recommends holding steady.
             candidate_raise > self._current_norm
             and candidate_release > self._current_norm
         ):
