@@ -596,10 +596,12 @@ class AdaptiveRmsController:
         rel_idx = max(0, int(math.ceil(self.release_percentile * len(ordered)) - 1))
         release_val = ordered[rel_idx]
         candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
-        if (candidate_raise > self._current_norm) and (candidate_release > self._current_norm):
+        if candidate_raise > self._current_norm:
             candidate = candidate_raise
+        elif candidate_release < self._current_norm:
+            candidate = candidate_release
         else:
-            candidate = min(self._current_norm, candidate_release)
+            candidate = self._current_norm
         self._last_p95 = p95
         self._last_candidate = candidate
         self._last_release = release_val
@@ -935,6 +937,17 @@ class TimelineRecorder:
             "timestamp": observation.timestamp,
         }
         print(json.dumps(payload), flush=True)
+        if observation.updated:
+            margin = self._adaptive.margin
+            release_pct = self._adaptive.release_percentile
+            print(
+                "[segmenter] adaptive RMS threshold updated: "
+                f"prev={observation.previous_threshold_linear} "
+                f"new={observation.threshold_linear} "
+                f"(p95={observation.p95_norm:.4f}, margin={margin:.2f}, "
+                f"release_pctl={release_pct:.2f}, release={observation.release_norm:.4f})",
+                flush=True,
+            )
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
