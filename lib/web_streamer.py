@@ -2579,6 +2579,22 @@ def build_app() -> web.Application:
             elif normalized in {"0", "false", "no", "off", "stopped"}:
                 status["service_running"] = False
 
+        adaptive_threshold = raw.get("adaptive_rms_threshold")
+        if isinstance(adaptive_threshold, (int, float)) and math.isfinite(adaptive_threshold):
+            status["adaptive_rms_threshold"] = int(adaptive_threshold)
+
+        adaptive_enabled_raw = raw.get("adaptive_rms_enabled")
+        if isinstance(adaptive_enabled_raw, bool):
+            status["adaptive_rms_enabled"] = adaptive_enabled_raw
+        elif isinstance(adaptive_enabled_raw, (int, float)):
+            status["adaptive_rms_enabled"] = bool(adaptive_enabled_raw)
+        elif isinstance(adaptive_enabled_raw, str):
+            normalized = adaptive_enabled_raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                status["adaptive_rms_enabled"] = True
+            elif normalized in {"0", "false", "no", "off", "disabled"}:
+                status["adaptive_rms_enabled"] = False
+
         duration_seconds = raw.get("event_duration_seconds")
         if isinstance(duration_seconds, (int, float)) and math.isfinite(duration_seconds):
             status["event_duration_seconds"] = max(0.0, float(duration_seconds))

@@ -1,4 +1,5 @@
 # tests/test_10_segmenter.py
+import builtins
 import json
 
 import pytest
@@ -83,13 +84,18 @@ def test_adaptive_threshold_updates(monkeypatch):
 
     initial = ctrl.threshold_linear
     values = [800, 900, 1000, 1100, 1200]
+    observations = []
     for val in values:
         ctrl.observe(val, voiced=False)
+        observations.append(ctrl.pop_observation())
         fake_time[0] += 0.05
 
     assert ctrl.threshold_linear > initial
     assert ctrl.last_p95 is not None
     assert ctrl.last_candidate is not None
+    applied = [obs for obs in observations if obs]
+    assert applied, "expected at least one adaptive observation"
+    assert any(obs.updated for obs in applied)
 
 
 def test_adaptive_threshold_hysteresis(monkeypatch):
@@ -116,11 +122,17 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
 
     baseline = ctrl.threshold_linear
     ctrl.observe(520, voiced=False)
+    first_obs = ctrl.pop_observation()
     fake_time[0] += 0.05
     ctrl.observe(540, voiced=False)
+    second_obs = ctrl.pop_observation()
 
     # Change < 50% => no update
     assert ctrl.threshold_linear == baseline
+    if first_obs:
+        assert not first_obs.updated
+    if second_obs:
+        assert not second_obs.updated
 
 
 def test_adaptive_threshold_recovery(monkeypatch):
@@ -148,13 +160,16 @@ def test_adaptive_threshold_recovery(monkeypatch):
 
     for _ in range(10):
         ctrl.observe(1200, voiced=False)
+        ctrl.pop_observation()
         fake_time[0] += 0.05
 
     raised = ctrl.threshold_linear
     assert raised > 300
 
+    lowering_observations = []
     for _ in range(10):
         ctrl.observe(200, voiced=False)
+        lowering_observations.append(ctrl.pop_observation())
         fake_time[0] += 0.05
 
     lowered = ctrl.threshold_linear
@@ -166,7 +181,68 @@ def test_adaptive_threshold_recovery(monkeypatch):
     )
     expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
     assert lowered == expected_linear
+    assert any(obs and obs.updated for obs in lowering_observations)
 
+
+def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "enabled", True)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "update_interval_sec", 0.05)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "window_sec", 0.1)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "hysteresis_tolerance", 0.0)
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_path))
+    monkeypatch.setattr(segmenter, "is_voice", lambda *_: False)
+
+    logs: list[tuple[object, bool]] = []
+
+    def fake_print(message, flush=False):
+        logs.append((message, flush))
+
+    monkeypatch.setattr(builtins, "print", fake_print)
+
+    status_calls: list[dict] = []
+    original_update = segmenter.TimelineRecorder._update_capture_status
+
+    def tracking_update(self, capturing, *, event=None, last_event=None, reason=None, extra=None):
+        status_calls.append({
+            "extra": extra,
+            "threshold": self._adaptive.threshold_linear,
+        })
+        return original_update(self, capturing, event=event, last_event=last_event, reason=reason, extra=extra)
+
+    monkeypatch.setattr(segmenter.TimelineRecorder, "_update_capture_status", tracking_update)
+
+    rec = TimelineRecorder()
+    status_calls.clear()
+
+    frame = make_frame(400)
+    for idx in range(6):
+        rec.ingest(frame, idx)
+        fake_time[0] += 0.05
+
+    rec.audio_q.put(None)
+    rec.writer.join(timeout=1)
+
+    observation_logs = [
+        json.loads(entry[0])
+        for entry in logs
+        if isinstance(entry[0], str) and "adaptive_rms_observation" in entry[0]
+    ]
+    assert observation_logs, "expected adaptive RMS observation logs"
+    assert all(log["event"] == "adaptive_rms_observation" for log in observation_logs)
+    threshold_calls = [call for call in status_calls if call["extra"] is None]
+    assert threshold_calls, "expected capture status updates for threshold observations"
+    assert len(threshold_calls) == len(observation_logs)
+    assert any(log["updated"] for log in observation_logs)
 
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)
