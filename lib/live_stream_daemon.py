@@ -118,6 +118,18 @@ def _filter_worker_main(
             output_queue.put((seq, frame, repr(exc)))
 
 
+class FilterPipelineError(RuntimeError):
+    """Raised when the filter worker becomes unavailable."""
+
+    def __init__(
+        self,
+        message: str,
+        fallback_frames: Optional[list[Tuple[bytes, Optional[str]]]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.fallback_frames = fallback_frames or []
+
+
 class FilterPipeline:
     """Offload AudioFilterChain processing to a helper process."""
 
@@ -138,6 +150,7 @@ class FilterPipeline:
         )
         self._pending = deque()
         self._reorder: dict[int, Tuple[bytes, Optional[str]]] = {}
+        self._inflight: dict[int, bytes] = {}
         self._next_seq = 0
         self._process = mp.Process(
             target=_filter_worker_main,
@@ -145,33 +158,71 @@ class FilterPipeline:
             daemon=True,
         )
         self._process.start()
+        self._failed = False
+        self._fail_reason = ""
+        self._stall_timeout = 2.0
+        self._last_progress = time.monotonic()
 
     def push(self, frame: bytes) -> list[Tuple[bytes, Optional[str]]]:
         drained: list[Tuple[bytes, Optional[str]]] = []
+        if self._failed:
+            raise FilterPipelineError(self._fail_reason, [(frame, self._fail_reason)])
         while len(self._pending) >= self._max_pending:
-            drained.extend(self._drain(block=True, limit=1))
+            drained_chunk = self._drain(block=True, limit=1)
+            if drained_chunk:
+                drained.extend(drained_chunk)
+                continue
+            self._ensure_worker_alive()
+            if self._pending and self._is_stalled():
+                raise self._fail_with_pending("filter worker stalled (no output)")
         seq = self._next_seq
         self._next_seq += 1
-        self._input.put((seq, frame))
+        self._inflight[seq] = frame
+        try:
+            self._input.put((seq, frame))
+        except Exception as exc:
+            raise self._fail_with_pending(
+                f"failed to enqueue frame for filter worker: {exc!r}"
+            ) from exc
         self._pending.append(seq)
         drained.extend(self._drain(block=False, limit=None))
         return drained
 
     def pop_ready(self) -> list[Tuple[bytes, Optional[str]]]:
-        return self._drain(block=False, limit=None)
+        if self._failed:
+            raise FilterPipelineError(self._fail_reason)
+        results = self._drain(block=False, limit=None)
+        if not results and self._pending:
+            self._ensure_worker_alive()
+            if self._is_stalled():
+                raise self._fail_with_pending("filter worker stalled (no output)")
+        return results
 
     def drain_all(self) -> list[Tuple[bytes, Optional[str]]]:
-        return self._drain(block=True, limit=None)
+        if self._failed:
+            raise FilterPipelineError(self._fail_reason)
+        results = self._drain(block=True, limit=None)
+        if self._pending:
+            self._ensure_worker_alive()
+            if self._is_stalled():
+                raise self._fail_with_pending("filter worker stalled (no output)")
+        return results
 
     def close(self) -> None:
         try:
             self._input.put(None, timeout=0.5)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"[live/filter] failed to signal worker shutdown: {exc!r}",
+                flush=True,
+            )
         try:
             self._process.join(timeout=1.5)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"[live/filter] failed waiting for filter worker to exit: {exc!r}",
+                flush=True,
+            )
         if self._process.is_alive():  # pragma: no cover - defensive cleanup
             self._process.terminate()
         while not self._output.empty():  # drain any stragglers to avoid resource leak
@@ -199,15 +250,43 @@ class FilterPipeline:
                 self._reorder[seq] = (payload, error_text)
                 continue
             self._pending.popleft()
+            self._inflight.pop(seq, None)
             results.append((payload, error_text))
+            self._last_progress = time.monotonic()
             block = False
             while self._pending and self._pending[0] in self._reorder:
                 seq_key = self._pending.popleft()
                 payload2, error_text2 = self._reorder.pop(seq_key)
+                self._inflight.pop(seq_key, None)
                 results.append((payload2, error_text2))
+                self._last_progress = time.monotonic()
                 if limit is not None and len(results) >= limit:
                     break
         return results
+
+    def _ensure_worker_alive(self) -> None:
+        if self._process.is_alive():
+            return
+        exitcode = self._process.exitcode
+        if exitcode is None:
+            reason = "filter worker exited unexpectedly"
+        else:
+            reason = f"filter worker exited with code {exitcode}"
+        raise self._fail_with_pending(reason)
+
+    def _is_stalled(self) -> bool:
+        return (time.monotonic() - self._last_progress) > self._stall_timeout
+
+    def _fail_with_pending(self, reason: str) -> FilterPipelineError:
+        fallback: list[Tuple[bytes, Optional[str]]] = []
+        while self._pending:
+            seq = self._pending.popleft()
+            frame = self._inflight.pop(seq, b"")
+            fallback.append((frame, reason))
+        self._reorder.clear()
+        self._failed = True
+        self._fail_reason = reason
+        return FilterPipelineError(reason, fallback)
 
 def main():
     global p, stop_requested
@@ -324,7 +403,24 @@ def main():
                     frame = bytes(buf[:FRAME_BYTES])
                     del buf[:FRAME_BYTES]
                     if filter_pipeline is not None:
-                        drained = filter_pipeline.push(frame)
+                        try:
+                            drained = filter_pipeline.push(frame)
+                        except FilterPipelineError as exc:
+                            if exc.fallback_frames:
+                                flush_processed(exc.fallback_frames)
+                            print(
+                                f"[live] filter worker failure: {exc} (using in-process filters)",
+                                flush=True,
+                            )
+                            try:
+                                filter_pipeline.close()
+                            except Exception as close_exc:
+                                print(
+                                    f"[live] filter pipeline close error: {close_exc!r}",
+                                    flush=True,
+                                )
+                            filter_pipeline = None
+                            continue
                         if drained:
                             flush_processed(drained)
                         continue
@@ -345,7 +441,24 @@ def main():
                     flush_processed([(processed, None)])
 
                 if filter_pipeline is not None:
-                    drained = filter_pipeline.pop_ready()
+                    try:
+                        drained = filter_pipeline.pop_ready()
+                    except FilterPipelineError as exc:
+                        if exc.fallback_frames:
+                            flush_processed(exc.fallback_frames)
+                        print(
+                            f"[live] filter worker failure: {exc} (using in-process filters)",
+                            flush=True,
+                        )
+                        try:
+                            filter_pipeline.close()
+                        except Exception as close_exc:
+                            print(
+                                f"[live] filter pipeline close error: {close_exc!r}",
+                                flush=True,
+                            )
+                        filter_pipeline = None
+                        drained = []
                     if drained:
                         flush_processed(drained)
 
@@ -366,7 +479,24 @@ def main():
                         pass
 
             if filter_pipeline is not None:
-                drained = filter_pipeline.drain_all()
+                try:
+                    drained = filter_pipeline.drain_all()
+                except FilterPipelineError as exc:
+                    if exc.fallback_frames:
+                        flush_processed(exc.fallback_frames)
+                    print(
+                        f"[live] filter worker failure during drain: {exc} (using in-process filters)",
+                        flush=True,
+                    )
+                    try:
+                        filter_pipeline.close()
+                    except Exception as close_exc:
+                        print(
+                            f"[live] filter pipeline close error: {close_exc!r}",
+                            flush=True,
+                        )
+                    filter_pipeline = None
+                    drained = []
                 if drained:
                     flush_processed(drained)
 
@@ -380,7 +510,24 @@ def main():
                         # Ensure encoder is stopped when daemon exits/restarts.
                         controller.stop_now()
                 if filter_pipeline is not None and 'flush_processed' in locals():
-                    drained = filter_pipeline.drain_all()
+                    try:
+                        drained = filter_pipeline.drain_all()
+                    except FilterPipelineError as exc:
+                        if exc.fallback_frames:
+                            flush_processed(exc.fallback_frames)
+                        print(
+                            f"[live] filter worker failure during shutdown: {exc} (using in-process filters)",
+                            flush=True,
+                        )
+                        try:
+                            filter_pipeline.close()
+                        except Exception as close_exc:
+                            print(
+                                f"[live] filter pipeline close error: {close_exc!r}",
+                                flush=True,
+                            )
+                        filter_pipeline = None
+                        drained = []
                     if drained:
                         flush_processed(drained)
                 if 'rec' in locals():
