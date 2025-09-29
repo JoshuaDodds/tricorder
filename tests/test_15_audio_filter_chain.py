@@ -20,6 +20,26 @@ def pcm_to_float(frame: bytes) -> np.ndarray:
     return np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768.0
 
 
+def test_chain_disabled_when_all_stages_off():
+    chain = AudioFilterChain(
+        {
+            "enabled": True,
+            "highpass": {"enabled": False},
+            "notch": {"enabled": False},
+            "spectral_gate": {"enabled": False},
+        }
+    )
+    assert chain.enabled is False
+
+    cfg = {
+        "enabled": True,
+        "highpass": {"enabled": False},
+        "notch": {"enabled": False},
+        "spectral_gate": {"enabled": False},
+    }
+    assert AudioFilterChain.from_config(cfg) is None
+
+
 def test_highpass_attenuates_rumble():
     chain = AudioFilterChain(
         {

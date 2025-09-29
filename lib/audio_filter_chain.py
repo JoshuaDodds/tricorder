@@ -91,6 +91,16 @@ class AudioFilterChain:
 
         self._states: Dict[Tuple[int, int], FilterState] = {}
 
+        # If all individual stages are disabled, treat the chain as disabled to
+        # avoid unnecessary numpy conversions on every frame. This preserves the
+        # intent of configs that omit explicit filters while keeping the
+        # top-level "enabled" flag as an override when at least one stage is
+        # active.
+        if self.enabled and not (
+            self.highpass_enabled or self.notch_enabled or self.spectral_gate_enabled
+        ):
+            self.enabled = False
+
     def _append_notch_filter(self, frequency_hz: float, q: float) -> None:
         try:
             freq = float(frequency_hz)
@@ -150,7 +160,10 @@ class AudioFilterChain:
             enabled = enabled.lower() in {"1", "true", "yes", "on"}
         if not enabled:
             return None
-        return cls(cfg_block)
+        chain = cls(cfg_block)
+        if not chain.enabled:
+            return None
+        return chain
 
     def process(self, sample_rate: int, frame_bytes: int, frame: bytes) -> bytes:
         if not self.enabled:
