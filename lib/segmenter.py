@@ -920,6 +920,7 @@ class TimelineRecorder:
         self._update_capture_status(capturing, event=event, last_event=last_event, reason=reason)
 
     def _log_adaptive_rms_observation(self, observation: AdaptiveRmsObservation) -> None:
+
         if not observation.updated:
             return
 
