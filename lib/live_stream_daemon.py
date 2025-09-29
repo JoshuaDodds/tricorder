@@ -436,6 +436,7 @@ def main():
                                 )
                             filter_pipeline = None
                             filter_pipeline_launch_error_logged = False
+                            ensure_filter_pipeline()
                             continue
                         if drained:
                             flush_processed(drained)
@@ -475,9 +476,13 @@ def main():
                             )
                         filter_pipeline = None
                         filter_pipeline_launch_error_logged = False
+                        ensure_filter_pipeline()
                         drained = []
                     if drained:
                         flush_processed(drained)
+
+                if filter_pipeline is None:
+                    ensure_filter_pipeline()
 
                 now = time.monotonic()
                 if now - last_frame_time > 10:
