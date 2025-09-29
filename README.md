@@ -282,7 +282,7 @@ Environment variables override YAML values. Common overrides include:
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
-- `audio` – device, sample rate, frame size, gain, VAD aggressiveness.
+- `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, custom event tags.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
@@ -291,11 +291,26 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `notifications` – optional webhook/email alerts when events finish recording.
 - `streaming` – live stream transport configuration (HLS/WebRTC).
 
+### Idle hum mitigation
+
+`audio.filter_chain` accepts a list of notch filters executed before the segmenter sees PCM data. Each entry uses the form:
+
+```yaml
+audio:
+  filter_chain:
+    - type: "notch"
+      frequency: 60.0
+      q: 25.0
+      gain_db: -18.0
+```
+
+`room_tuner.py --analyze-noise --auto-filter print` captures a short idle sample, identifies dominant hum frequencies via FFT, and prints a ready-to-paste configuration snippet. Pass `--auto-filter update` to persist the recommendation (combine with `--dry-run` to review without writing).
+
 ---
 
 ## Tuning and utilities
 
-- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing.
+- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing. Use `--analyze-noise` to capture idle hum fingerprints and `--auto-filter` to print or persist `audio.filter_chain` notch filters.
 - `clear_logs.sh` rotates `journalctl` and wipes recordings/tmpfs directories; useful before running end-to-end tests.
 
 ### Dashboard service controls

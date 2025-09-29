@@ -11,6 +11,7 @@ from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
 from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
+from lib.audio_filter_chain import AudioFilterChain
 
 cfg = get_cfg()
 
@@ -61,6 +62,9 @@ STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
 if STREAM_MODE not in {"hls", "webrtc"}:
     STREAM_MODE = "hls"
 WEBRTC_HISTORY_SECONDS = float(STREAMING_CFG.get("webrtc_history_seconds", 8.0))
+
+FILTER_CHAIN_CFG = cfg.get("audio", {}).get("filter_chain")
+FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
@@ -166,6 +170,7 @@ def main():
             frame_idx = 0
             last_frame_time = time.monotonic()
             next_state_poll = 0.0
+            filter_chain_error_logged = False
 
             assert p.stdout is not None
             stderr_fd = p.stderr.fileno() if p.stderr is not None else None
@@ -188,9 +193,22 @@ def main():
 
                 while len(buf) >= FRAME_BYTES:
                     frame = bytes(buf[:FRAME_BYTES])
+                    processed = frame
+                    if FILTER_CHAIN is not None:
+                        try:
+                            processed = FILTER_CHAIN.process(SAMPLE_RATE, FRAME_BYTES, frame)
+                            filter_chain_error_logged = False
+                        except Exception as exc:
+                            if not filter_chain_error_logged:
+                                print(
+                                    f"[live] filter chain error: {exc!r} (falling back to raw frames)",
+                                    flush=True,
+                                )
+                                filter_chain_error_logged = True
+                            processed = frame
                     # Always feed frames; sink drops if not started.
-                    publish_frame(frame)
-                    rec.ingest(frame, frame_idx)
+                    publish_frame(processed)
+                    rec.ingest(processed, frame_idx)
                     del buf[:FRAME_BYTES]
                     frame_idx += 1
                     last_frame_time = time.monotonic()

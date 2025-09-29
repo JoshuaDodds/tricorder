@@ -37,6 +37,7 @@ _DEFAULTS: Dict[str, Any] = {
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "filter_chain": [],
     },
     "paths": {
         "tmp_dir": "/apps/tricorder/tmp",
