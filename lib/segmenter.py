@@ -69,6 +69,22 @@ class RecorderIngestHint:
     event_counter: int | None = None
 
 
+@dataclass(frozen=True)
+class AdaptiveRmsObservation:
+    """Snapshot emitted whenever the adaptive RMS controller evaluates."""
+
+    timestamp: float
+    updated: bool
+    threshold_linear: int
+    previous_threshold_linear: int
+    candidate_threshold_linear: int
+    p95_norm: float
+    release_norm: float
+    buffer_size: int
+    rms_value: int
+    voiced: bool
+
+
 def pcm16_rms(buf: bytes) -> int:
     """Compute RMS amplitude for signed 16-bit little-endian PCM data."""
     if not buf:
@@ -521,11 +537,12 @@ class AdaptiveRmsController:
         self._last_p95: float | None = None
         self._last_candidate: float | None = None
         self._last_release: float | None = None
+        self._last_observation: AdaptiveRmsObservation | None = None
         initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
         if self.enabled:
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
-        self.debug = True  # todo: set to DEBUG_VERBOSE when done testing
+        self.debug = bool(debug)
 
     @property
     def threshold_linear(self) -> int:
@@ -549,8 +566,13 @@ class AdaptiveRmsController:
     def last_release(self) -> float | None:
         return self._last_release
 
+    def pop_observation(self) -> AdaptiveRmsObservation | None:
+        observation, self._last_observation = self._last_observation, None
+        return observation
+
     def observe(self, rms_value: int, voiced: bool) -> bool:
         if not self.enabled:
+            self._last_observation = None
             return False
 
         norm = max(0.0, min(rms_value / self._NORM, 1.0))
@@ -559,9 +581,11 @@ class AdaptiveRmsController:
 
         now = time.monotonic()
         if (now - self._last_update) < self.update_interval:
+            self._last_observation = None
             return False
 
         if not self._buffer:
+            self._last_observation = None
             return False
 
         self._last_update = now
@@ -580,6 +604,7 @@ class AdaptiveRmsController:
         self._last_candidate = candidate
         self._last_release = release_val
 
+        previous_norm = self._current_norm
         if self._current_norm <= 0.0:
             should_update = True
         else:
@@ -587,24 +612,23 @@ class AdaptiveRmsController:
             should_update = (delta / self._current_norm) >= self.hysteresis_tolerance
 
         if should_update:
-            previous = self._current_norm
             self._current_norm = candidate
-            if self.debug:
-                details = (
-                    f"(p95={p95:.4f}, margin={self.margin:.2f}, "
-                    f"release_pctl={self.release_percentile:.2f}, "
-                    f"release={release_val:.4f})"
-                )
-                print(
-                    "[segmenter] adaptive RMS threshold updated: "
-                    f"prev={int(round(previous * self._NORM))} "
-                    f"new={self.threshold_linear} "
-                    f"{details}",
-                    flush=True,
-                )
-            return True
-
-        return False
+        final_threshold = int(round(self._current_norm * self._NORM))
+        previous_threshold = int(round(previous_norm * self._NORM))
+        candidate_threshold = int(round(candidate * self._NORM))
+        self._last_observation = AdaptiveRmsObservation(
+            timestamp=time.time(),
+            updated=bool(should_update),
+            threshold_linear=final_threshold,
+            previous_threshold_linear=previous_threshold,
+            candidate_threshold_linear=candidate_threshold,
+            p95_norm=p95,
+            release_norm=release_val,
+            buffer_size=len(self._buffer),
+            rms_value=int(rms_value),
+            voiced=bool(voiced),
+        )
+        return should_update
 
 
 class TimelineRecorder:
@@ -893,6 +917,25 @@ class TimelineRecorder:
         reason = cached.get("last_stop_reason")
         self._update_capture_status(capturing, event=event, last_event=last_event, reason=reason)
 
+    def _log_adaptive_rms_observation(self, observation: AdaptiveRmsObservation) -> None:
+        payload = {
+            "component": "segmenter",
+            "event": "adaptive_rms_observation",
+            "enabled": bool(self._adaptive.enabled),
+            "update_interval_sec": self._adaptive.update_interval,
+            "updated": observation.updated,
+            "threshold": observation.threshold_linear,
+            "previous_threshold": observation.previous_threshold_linear,
+            "candidate_threshold": observation.candidate_threshold_linear,
+            "p95_norm": round(observation.p95_norm, 6),
+            "release_norm": round(observation.release_norm, 6),
+            "window_size": observation.buffer_size,
+            "rms_value": observation.rms_value,
+            "voiced": observation.voiced,
+            "timestamp": observation.timestamp,
+        }
+        print(json.dumps(payload), flush=True)
+
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
         return pcm16_apply_gain(buf, GAIN)
@@ -970,8 +1013,10 @@ class TimelineRecorder:
         self._dbg_rms.append(rms_val)
         self._dbg_voiced.append(bool(voiced))
 
-        threshold_updated = self._adaptive.observe(rms_val, bool(voiced))
-        if threshold_updated:
+        self._adaptive.observe(rms_val, bool(voiced))
+        observation = self._adaptive.pop_observation()
+        if observation:
+            self._log_adaptive_rms_observation(observation)
             self._emit_threshold_update()
 
         self._maybe_update_live_metrics(rms_val)
