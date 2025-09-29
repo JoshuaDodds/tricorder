@@ -144,6 +144,20 @@ USE_RNNOISE = bool(cfg["segmenter"]["use_rnnoise"])
 USE_NOISEREDUCE = bool(cfg["segmenter"]["use_noisereduce"])
 DENOISE_BEFORE_VAD = bool(cfg["segmenter"]["denoise_before_vad"])
 
+# Filter chain instrumentation tunables
+FILTER_CHAIN_METRICS_WINDOW = int(
+    cfg["segmenter"].get("filter_chain_metrics_window", 50)
+)
+FILTER_CHAIN_AVG_BUDGET_MS = float(
+    cfg["segmenter"].get("filter_chain_avg_budget_ms", max(1.0, FRAME_MS * 0.3))
+)
+FILTER_CHAIN_PEAK_BUDGET_MS = float(
+    cfg["segmenter"].get("filter_chain_peak_budget_ms", max(1.0, FRAME_MS * 0.8))
+)
+FILTER_CHAIN_LOG_THROTTLE_SEC = float(
+    cfg["segmenter"].get("filter_chain_log_throttle_sec", 30.0)
+)
+
 # buffered writes
 FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
 MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
@@ -668,6 +682,12 @@ class TimelineRecorder:
         self._last_metrics_update = 0.0
         self._last_metrics_value: int | None = None
         self._last_metrics_threshold: int | None = None
+        self._filter_chain_samples: collections.deque[float] = collections.deque(
+            maxlen=max(1, FILTER_CHAIN_METRICS_WINDOW)
+        )
+        self._filter_avg_ms: float = 0.0
+        self._filter_peak_ms: float = 0.0
+        self._filter_last_log_ts: float = 0.0
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
@@ -854,6 +874,10 @@ class TimelineRecorder:
                     else None
                 ),
                 "event_size_bytes": self._current_event_size() if capturing else None,
+                "filter_chain_avg_ms": round(self._filter_avg_ms, 3),
+                "filter_chain_peak_ms": round(self._filter_peak_ms, 3),
+                "filter_chain_avg_budget_ms": FILTER_CHAIN_AVG_BUDGET_MS,
+                "filter_chain_peak_budget_ms": FILTER_CHAIN_PEAK_BUDGET_MS,
             },
         )
 
@@ -888,6 +912,36 @@ class TimelineRecorder:
             return arr_denoised.astype(np.int16).tobytes()
         return samples
 
+    def _record_filter_metrics(self, duration_ms: float) -> None:
+        if duration_ms < 0:
+            return
+        samples = self._filter_chain_samples
+        samples.append(duration_ms)
+        if samples:
+            self._filter_avg_ms = sum(samples) / len(samples)
+            self._filter_peak_ms = max(samples)
+        else:
+            self._filter_avg_ms = 0.0
+            self._filter_peak_ms = 0.0
+
+        now = time.monotonic()
+        over_avg_budget = self._filter_avg_ms > FILTER_CHAIN_AVG_BUDGET_MS
+        over_peak_budget = self._filter_peak_ms > FILTER_CHAIN_PEAK_BUDGET_MS
+        if (over_avg_budget or over_peak_budget) and (
+            now - self._filter_last_log_ts >= FILTER_CHAIN_LOG_THROTTLE_SEC
+        ):
+            payload = {
+                "component": "segmenter",
+                "event": "filter_chain_budget_exceeded",
+                "avg_ms": round(self._filter_avg_ms, 3),
+                "peak_ms": round(self._filter_peak_ms, 3),
+                "avg_budget_ms": FILTER_CHAIN_AVG_BUDGET_MS,
+                "peak_budget_ms": FILTER_CHAIN_PEAK_BUDGET_MS,
+                "window_size": len(samples),
+            }
+            print(json.dumps(payload), flush=True)
+            self._filter_last_log_ts = now
+
     def _q_send(self, item):
         try:
             self.audio_q.put_nowait(item)
@@ -895,8 +949,14 @@ class TimelineRecorder:
             self.queue_drops += 1
 
     def ingest(self, buf: bytes, idx: int):
+        start = time.perf_counter()
         buf = self._apply_gain(buf)
-        proc_for_analysis = self._denoise(buf) if DENOISE_BEFORE_VAD else buf
+        if DENOISE_BEFORE_VAD:
+            proc_for_analysis = self._denoise(buf)
+        else:
+            proc_for_analysis = buf
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self._record_filter_metrics(elapsed_ms)
 
         rms_val = rms(proc_for_analysis)
         voiced = is_voice(proc_for_analysis)

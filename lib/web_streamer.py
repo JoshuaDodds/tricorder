@@ -2456,6 +2456,22 @@ def build_app() -> web.Application:
         if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
             status["event_size_bytes"] = max(0, int(event_size_bytes))
 
+        avg_ms = raw.get("filter_chain_avg_ms")
+        if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):
+            status["filter_chain_avg_ms"] = float(avg_ms)
+
+        peak_ms = raw.get("filter_chain_peak_ms")
+        if isinstance(peak_ms, (int, float)) and math.isfinite(peak_ms):
+            status["filter_chain_peak_ms"] = float(peak_ms)
+
+        avg_budget = raw.get("filter_chain_avg_budget_ms")
+        if isinstance(avg_budget, (int, float)) and math.isfinite(avg_budget):
+            status["filter_chain_avg_budget_ms"] = float(avg_budget)
+
+        peak_budget = raw.get("filter_chain_peak_budget_ms")
+        if isinstance(peak_budget, (int, float)) and math.isfinite(peak_budget):
+            status["filter_chain_peak_budget_ms"] = float(peak_budget)
+
         encoding_raw = raw.get("encoding")
         if isinstance(encoding_raw, dict):
             encoding: dict[str, object] = {}

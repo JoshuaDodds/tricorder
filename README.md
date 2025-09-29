@@ -284,7 +284,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, custom event tags.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.

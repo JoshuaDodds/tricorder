@@ -137,6 +137,17 @@ segmenter:
   # If true, denoise audio before VAD. Can degrade VAD accuracy; keep false unless validated.
   denoise_before_vad: false
 
+  # Moving-average and peak timing budgets (milliseconds) for the filter chain (gain + denoise).
+  # Keep both values below audio.frame_ms so real-time capture stays ahead of the input stream.
+  filter_chain_avg_budget_ms: 6.0
+  filter_chain_peak_budget_ms: 15.0
+
+  # Number of recent frames to include in the moving average (higher = smoother, but slower to react).
+  filter_chain_metrics_window: 50
+
+  # Minimum seconds between structured WARN logs when budgets are exceeded. Lower during tuning.
+  filter_chain_log_throttle_sec: 30.0
+
   # Writer flush threshold for WAV buffering (bytes). Larger = fewer writes, more memory.
   # Typical: 65536–262144 (64–256 KB).
   flush_threshold_bytes: 131072
