@@ -36,6 +36,10 @@ class FilterState:
     notch_states: List[NotchState]
     notch_coeffs: List[Optional[Tuple[float, float, float, float, float]]]
     noise_estimate: Optional[np.ndarray] = None
+    noise_history: Optional[np.ndarray] = None
+    noise_history_pos: int = 0
+    noise_history_filled: int = 0
+    gate_startup_frames: int = 0
 
 
 class AudioFilterChain:
@@ -88,6 +92,12 @@ class AudioFilterChain:
         self.gate_reduction_db = float(gate_cfg.get("reduction_db", -18.0))
         self.gate_update = float(gate_cfg.get("noise_update", 0.1))
         self.gate_decay = float(gate_cfg.get("noise_decay", 0.95))
+        # Internal spectral gate heuristics: maintain ~0.8s of history and use a
+        # short (~40ms) warmup so the percentile estimate reflects the ambient
+        # noise floor rather than the very first frame.
+        self._gate_history_seconds = 0.8
+        self._gate_startup_seconds = 0.04
+        self._gate_noise_percentile = 70.0
 
         self._states: Dict[Tuple[int, int], FilterState] = {}
 
@@ -192,12 +202,29 @@ class AudioFilterChain:
 
     def _init_state(self, sample_rate: int, frame_bytes: int) -> FilterState:
         notch_count = len(self._notch_filters) if self.notch_enabled else 0
+        gate_history = None
+        gate_startup_frames = 0
+        if self.spectral_gate_enabled:
+            frame_samples = max(1, frame_bytes // 2)
+            frames_per_second = max(1, int(round(sample_rate / frame_samples)))
+            history_len = max(
+                4,
+                min(200, int(round(self._gate_history_seconds * frames_per_second))),
+            )
+            freq_bins = frame_samples // 2 + 1
+            gate_history = np.zeros((history_len, freq_bins), dtype=np.float32)
+            gate_startup_frames = max(
+                1,
+                min(history_len, int(round(self._gate_startup_seconds * frames_per_second))),
+            )
         state = FilterState(
             sample_rate=sample_rate,
             frame_bytes=frame_bytes,
             highpass_state=HighPassState(),
             notch_states=[NotchState() for _ in range(notch_count)],
             notch_coeffs=[None for _ in range(notch_count)],
+            noise_history=gate_history,
+            gate_startup_frames=gate_startup_frames,
         )
 
         return state
@@ -287,27 +314,45 @@ class AudioFilterChain:
 
     def _apply_gate(self, data: np.ndarray, state: FilterState) -> np.ndarray:
         spectrum = np.fft.rfft(data)
-        mags = np.abs(spectrum)
+        mags = np.abs(spectrum).astype(np.float32, copy=False)
 
-        if state.noise_estimate is None:
-            state.noise_estimate = mags
+        history = state.noise_history
+        if history is None or history.shape[1] != mags.size:
+            frame_samples = max(1, state.frame_bytes // 2)
+            frames_per_second = max(1, int(round(state.sample_rate / frame_samples)))
+            history_len = max(
+                4,
+                min(200, int(round(self._gate_history_seconds * frames_per_second))),
+            )
+            history = np.zeros((history_len, mags.size), dtype=np.float32)
+            state.noise_history = history
+            state.noise_history_pos = 0
+            state.noise_history_filled = 0
+            state.gate_startup_frames = max(
+                1,
+                min(history_len, int(round(self._gate_startup_seconds * frames_per_second))),
+            )
+
+        history[state.noise_history_pos] = mags
+        state.noise_history_pos = (state.noise_history_pos + 1) % history.shape[0]
+        if state.noise_history_filled < history.shape[0]:
+            state.noise_history_filled += 1
+
+        if state.noise_history_filled < max(1, state.gate_startup_frames):
+            return data
+
+        if state.noise_history_filled < history.shape[0]:
+            samples = history[: state.noise_history_filled]
         else:
-            decay = float(np.clip(self.gate_decay, 0.0, 1.0))
-            update = float(np.clip(self.gate_update, 0.0, 1.0))
-            higher = mags > state.noise_estimate
-            if np.any(higher):
-                state.noise_estimate[higher] = (
-                    (1.0 - update) * state.noise_estimate[higher]
-                    + update * mags[higher]
-                )
-            if np.any(~higher):
-                state.noise_estimate[~higher] = (
-                    decay * state.noise_estimate[~higher]
-                    + (1.0 - decay) * mags[~higher]
-                )
+            samples = history
 
-        # Guard against negative or zero values.
-        noise = np.maximum(state.noise_estimate, 1e-6)
+        noise = np.percentile(samples, self._gate_noise_percentile, axis=0).astype(
+            np.float32,
+            copy=False,
+        )
+        state.noise_estimate = noise
+
+        noise = np.maximum(noise, 1e-6)
         threshold = noise * self.gate_sensitivity
         gain_floor = 10 ** (self.gate_reduction_db / 20.0)
         gains = np.where(mags >= threshold, 1.0, gain_floor)

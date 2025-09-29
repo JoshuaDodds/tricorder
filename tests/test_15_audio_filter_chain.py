@@ -136,3 +136,48 @@ def test_spectral_gate_reduces_stationary_noise():
     original_rms = np.sqrt(np.mean(noise_tail**2))
     filtered_rms = np.sqrt(np.mean(filtered**2))
     assert filtered_rms < original_rms * 0.5
+
+
+def test_spectral_gate_preserves_transient_signal_after_warmup():
+    chain = AudioFilterChain(
+        {
+            "enabled": True,
+            "highpass": {"enabled": False},
+            "notch": {"enabled": False},
+            "spectral_gate": {
+                "enabled": True,
+                "sensitivity": 1.5,
+                "reduction_db": -18.0,
+                "noise_update": 0.1,
+                "noise_decay": 0.95,
+            },
+        }
+    )
+
+    rng = np.random.default_rng(seed=123)
+    # Prime the gate with representative background noise.
+    warmup = 0.01 * rng.standard_normal(FRAME_SAMPLES * 40)
+    warmup_frames = [
+        float_to_pcm(warmup[i : i + FRAME_SAMPLES])
+        for i in range(0, len(warmup), FRAME_SAMPLES)
+    ]
+    for frame in warmup_frames:
+        chain.process(SAMPLE_RATE, FRAME_BYTES, frame)
+
+    tone = 0.05 * np.sin(2 * np.pi * 500.0 * np.arange(FRAME_SAMPLES * 10) / SAMPLE_RATE)
+    tone_frames = [
+        float_to_pcm(tone[i : i + FRAME_SAMPLES])
+        for i in range(0, len(tone), FRAME_SAMPLES)
+    ]
+
+    outputs = []
+    for frame in tone_frames:
+        out = chain.process(SAMPLE_RATE, FRAME_BYTES, frame)
+        outputs.append(pcm_to_float(out))
+
+    filtered = np.concatenate(outputs)
+    original_rms = np.sqrt(np.mean(tone**2))
+    filtered_rms = np.sqrt(np.mean(filtered**2))
+    # The gate should not collapse the signal to the reduction floor once
+    # it has a noise profile; keep at least 60% of the original RMS.
+    assert filtered_rms > original_rms * 0.6
