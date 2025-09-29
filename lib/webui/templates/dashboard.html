@@ -838,50 +838,98 @@
                     type="range"
                     min="20"
                     max="2000"
-                    step="5"
+                    step="10"
                     value="90"
                   />
                   <span id="audio-filter-highpass-cutoff-value" class="filter-value" aria-live="off">90&nbsp;Hz</span>
                 </div>
-                <p class="field-description">Removes low-frequency rumble from HVAC systems, footsteps, or desk bumps.</p>
+                <p class="field-description">Remove low-frequency rumble from HVAC systems, footsteps, or desk bumps.</p>
               </div>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
-                  <input id="audio-filter-lowpass-enabled" type="checkbox" />
-                  <label for="audio-filter-lowpass-enabled">Low-pass filter</label>
+                  <input id="audio-filter-notch-enabled" type="checkbox" />
+                  <label for="audio-filter-notch-enabled">Notch filter</label>
                 </div>
                 <div class="filter-slider">
-                  <label class="filter-slider-label" for="audio-filter-lowpass-cutoff">Cutoff</label>
+                  <label class="filter-slider-label" for="audio-filter-notch-frequency">Frequency</label>
                   <input
-                    id="audio-filter-lowpass-cutoff"
+                    id="audio-filter-notch-frequency"
                     type="range"
-                    min="2000"
+                    min="20"
                     max="20000"
-                    step="100"
-                    value="12000"
+                    step="10"
+                    value="60"
                   />
-                  <span id="audio-filter-lowpass-cutoff-value" class="filter-value" aria-live="off">12000&nbsp;Hz</span>
+                  <span id="audio-filter-notch-frequency-value" class="filter-value" aria-live="off">60&nbsp;Hz</span>
                 </div>
-                <p class="field-description">Rolls off high-frequency hiss or EMI that can mask speech.</p>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-notch-quality">Quality</label>
+                  <input
+                    id="audio-filter-notch-quality"
+                    type="range"
+                    min="1"
+                    max="80"
+                    step="1"
+                    value="30"
+                  />
+                  <span id="audio-filter-notch-quality-value" class="filter-value" aria-live="off">Q&nbsp;30</span>
+                </div>
+                <p class="field-description">Carve out persistent hums (50/60&nbsp;Hz) or whistles without impacting the rest of the spectrum.</p>
               </div>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
-                  <input id="audio-filter-noisegate-enabled" type="checkbox" />
-                  <label for="audio-filter-noisegate-enabled">Noise gate</label>
+                  <input id="audio-filter-spectral-enabled" type="checkbox" />
+                  <label for="audio-filter-spectral-enabled">Spectral gate</label>
                 </div>
                 <div class="filter-slider">
-                  <label class="filter-slider-label" for="audio-filter-noisegate-threshold">Threshold</label>
+                  <label class="filter-slider-label" for="audio-filter-spectral-sensitivity">Sensitivity</label>
                   <input
-                    id="audio-filter-noisegate-threshold"
+                    id="audio-filter-spectral-sensitivity"
                     type="range"
-                    min="-90"
+                    min="0.1"
+                    max="4"
+                    step="0.1"
+                    value="1.5"
+                  />
+                  <span id="audio-filter-spectral-sensitivity-value" class="filter-value" aria-live="off">1.5</span>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-reduction">Reduction</label>
+                  <input
+                    id="audio-filter-spectral-reduction"
+                    type="range"
+                    min="-60"
                     max="0"
                     step="1"
-                    value="-45"
+                    value="-18"
                   />
-                  <span id="audio-filter-noisegate-threshold-value" class="filter-value" aria-live="off">−45&nbsp;dB</span>
+                  <span id="audio-filter-spectral-reduction-value" class="filter-value" aria-live="off">−18&nbsp;dB</span>
                 </div>
-                <p class="field-description">Suppresses constant beds of noise between events. Raise the threshold to clamp more aggressively.</p>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-update">Noise update rate</label>
+                  <input
+                    id="audio-filter-spectral-update"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0.1"
+                  />
+                  <span id="audio-filter-spectral-update-value" class="filter-value" aria-live="off">0.10</span>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-decay">Noise decay</label>
+                  <input
+                    id="audio-filter-spectral-decay"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0.95"
+                  />
+                  <span id="audio-filter-spectral-decay-value" class="filter-value" aria-live="off">0.95</span>
+                </div>
+                <p class="field-description">Adaptive gate tuned for constant ambient noise. Lower sensitivity reacts faster; adjust reduction to taste.</p>
               </div>
               <h4 class="settings-subheading">Calibration helpers</h4>
               <p class="settings-subheading-description">

@@ -297,12 +297,16 @@ audio:
     highpass:
       enabled: true
       cutoff_hz: 110.0
-    lowpass:
-      enabled: false
-      cutoff_hz: 9500.0
-    noise_gate:
+    notch:
       enabled: true
-      threshold_db: -44.0
+      freq_hz: 120.0
+      quality: 35.0
+    spectral_gate:
+      enabled: false
+      sensitivity: 1.7
+      reduction_db: -20.0
+      noise_update: 0.2
+      noise_decay: 0.9
   calibration:
     auto_noise_profile: true
     auto_gain: false
@@ -352,8 +356,14 @@ audio:
                 "vad_aggressiveness": 3,
                 "filter_chain": {
                     "highpass": {"enabled": True, "cutoff_hz": 140.0},
-                    "lowpass": {"enabled": True, "cutoff_hz": 14500.0},
-                    "noise_gate": {"enabled": False, "threshold_db": -37.0},
+                    "notch": {"enabled": False, "freq_hz": 180.0, "quality": 28.0},
+                    "spectral_gate": {
+                        "enabled": True,
+                        "sensitivity": 1.3,
+                        "reduction_db": -24.0,
+                        "noise_update": 0.05,
+                        "noise_decay": 0.92,
+                    },
                 },
                 "calibration": {"auto_noise_profile": False, "auto_gain": True},
             }
@@ -364,10 +374,15 @@ audio:
             assert updated["audio"]["frame_ms"] == 10
             assert updated["audio"]["gain"] == pytest.approx(1.5)
             assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
-            assert updated["audio"]["filter_chain"]["lowpass"]["enabled"] is True
+            assert updated["audio"]["filter_chain"]["notch"]["enabled"] is False
             assert (
-                updated["audio"]["filter_chain"]["lowpass"]["cutoff_hz"]
-                == pytest.approx(14500.0)
+                updated["audio"]["filter_chain"]["notch"]["freq_hz"]
+                == pytest.approx(180.0)
+            )
+            assert updated["audio"]["filter_chain"]["spectral_gate"]["enabled"] is True
+            assert (
+                updated["audio"]["filter_chain"]["spectral_gate"]["reduction_db"]
+                == pytest.approx(-24.0)
             )
             assert updated["audio"]["calibration"]["auto_noise_profile"] is False
             assert updated["audio"]["calibration"]["auto_gain"] is True
@@ -385,10 +400,11 @@ audio:
                 persisted["audio"]["filter_chain"]["highpass"]["cutoff_hz"]
                 == pytest.approx(140.0)
             )
-            assert persisted["audio"]["filter_chain"]["noise_gate"]["enabled"] is False
+            assert persisted["audio"]["filter_chain"]["notch"]["enabled"] is False
+            assert persisted["audio"]["filter_chain"]["spectral_gate"]["enabled"] is True
             assert (
-                persisted["audio"]["filter_chain"]["noise_gate"]["threshold_db"]
-                == pytest.approx(-37.0)
+                persisted["audio"]["filter_chain"]["spectral_gate"]["sensitivity"]
+                == pytest.approx(1.3)
             )
             assert persisted["audio"]["calibration"]["auto_noise_profile"] is False
             assert persisted["audio"]["calibration"]["auto_gain"] is True

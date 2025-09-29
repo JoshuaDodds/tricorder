@@ -37,14 +37,18 @@ filter_chain: []
       # Remove low-frequency rumble from HVAC systems or desk bumps. Suggested 60–160 Hz.
       enabled: false
       cutoff_hz: 90.0
-    lowpass:
-      # Trim hiss above speech fundamentals. Suggested 6000–12000 Hz for speech-focused installs.
+    notch:
+      # Carve out a narrow band (e.g., mains hum) by frequency and Q. Suggested Q 20–40 for 50/60 Hz hum.
       enabled: false
-      cutoff_hz: 12000.0
-    noise_gate:
-      # Suppress beds of constant noise between events. Threshold in dBFS (0 = full scale).
+      freq_hz: 60.0
+      quality: 30.0
+    spectral_gate:
+      # Adaptive noise gate tuned for constant noise floors. Lower sensitivity tracks noise faster.
       enabled: false
-      threshold_db: -45.0
+      sensitivity: 1.5
+      reduction_db: -18.0
+      noise_update: 0.1
+      noise_decay: 0.95
 
   # Toggle optional capture-time calibration helpers. When enabled the dashboard exposes quick
   # actions to capture a fresh noise profile or recompute gain using the room tuner utility.

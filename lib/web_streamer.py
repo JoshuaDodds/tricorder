@@ -29,6 +29,7 @@ Endpoints:
 import argparse
 import asyncio
 import contextlib
+import copy
 import functools
 import json
 import logging
@@ -269,10 +270,32 @@ _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
 _TRANSCRIPTION_ENGINES = {"vosk"}
-AUDIO_FILTER_STAGE_SPECS: dict[str, tuple[str, float | None, float | None]] = {
-    "highpass": ("cutoff_hz", 20.0, 2000.0),
-    "lowpass": ("cutoff_hz", 2000.0, 20000.0),
-    "noise_gate": ("threshold_db", -90.0, 0.0),
+AUDIO_FILTER_STAGE_SPECS: dict[str, dict[str, tuple[float | None, float | None]]] = {
+    "highpass": {
+        "cutoff_hz": (20.0, 2000.0),
+    },
+    "notch": {
+        "freq_hz": (20.0, 20000.0),
+        "quality": (0.1, 100.0),
+    },
+    "spectral_gate": {
+        "sensitivity": (0.1, 4.0),
+        "reduction_db": (-60.0, 0.0),
+        "noise_update": (0.0, 1.0),
+        "noise_decay": (0.0, 1.0),
+    },
+}
+
+AUDIO_FILTER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "highpass": {"enabled": False, "cutoff_hz": 90.0},
+    "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
+    "spectral_gate": {
+        "enabled": False,
+        "sensitivity": 1.5,
+        "reduction_db": -18.0,
+        "noise_update": 0.1,
+        "noise_decay": 0.95,
+    },
 }
 
 
@@ -283,11 +306,7 @@ def _audio_defaults() -> dict[str, Any]:
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
-        "filter_chain": {
-            "highpass": {"enabled": False, "cutoff_hz": 90.0},
-            "lowpass": {"enabled": False, "cutoff_hz": 12000.0},
-            "noise_gate": {"enabled": False, "threshold_db": -45.0},
-        },
+        "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
         "calibration": {
             "auto_noise_profile": False,
             "auto_gain": False,
@@ -393,23 +412,33 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(stages, dict):
                 stages = {}
                 result["filter_chain"] = stages
-            for key, (value_field, min_value, max_value) in AUDIO_FILTER_STAGE_SPECS.items():
+            for key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
                 target = stages.get(key)
                 if not isinstance(target, dict):
-                    target = {value_field: None}
+                    defaults = AUDIO_FILTER_DEFAULTS.get(key)
+                    target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
                     stages[key] = target
                 payload = filters.get(key)
                 if not isinstance(payload, dict):
                     continue
-                target["enabled"] = _bool_from_any(payload.get("enabled"))
-                value = payload.get(value_field)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    numeric = float(value)
+                if "enabled" in payload:
+                    target["enabled"] = _bool_from_any(payload.get("enabled"))
+                for field_name, (min_value, max_value) in field_specs.items():
+                    if field_name not in payload:
+                        continue
+                    value = payload.get(field_name)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        numeric = float(value)
+                    else:
+                        try:
+                            numeric = float(value)
+                        except (TypeError, ValueError):
+                            continue
                     if min_value is not None and numeric < min_value:
                         numeric = float(min_value)
                     if max_value is not None and numeric > max_value:
                         numeric = float(max_value)
-                    target[value_field] = numeric
+                    target[field_name] = numeric
 
         calibration = raw.get("calibration")
         if isinstance(calibration, dict):
@@ -785,7 +814,7 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(stages, dict):
             stages = {}
             normalized["filter_chain"] = stages
-        for stage_key, (value_field, min_value, max_value) in AUDIO_FILTER_STAGE_SPECS.items():
+        for stage_key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
             stage_payload = filters_payload.get(stage_key)
             if stage_payload is None:
                 continue
@@ -794,19 +823,22 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
                 continue
             target = stages.get(stage_key)
             if not isinstance(target, dict):
-                target = {value_field: None}
+                defaults = AUDIO_FILTER_DEFAULTS.get(stage_key)
+                target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
                 stages[stage_key] = target
             target["enabled"] = _bool_from_any(stage_payload.get("enabled"))
-            if value_field in stage_payload:
+            for field_name, (min_value, max_value) in field_specs.items():
+                if field_name not in stage_payload:
+                    continue
                 candidate = _coerce_float(
-                    stage_payload.get(value_field),
-                    f"filter_chain.{stage_key}.{value_field}",
+                    stage_payload.get(field_name),
+                    f"filter_chain.{stage_key}.{field_name}",
                     errors,
                     min_value=min_value,
                     max_value=max_value,
                 )
                 if candidate is not None:
-                    target[value_field] = candidate
+                    target[field_name] = candidate
     else:
         errors.append("filter_chain must be an object")
 
