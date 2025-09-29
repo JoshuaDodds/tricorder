@@ -36,6 +36,9 @@ def analyze_idle_noise(
 
     if sample_rate_hz <= 0:
         raise ValueError("sample_rate_hz must be positive")
+    if top_n <= 0:
+        return []
+
     if max_freq_hz is None:
         max_freq_hz = sample_rate_hz / 2.0
     window = _pcm_to_float32(pcm)
@@ -82,7 +85,8 @@ def analyze_idle_noise(
         peaks.append(HumPeak(freq, mag, bandwidth, q))
 
     peaks.sort(key=lambda peak: peak.magnitude_dbfs, reverse=True)
-    return peaks[:top_n]
+    limit = min(len(peaks), max(0, top_n))
+    return peaks[:limit]
 
 
 def recommend_notch_filters(
@@ -94,6 +98,9 @@ def recommend_notch_filters(
     attenuation_db: float = -18.0,
 ) -> list[dict[str, float | str]]:
     """Return notch filter suggestions compatible with audio.filter_chain."""
+
+    if max_filters <= 0:
+        return []
 
     filters: list[dict[str, float | str]] = []
     for peak in peaks[:max_filters]:

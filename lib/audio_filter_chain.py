@@ -8,7 +8,7 @@ loop. The implementation intentionally avoids heavy dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import math
 
 import numpy as np
@@ -33,28 +33,56 @@ class FilterState:
     sample_rate: int
     frame_bytes: int
     highpass_state: HighPassState
-    notch_state: NotchState
-    notch_coeffs: Optional[Tuple[float, float, float, float, float]] = None
+    notch_states: List[NotchState]
+    notch_coeffs: List[Optional[Tuple[float, float, float, float, float]]]
     noise_estimate: Optional[np.ndarray] = None
 
 
 class AudioFilterChain:
     """Apply a sequence of lightweight filters to PCM frames."""
 
-    def __init__(self, cfg: Optional[dict] = None):
-        cfg = cfg or {}
-        self.enabled = bool(cfg.get("enabled", True))
+    def __init__(self, cfg: Optional[Any] = None):
+        raw_cfg: Dict[str, Any]
+        filters_payload: Sequence[Any] | None = None
+        if isinstance(cfg, dict):
+            raw_cfg = cfg
+            payload = raw_cfg.get("filters")
+            if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
+                filters_payload = list(payload)
+        elif isinstance(cfg, Sequence) and not isinstance(cfg, (bytes, str)):
+            filters_payload = list(cfg)
+            raw_cfg = {"filters": filters_payload}
+        else:
+            raw_cfg = {}
 
-        highpass_cfg = cfg.get("highpass", {})
+        self.enabled = bool(raw_cfg.get("enabled", True))
+
+        highpass_cfg = raw_cfg.get("highpass", {})
         self.highpass_enabled = bool(highpass_cfg.get("enabled", True))
         self.highpass_cutoff_hz = float(highpass_cfg.get("cutoff_hz", 80.0))
 
-        notch_cfg = cfg.get("notch", {})
+        notch_cfg = raw_cfg.get("notch", {})
         self.notch_enabled = bool(notch_cfg.get("enabled", True))
         self.notch_freq_hz = float(notch_cfg.get("freq_hz", 60.0))
         self.notch_q = float(notch_cfg.get("quality", 30.0))
+        self._notch_filters: List[Tuple[float, float]] = []
+        if self.notch_enabled:
+            self._append_notch_filter(self.notch_freq_hz, self.notch_q)
 
-        gate_cfg = cfg.get("spectral_gate", {})
+        filters_payload = raw_cfg.get("filters", filters_payload)
+        if isinstance(filters_payload, Sequence) and not isinstance(filters_payload, (str, bytes)):
+            for entry in list(filters_payload):
+                parsed = self._parse_notch_entry(entry)
+                if parsed is not None:
+                    self._append_notch_filter(*parsed)
+
+        if self._notch_filters:
+            self.notch_freq_hz, self.notch_q = self._notch_filters[0]
+            self.notch_enabled = True
+        else:
+            self.notch_enabled = False
+
+        gate_cfg = raw_cfg.get("spectral_gate", {})
         self.spectral_gate_enabled = bool(gate_cfg.get("enabled", False))
         self.gate_sensitivity = float(gate_cfg.get("sensitivity", 1.5))
         self.gate_reduction_db = float(gate_cfg.get("reduction_db", -18.0))
@@ -63,9 +91,59 @@ class AudioFilterChain:
 
         self._states: Dict[Tuple[int, int], FilterState] = {}
 
+    def _append_notch_filter(self, frequency_hz: float, q: float) -> None:
+        try:
+            freq = float(frequency_hz)
+            quality = float(q)
+        except (TypeError, ValueError):
+            return
+        if freq <= 0 or quality <= 0:
+            return
+        candidate = (freq, quality)
+        for existing in self._notch_filters:
+            if abs(existing[0] - freq) < 1e-6 and abs(existing[1] - quality) < 1e-6:
+                return
+        self._notch_filters.append(candidate)
+
+    def _parse_notch_entry(self, entry: Any) -> Optional[Tuple[float, float]]:
+        if not isinstance(entry, dict):
+            return None
+        entry_type = entry.get("type")
+        if entry_type is not None and str(entry_type).lower() not in {"notch"}:
+            return None
+        enabled = entry.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        elif isinstance(enabled, (int, float)) and not isinstance(enabled, bool):
+            enabled = bool(enabled)
+        if not enabled:
+            return None
+        freq = entry.get("frequency")
+        if freq is None:
+            freq = entry.get("freq_hz")
+        if freq is None:
+            freq = entry.get("frequency_hz")
+        q = entry.get("q")
+        if q is None:
+            q = entry.get("quality")
+        if freq is None or q is None:
+            return None
+        try:
+            freq_val = float(freq)
+            q_val = float(q)
+        except (TypeError, ValueError):
+            return None
+        if freq_val <= 0 or q_val <= 0:
+            return None
+        return (freq_val, q_val)
+
     @classmethod
-    def from_config(cls, cfg_block: Optional[dict]) -> Optional["AudioFilterChain"]:
+    def from_config(cls, cfg_block: Optional[Any]) -> Optional["AudioFilterChain"]:
         if not cfg_block:
+            return None
+        if isinstance(cfg_block, Sequence) and not isinstance(cfg_block, (str, bytes)):
+            cfg_block = {"enabled": True, "filters": list(cfg_block)}
+        if not isinstance(cfg_block, dict):
             return None
         enabled = cfg_block.get("enabled", True)
         if isinstance(enabled, str):
@@ -100,16 +178,14 @@ class AudioFilterChain:
         return pcm.tobytes()
 
     def _init_state(self, sample_rate: int, frame_bytes: int) -> FilterState:
-        frame_samples = frame_bytes // 2
+        notch_count = len(self._notch_filters) if self.notch_enabled else 0
         state = FilterState(
             sample_rate=sample_rate,
             frame_bytes=frame_bytes,
             highpass_state=HighPassState(),
-            notch_state=NotchState(),
+            notch_states=[NotchState() for _ in range(notch_count)],
+            notch_coeffs=[None for _ in range(notch_count)],
         )
-
-        if self.notch_enabled:
-            state.notch_coeffs = self._compute_notch_coeffs(sample_rate)
 
         return state
 
@@ -134,10 +210,10 @@ class AudioFilterChain:
         return y
 
     def _compute_notch_coeffs(
-        self, sample_rate: int
+        self, sample_rate: int, frequency_hz: float, quality: float
     ) -> Tuple[float, float, float, float, float]:
-        freq = max(1.0, min(self.notch_freq_hz, sample_rate / 2 - 1.0))
-        q = max(0.1, self.notch_q)
+        freq = max(1.0, min(float(frequency_hz), sample_rate / 2 - 1.0))
+        q = max(0.1, float(quality))
         omega = 2.0 * math.pi * (freq / sample_rate)
         cos_omega = math.cos(omega)
         alpha = math.sin(omega) / (2.0 * q)
@@ -157,10 +233,27 @@ class AudioFilterChain:
         return (b0, b1, b2, a1, a2)
 
     def _apply_notch(self, data: np.ndarray, state: FilterState, sample_rate: int) -> np.ndarray:
-        if state.notch_coeffs is None:
-            state.notch_coeffs = self._compute_notch_coeffs(sample_rate)
-        b0, b1, b2, a1, a2 = state.notch_coeffs
-        notch_state = state.notch_state
+        if not self._notch_filters:
+            return data
+        if len(state.notch_states) != len(self._notch_filters):
+            state.notch_states = [NotchState() for _ in self._notch_filters]
+            state.notch_coeffs = [None for _ in self._notch_filters]
+        result = data
+        for idx, (freq, quality) in enumerate(self._notch_filters):
+            coeffs = state.notch_coeffs[idx]
+            if coeffs is None:
+                coeffs = self._compute_notch_coeffs(sample_rate, freq, quality)
+                state.notch_coeffs[idx] = coeffs
+            result = self._apply_notch_stage(result, state.notch_states[idx], coeffs)
+        return result
+
+    @staticmethod
+    def _apply_notch_stage(
+        data: np.ndarray,
+        notch_state: NotchState,
+        coeffs: Tuple[float, float, float, float, float],
+    ) -> np.ndarray:
+        b0, b1, b2, a1, a2 = coeffs
         y = np.empty_like(data)
         x1 = notch_state.x1
         x2 = notch_state.x2

@@ -394,7 +394,7 @@ def get_cfg() -> Dict[str, Any]:
     if _cfg_cache is not None:
         return _cfg_cache
 
-    cfg = dict(_DEFAULTS)
+    cfg = copy.deepcopy(_DEFAULTS)
 
     # Derive project root relative to this file (lib/ -> project root)
     try:
