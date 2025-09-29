@@ -76,6 +76,33 @@ def test_hlstee_warns_on_filter_args_when_chain_enabled(tmp_path, caplog):
     assert any("audio.filter_chain" in record.message for record in caplog.records)
 
 
+def test_live_stream_filter_chain_flag_respects_disabled_stages(monkeypatch):
+    import copy
+    import importlib
+
+    from lib import config as config_module
+    import lib.live_stream_daemon as live_stream_daemon
+
+    original_cfg = copy.deepcopy(config_module.get_cfg())
+    disabled_cfg = copy.deepcopy(original_cfg)
+    disabled_cfg["audio"]["filter_chain"] = {
+        "enabled": True,
+        "highpass": {"enabled": False},
+        "notch": {"enabled": False},
+        "spectral_gate": {"enabled": False},
+        "filters": [],
+    }
+
+    monkeypatch.setattr(config_module, "_cfg_cache", disabled_cfg, raising=False)
+    module = importlib.reload(live_stream_daemon)
+
+    assert module.FILTER_CHAIN is None
+    assert module.AUDIO_FILTER_CHAIN_ENABLED is False
+
+    monkeypatch.setattr(config_module, "_cfg_cache", original_cfg, raising=False)
+    importlib.reload(live_stream_daemon)
+
+
 class DummyHLSTee:
     def __init__(self):
         self.started = 0
