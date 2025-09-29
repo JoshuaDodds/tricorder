@@ -1,6 +1,7 @@
 # tests/test_10_segmenter.py
 import builtins
 import json
+import re
 
 import pytest
 
@@ -232,17 +233,27 @@ def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
     rec.audio_q.put(None)
     rec.writer.join(timeout=1)
 
+    pattern = re.compile(
+        r"\[segmenter\] adaptive RMS threshold updated: prev=(\d+) new=(\d+) "
+        r"\(p95=([0-9.]+), margin=([0-9.]+), release_pctl=([0-9.]+), release=([0-9.]+)\)"
+    )
     observation_logs = [
-        json.loads(entry[0])
+        entry[0]
         for entry in logs
-        if isinstance(entry[0], str) and "adaptive_rms_observation" in entry[0]
+        if isinstance(entry[0], str)
+        and entry[0].startswith("[segmenter] adaptive RMS threshold updated:")
     ]
-    assert observation_logs, "expected adaptive RMS observation logs"
-    assert all(log["event"] == "adaptive_rms_observation" for log in observation_logs)
+    assert observation_logs, "expected adaptive RMS threshold update logs"
+    matches = [pattern.match(line) for line in observation_logs]
+    assert all(matches), "adaptive RMS log entries should match expected format"
     threshold_calls = [call for call in status_calls if call["extra"] is None]
     assert threshold_calls, "expected capture status updates for threshold observations"
-    assert len(threshold_calls) == len(observation_logs)
-    assert any(log["updated"] for log in observation_logs)
+    unique_thresholds: list[int] = []
+    for call in threshold_calls:
+        threshold = int(call["threshold"])
+        if not unique_thresholds or unique_thresholds[-1] != threshold:
+            unique_thresholds.append(threshold)
+    assert len(unique_thresholds) == len(observation_logs)
 
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)

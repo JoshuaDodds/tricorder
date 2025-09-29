@@ -596,10 +596,12 @@ class AdaptiveRmsController:
         rel_idx = max(0, int(math.ceil(self.release_percentile * len(ordered)) - 1))
         release_val = ordered[rel_idx]
         candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
-        if (candidate_raise > self._current_norm) and (candidate_release > self._current_norm):
+        if candidate_raise > self._current_norm:
             candidate = candidate_raise
+        elif candidate_release < self._current_norm:
+            candidate = candidate_release
         else:
-            candidate = min(self._current_norm, candidate_release)
+            candidate = self._current_norm
         self._last_p95 = p95
         self._last_candidate = candidate
         self._last_release = release_val
@@ -918,23 +920,22 @@ class TimelineRecorder:
         self._update_capture_status(capturing, event=event, last_event=last_event, reason=reason)
 
     def _log_adaptive_rms_observation(self, observation: AdaptiveRmsObservation) -> None:
-        payload = {
-            "component": "segmenter",
-            "event": "adaptive_rms_observation",
-            "enabled": bool(self._adaptive.enabled),
-            "update_interval_sec": self._adaptive.update_interval,
-            "updated": observation.updated,
-            "threshold": observation.threshold_linear,
-            "previous_threshold": observation.previous_threshold_linear,
-            "candidate_threshold": observation.candidate_threshold_linear,
-            "p95_norm": round(observation.p95_norm, 6),
-            "release_norm": round(observation.release_norm, 6),
-            "window_size": observation.buffer_size,
-            "rms_value": observation.rms_value,
-            "voiced": observation.voiced,
-            "timestamp": observation.timestamp,
-        }
-        print(json.dumps(payload), flush=True)
+        if not observation.updated:
+            return
+
+        if observation.threshold_linear == observation.previous_threshold_linear:
+            return
+
+        margin = self._adaptive.margin
+        release_pct = self._adaptive.release_percentile
+        print(
+            "[segmenter] adaptive RMS threshold updated: "
+            f"prev={observation.previous_threshold_linear} "
+            f"new={observation.threshold_linear} "
+            f"(p95={observation.p95_norm:.4f}, margin={margin:.2f}, "
+            f"release_pctl={release_pct:.2f}, release={observation.release_norm:.4f})",
+            flush=True,
+        )
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
