@@ -22,10 +22,10 @@ class HighPassState:
 
 @dataclass
 class NotchState:
-    x1: float = 0.0
-    x2: float = 0.0
-    y1: float = 0.0
-    y2: float = 0.0
+    prev_input: complex = 0.0 + 0.0j
+    prev_stage1: complex = 0.0 + 0.0j
+    prev_stage3: complex = 0.0 + 0.0j
+    prev_stage4: complex = 0.0 + 0.0j
 
 
 @dataclass
@@ -34,12 +34,20 @@ class FilterState:
     frame_bytes: int
     highpass_state: HighPassState
     notch_states: List[NotchState]
-    notch_coeffs: List[Optional[Tuple[float, float, float, float, float]]]
+    notch_coeffs: List[Optional["_NotchFilterParams"]]
     noise_estimate: Optional[np.ndarray] = None
     noise_history: Optional[np.ndarray] = None
     noise_history_pos: int = 0
     noise_history_filled: int = 0
     gate_startup_frames: int = 0
+
+
+@dataclass
+class _NotchFilterParams:
+    sample_rate: int
+    zero: complex
+    pole: complex
+    scale: float
 
 
 class AudioFilterChain:
@@ -237,40 +245,63 @@ class AudioFilterChain:
         rc = 1.0 / (2.0 * math.pi * self.highpass_cutoff_hz)
         dt = 1.0 / float(sample_rate)
         alpha = rc / (rc + dt)
-        y = np.empty_like(data)
-        prev_x = state.prev_input
-        prev_y = state.prev_output
-        for idx, x in enumerate(data):
-            out = alpha * (prev_y + x - prev_x)
-            y[idx] = out
-            prev_x = x
-            prev_y = out
-        state.prev_input = prev_x
-        state.prev_output = prev_y
-        return y
+        if not data.size:
+            return data
+        deltas = np.empty_like(data)
+        deltas[0] = data[0] - state.prev_input
+        if data.size > 1:
+            deltas[1:] = np.diff(data)
+        drive = alpha * deltas
+        result = self._solve_first_order_recursive(alpha, drive, state.prev_output)
+        state.prev_input = float(data[-1])
+        state.prev_output = float(result[-1])
+        return result
+
+    @staticmethod
+    def _solve_first_order_recursive(
+        coeff: complex, drive: np.ndarray, prev: complex
+    ) -> np.ndarray:
+        if not drive.size:
+            return drive
+        coeff_val = complex(coeff)
+        if abs(coeff_val) < 1e-12:
+            return drive.astype(drive.dtype, copy=True)
+        work_complex = np.iscomplexobj(drive) or abs(coeff_val.imag) > 1e-18
+        work_dtype = np.complex128 if work_complex else np.float64
+        drive_arr = drive.astype(work_dtype, copy=False)
+        prev_val = work_dtype(prev)
+        idx = np.arange(drive.size, dtype=np.float64)
+        coeff_scalar = coeff_val if work_complex else coeff_val.real
+        coeff_arr = work_dtype(coeff_scalar)
+        inv_powers = np.power(coeff_arr, -idx)
+        scaled = drive_arr * inv_powers
+        partial = np.cumsum(scaled, dtype=work_dtype)
+        coeff_pows = np.power(coeff_arr, idx)
+        prev_term = np.power(coeff_arr, idx + 1) * prev_val
+        result = coeff_pows * partial + prev_term
+        return result.astype(drive.dtype, copy=False)
 
     def _compute_notch_coeffs(
         self, sample_rate: int, frequency_hz: float, quality: float
-    ) -> Tuple[float, float, float, float, float]:
+    ) -> _NotchFilterParams:
         freq = max(1.0, min(float(frequency_hz), sample_rate / 2 - 1.0))
         q = max(0.1, float(quality))
         omega = 2.0 * math.pi * (freq / sample_rate)
-        cos_omega = math.cos(omega)
-        alpha = math.sin(omega) / (2.0 * q)
-
-        b0 = 1.0
-        b1 = -2.0 * cos_omega
-        b2 = 1.0
-        a0 = 1.0 + alpha
-        a1 = -2.0 * cos_omega
-        a2 = 1.0 - alpha
-
-        b0 /= a0
-        b1 /= a0
-        b2 /= a0
-        a1 /= a0
-        a2 /= a0
-        return (b0, b1, b2, a1, a2)
+        sin_omega = math.sin(omega)
+        alpha = sin_omega / (2.0 * q)
+        denom = 1.0 + alpha
+        # Poles are complex conjugates with magnitude sqrt(a2) where a2 = (1 - alpha)/(1 + alpha).
+        a2 = max(0.0, (1.0 - alpha) / denom)
+        pole_radius = math.sqrt(a2)
+        zero = math.cos(omega) + 1j * math.sin(omega)
+        pole = pole_radius * zero
+        scale = 1.0 / denom
+        return _NotchFilterParams(
+            sample_rate=sample_rate,
+            zero=zero,
+            pole=pole,
+            scale=scale,
+        )
 
     def _apply_notch(self, data: np.ndarray, state: FilterState, sample_rate: int) -> np.ndarray:
         if not self._notch_filters:
@@ -281,36 +312,42 @@ class AudioFilterChain:
         result = data
         for idx, (freq, quality) in enumerate(self._notch_filters):
             coeffs = state.notch_coeffs[idx]
-            if coeffs is None:
+            if coeffs is None or coeffs.sample_rate != sample_rate:
                 coeffs = self._compute_notch_coeffs(sample_rate, freq, quality)
                 state.notch_coeffs[idx] = coeffs
             result = self._apply_notch_stage(result, state.notch_states[idx], coeffs)
         return result
 
-    @staticmethod
     def _apply_notch_stage(
-        data: np.ndarray,
-        notch_state: NotchState,
-        coeffs: Tuple[float, float, float, float, float],
+        self, data: np.ndarray, notch_state: NotchState, params: _NotchFilterParams
     ) -> np.ndarray:
-        b0, b1, b2, a1, a2 = coeffs
-        y = np.empty_like(data)
-        x1 = notch_state.x1
-        x2 = notch_state.x2
-        y1 = notch_state.y1
-        y2 = notch_state.y2
-        for idx, x0 in enumerate(data):
-            out = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-            y[idx] = out
-            x2 = x1
-            x1 = x0
-            y2 = y1
-            y1 = out
-        notch_state.x1 = x1
-        notch_state.x2 = x2
-        notch_state.y1 = y1
-        notch_state.y2 = y2
-        return y
+        if not data.size:
+            return data
+        complex_data = data.astype(np.complex64, copy=False)
+        shifted = np.empty_like(complex_data)
+        shifted[0] = notch_state.prev_input
+        if complex_data.size > 1:
+            shifted[1:] = complex_data[:-1]
+        stage1 = complex_data - params.zero * shifted
+        notch_state.prev_input = complex_data[-1]
+
+        shifted_stage1 = np.empty_like(stage1)
+        shifted_stage1[0] = notch_state.prev_stage1
+        if stage1.size > 1:
+            shifted_stage1[1:] = stage1[:-1]
+        stage2 = stage1 - np.conjugate(params.zero) * shifted_stage1
+        notch_state.prev_stage1 = stage1[-1]
+
+        stage3 = self._solve_first_order_recursive(
+            params.pole, stage2, notch_state.prev_stage3
+        )
+        notch_state.prev_stage3 = stage3[-1]
+        stage4 = self._solve_first_order_recursive(
+            np.conjugate(params.pole), stage3, notch_state.prev_stage4
+        )
+        notch_state.prev_stage4 = stage4[-1]
+        final = (params.scale * stage4).real.astype(data.dtype, copy=False)
+        return final
 
     def _apply_gate(self, data: np.ndarray, state: FilterState) -> np.ndarray:
         spectrum = np.fft.rfft(data)
