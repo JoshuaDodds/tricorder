@@ -822,6 +822,91 @@
                   Controls the WebRTC voice detector sensitivity. Higher values reject more noise but may miss quiet speech.
                 </p>
               </div>
+              <h4 class="settings-subheading">Filter chain</h4>
+              <p class="settings-subheading-description">
+                Enable lightweight filters to tame rumble, hiss, or bed noise before the segmenter sees the audio.
+              </p>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-highpass-enabled" type="checkbox" />
+                  <label for="audio-filter-highpass-enabled">High-pass filter</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-highpass-cutoff">Cutoff</label>
+                  <input
+                    id="audio-filter-highpass-cutoff"
+                    type="range"
+                    min="20"
+                    max="2000"
+                    step="5"
+                    value="90"
+                  />
+                  <span id="audio-filter-highpass-cutoff-value" class="filter-value" aria-live="off">90&nbsp;Hz</span>
+                </div>
+                <p class="field-description">Removes low-frequency rumble from HVAC systems, footsteps, or desk bumps.</p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-lowpass-enabled" type="checkbox" />
+                  <label for="audio-filter-lowpass-enabled">Low-pass filter</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-lowpass-cutoff">Cutoff</label>
+                  <input
+                    id="audio-filter-lowpass-cutoff"
+                    type="range"
+                    min="2000"
+                    max="20000"
+                    step="100"
+                    value="12000"
+                  />
+                  <span id="audio-filter-lowpass-cutoff-value" class="filter-value" aria-live="off">12000&nbsp;Hz</span>
+                </div>
+                <p class="field-description">Rolls off high-frequency hiss or EMI that can mask speech.</p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-noisegate-enabled" type="checkbox" />
+                  <label for="audio-filter-noisegate-enabled">Noise gate</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-noisegate-threshold">Threshold</label>
+                  <input
+                    id="audio-filter-noisegate-threshold"
+                    type="range"
+                    min="-90"
+                    max="0"
+                    step="1"
+                    value="-45"
+                  />
+                  <span id="audio-filter-noisegate-threshold-value" class="filter-value" aria-live="off">−45&nbsp;dB</span>
+                </div>
+                <p class="field-description">Suppresses constant beds of noise between events. Raise the threshold to clamp more aggressively.</p>
+              </div>
+              <h4 class="settings-subheading">Calibration helpers</h4>
+              <p class="settings-subheading-description">
+                Surface quick actions in the dashboard for recalibrating ambient noise and input gain with the room tuner.
+              </p>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="audio-calibration-noise" type="checkbox" />
+                  <label for="audio-calibration-noise">Allow noise profile calibration shortcut</label>
+                </div>
+                <p class="field-description">Adds a dashboard action to capture a fresh background noise profile.</p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="audio-calibration-gain" type="checkbox" />
+                  <label for="audio-calibration-gain">Allow gain recalibration shortcut</label>
+                </div>
+                <p class="field-description">Exposes a guided gain recalibration using the room tuner utility.</p>
+              </div>
+              <div class="settings-field calibration-action">
+                <button id="audio-calibrate-noise" class="ghost-button" type="button">
+                  Calibrate noise profile
+                </button>
+                <p class="field-description">Launches the room tuner in a new tab to capture the current ambient noise floor.</p>
+              </div>
               <div class="settings-section-footer">
                 <div id="audio-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
                 <div class="button-row">

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Room tuner calibration guide</title>
+    <link rel="stylesheet" href="../css/dashboard.css" />
+    <style>
+      body {
+        padding: 2rem;
+        max-width: 720px;
+        margin: 0 auto;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Roboto", "Ubuntu", sans-serif;
+        line-height: 1.6;
+        color: var(--text, #0f172a);
+      }
+      h1 {
+        font-size: 2rem;
+        margin-bottom: 1rem;
+      }
+      h2 {
+        margin-top: 2rem;
+        font-size: 1.35rem;
+      }
+      code {
+        background: rgba(148, 163, 184, 0.2);
+        padding: 0.1rem 0.35rem;
+        border-radius: 0.35rem;
+      }
+      .callout {
+        margin: 1.25rem 0;
+        padding: 1rem;
+        border-radius: 0.75rem;
+        background: rgba(96, 165, 250, 0.12);
+        border: 1px solid rgba(96, 165, 250, 0.35);
+      }
+      ul {
+        padding-left: 1.2rem;
+      }
+      li {
+        margin: 0.35rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Room tuner calibration</h1>
+    <p>
+      The room tuner utility (<code>room_tuner.py</code>) captures short windows of audio from your configured
+      device, tracks the ambient noise floor, and recommends new <code>segmenter.rms_threshold</code> values. The
+      dashboard&rsquo;s <strong>Calibrate noise profile</strong> shortcut opens this guide so you can launch the tool
+      without leaving your browser session.
+    </p>
+
+    <div class="callout">
+      <strong>Requires shell access.</strong> The tuner still runs from the command line. Use SSH or a local
+      terminal on the recorder and execute the commands below.
+    </div>
+
+    <h2>Quick start</h2>
+    <ol>
+      <li>SSH into the recorder: <code>ssh pi@tricorder.local</code></li>
+      <li>
+        Start the tuner with your audio device and current gain:
+        <pre><code>cd /apps/tricorder
+./room_tuner.py --device "$(yq '.audio.device' config.yaml)" --gain $(yq '.audio.gain' config.yaml)</code></pre>
+      </li>
+      <li>Let it run for 30&ndash;60 seconds while the room is quiet to capture the baseline noise floor.</li>
+      <li>
+        Note the suggested <code>RMS_THRESH</code> printed in the console. Update <code>segmenter.rms_threshold</code>
+        or enable the automatic noise profile quick action in the dashboard to apply it later.
+      </li>
+    </ol>
+
+    <h2>Optional flags</h2>
+    <ul>
+      <li><code>--aggr &lt;0-3&gt;</code> &mdash; match the WebRTC VAD aggressiveness configured in the dashboard.</li>
+      <li><code>--margin &lt;float&gt;</code> &mdash; scale the noise floor when computing the recommended threshold.</li>
+      <li><code>--csv room_tune.csv</code> &mdash; log interval stats for offline analysis.</li>
+    </ul>
+
+    <p>
+      When you enable the calibration shortcuts in the recorder settings modal the dashboard reminds you to rerun the tuner as
+      part of regular maintenance. The <strong>Calibrate noise profile</strong> button from the modal simply returns to this
+      page so the steps are always one click away.
+    </p>
+  </body>
+</html>

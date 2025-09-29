@@ -37,7 +37,15 @@ _DEFAULTS: Dict[str, Any] = {
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
-        "filter_chain": [],
+        "filter_chain": {
+            "highpass": {"enabled": False, "cutoff_hz": 90.0},
+            "lowpass": {"enabled": False, "cutoff_hz": 12000.0},
+            "noise_gate": {"enabled": False, "threshold_db": -45.0},
+        },
+        "calibration": {
+            "auto_noise_profile": False,
+            "auto_gain": False,
+        },
     },
     "paths": {
         "tmp_dir": "/apps/tricorder/tmp",

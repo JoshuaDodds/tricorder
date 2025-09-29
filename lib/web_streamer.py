@@ -269,6 +269,11 @@ _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
 _TRANSCRIPTION_ENGINES = {"vosk"}
+AUDIO_FILTER_STAGE_SPECS: dict[str, tuple[str, float | None, float | None]] = {
+    "highpass": ("cutoff_hz", 20.0, 2000.0),
+    "lowpass": ("cutoff_hz", 2000.0, 20000.0),
+    "noise_gate": ("threshold_db", -90.0, 0.0),
+}
 
 
 def _audio_defaults() -> dict[str, Any]:
@@ -278,6 +283,15 @@ def _audio_defaults() -> dict[str, Any]:
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "filter_chain": {
+            "highpass": {"enabled": False, "cutoff_hz": 90.0},
+            "lowpass": {"enabled": False, "cutoff_hz": 12000.0},
+            "noise_gate": {"enabled": False, "threshold_db": -45.0},
+        },
+        "calibration": {
+            "auto_noise_profile": False,
+            "auto_gain": False,
+        },
     }
 
 
@@ -372,6 +386,41 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         vad = raw.get("vad_aggressiveness")
         if isinstance(vad, (int, float)) and not isinstance(vad, bool):
             result["vad_aggressiveness"] = int(vad)
+
+        filters = raw.get("filter_chain")
+        if isinstance(filters, dict):
+            stages = result.get("filter_chain")
+            if not isinstance(stages, dict):
+                stages = {}
+                result["filter_chain"] = stages
+            for key, (value_field, min_value, max_value) in AUDIO_FILTER_STAGE_SPECS.items():
+                target = stages.get(key)
+                if not isinstance(target, dict):
+                    target = {value_field: None}
+                    stages[key] = target
+                payload = filters.get(key)
+                if not isinstance(payload, dict):
+                    continue
+                target["enabled"] = _bool_from_any(payload.get("enabled"))
+                value = payload.get(value_field)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    numeric = float(value)
+                    if min_value is not None and numeric < min_value:
+                        numeric = float(min_value)
+                    if max_value is not None and numeric > max_value:
+                        numeric = float(max_value)
+                    target[value_field] = numeric
+
+        calibration = raw.get("calibration")
+        if isinstance(calibration, dict):
+            target = result.get("calibration")
+            if not isinstance(target, dict):
+                target = {}
+                result["calibration"] = target
+            if "auto_noise_profile" in calibration:
+                target["auto_noise_profile"] = _bool_from_any(calibration.get("auto_noise_profile"))
+            if "auto_gain" in calibration:
+                target["auto_gain"] = _bool_from_any(calibration.get("auto_gain"))
     return result
 
 
@@ -727,6 +776,56 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     )
     if vad is not None:
         normalized["vad_aggressiveness"] = vad
+
+    filters_payload = payload.get("filter_chain")
+    if filters_payload is None:
+        filters_payload = {}
+    if isinstance(filters_payload, dict):
+        stages = normalized.get("filter_chain")
+        if not isinstance(stages, dict):
+            stages = {}
+            normalized["filter_chain"] = stages
+        for stage_key, (value_field, min_value, max_value) in AUDIO_FILTER_STAGE_SPECS.items():
+            stage_payload = filters_payload.get(stage_key)
+            if stage_payload is None:
+                continue
+            if not isinstance(stage_payload, dict):
+                errors.append(f"filter_chain.{stage_key} must be an object")
+                continue
+            target = stages.get(stage_key)
+            if not isinstance(target, dict):
+                target = {value_field: None}
+                stages[stage_key] = target
+            target["enabled"] = _bool_from_any(stage_payload.get("enabled"))
+            if value_field in stage_payload:
+                candidate = _coerce_float(
+                    stage_payload.get(value_field),
+                    f"filter_chain.{stage_key}.{value_field}",
+                    errors,
+                    min_value=min_value,
+                    max_value=max_value,
+                )
+                if candidate is not None:
+                    target[value_field] = candidate
+    else:
+        errors.append("filter_chain must be an object")
+
+    calibration_payload = payload.get("calibration")
+    if calibration_payload is None:
+        calibration_payload = {}
+    if isinstance(calibration_payload, dict):
+        target = normalized.get("calibration")
+        if not isinstance(target, dict):
+            target = {}
+            normalized["calibration"] = target
+        if "auto_noise_profile" in calibration_payload:
+            target["auto_noise_profile"] = _bool_from_any(
+                calibration_payload.get("auto_noise_profile")
+            )
+        if "auto_gain" in calibration_payload:
+            target["auto_gain"] = _bool_from_any(calibration_payload.get("auto_gain"))
+    else:
+        errors.append("calibration must be an object")
 
     return normalized, errors
 
