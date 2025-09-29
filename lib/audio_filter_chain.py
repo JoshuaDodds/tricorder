@@ -2,39 +2,44 @@
 
 This module applies optional high-pass, notch, and spectral gate filters to
 16-bit PCM frames. Filter instances keep per-(sample_rate, frame_bytes) state
-so that biquad histories persist across frames processed by the live stream
-loop. The implementation intentionally avoids heavy dependencies.
+so that FFT-domain transfer functions and noise profiles persist across frames
+processed by the live stream loop. The implementation intentionally avoids
+heavy dependencies.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 import math
 
 import numpy as np
 
 
 @dataclass
-class HighPassState:
+class HighpassState:
+    alpha: float
+    powers: np.ndarray
+    weights: np.ndarray
     prev_input: float = 0.0
     prev_output: float = 0.0
 
 
 @dataclass
-class NotchState:
-    x1: float = 0.0
-    x2: float = 0.0
-    y1: float = 0.0
-    y2: float = 0.0
+class NotchStageState:
+    powers: np.ndarray
+    g: np.ndarray
+    c_vec: np.ndarray
+    d_gain: float
+    state_vec: np.ndarray
 
 
 @dataclass
 class FilterState:
     sample_rate: int
     frame_bytes: int
-    highpass_state: HighPassState
-    notch_states: List[NotchState]
-    notch_coeffs: List[Optional[Tuple[float, float, float, float, float]]]
+    frame_samples: int
+    highpass_state: Optional[HighpassState]
+    notch_stages: list[NotchStageState]
     noise_estimate: Optional[np.ndarray] = None
 
 
@@ -65,7 +70,7 @@ class AudioFilterChain:
         self.notch_enabled = bool(notch_cfg.get("enabled", True))
         self.notch_freq_hz = float(notch_cfg.get("freq_hz", 60.0))
         self.notch_q = float(notch_cfg.get("quality", 30.0))
-        self._notch_filters: List[Tuple[float, float]] = []
+        self._notch_filters: list[Tuple[float, float]] = []
         if self.notch_enabled:
             self._append_notch_filter(self.notch_freq_hz, self.notch_q)
 
@@ -178,11 +183,11 @@ class AudioFilterChain:
 
         pcm = np.frombuffer(frame, dtype="<i2").astype(np.float32)
 
-        if self.highpass_enabled:
-            pcm = self._apply_highpass(pcm, state.highpass_state, sample_rate)
+        if self.highpass_enabled and state.highpass_state is not None:
+            pcm = self._apply_highpass(pcm, state.highpass_state)
 
-        if self.notch_enabled:
-            pcm = self._apply_notch(pcm, state, sample_rate)
+        if self.notch_enabled and state.notch_stages:
+            pcm = self._apply_notch(pcm, state)
 
         if self.spectral_gate_enabled:
             pcm = self._apply_gate(pcm, state)
@@ -191,36 +196,117 @@ class AudioFilterChain:
         return pcm.tobytes()
 
     def _init_state(self, sample_rate: int, frame_bytes: int) -> FilterState:
-        notch_count = len(self._notch_filters) if self.notch_enabled else 0
-        state = FilterState(
+        frame_samples = frame_bytes // 2
+        if frame_samples <= 0:
+            raise ValueError("frame_bytes must correspond to at least one sample")
+
+        highpass_state: Optional[HighpassState] = None
+        if self.highpass_enabled and self.highpass_cutoff_hz > 0:
+            rc = 1.0 / (2.0 * math.pi * self.highpass_cutoff_hz)
+            dt = 1.0 / float(sample_rate)
+            alpha = rc / (rc + dt)
+            powers = np.power(alpha, np.arange(frame_samples, dtype=np.float64))
+            weights = np.zeros(frame_samples, dtype=np.float64)
+            if frame_samples > 0:
+                weights[0] = alpha
+                if frame_samples > 1:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        weights[1:] = alpha / powers[1:]
+                    weights[1:][~np.isfinite(weights[1:])] = 0.0
+            highpass_state = HighpassState(
+                alpha=float(alpha),
+                powers=powers,
+                weights=weights,
+            )
+
+        notch_stages: list[NotchStageState] = []
+        if self.notch_enabled and self._notch_filters:
+            for freq, quality in self._notch_filters:
+                b0, b1, b2, a1, a2 = self._compute_notch_coeffs(
+                    sample_rate, freq, quality
+                )
+                A = np.array([[-a1, -a2], [1.0, 0.0]], dtype=np.float64)
+                powers = np.empty((frame_samples + 1, 2, 2), dtype=np.float64)
+                powers[0] = np.eye(2, dtype=np.float64)
+                for idx in range(1, frame_samples + 1):
+                    powers[idx] = powers[idx - 1] @ A
+                b_vec = np.array([1.0, 0.0], dtype=np.float64)
+                g = np.einsum("nij,j->ni", powers[:-1], b_vec)
+                c_vec = np.array(
+                    [b1 - b0 * a1, b2 - b0 * a2],
+                    dtype=np.float64,
+                )
+                notch_stages.append(
+                    NotchStageState(
+                        powers=powers,
+                        g=g,
+                        c_vec=c_vec,
+                        d_gain=float(b0),
+                        state_vec=np.zeros(2, dtype=np.float64),
+                    )
+                )
+
+        return FilterState(
             sample_rate=sample_rate,
             frame_bytes=frame_bytes,
-            highpass_state=HighPassState(),
-            notch_states=[NotchState() for _ in range(notch_count)],
-            notch_coeffs=[None for _ in range(notch_count)],
+            frame_samples=frame_samples,
+            highpass_state=highpass_state,
+            notch_stages=notch_stages,
         )
 
-        return state
-
-    def _apply_highpass(
-        self, data: np.ndarray, state: HighPassState, sample_rate: int
-    ) -> np.ndarray:
-        if self.highpass_cutoff_hz <= 0:
+    def _apply_highpass(self, data: np.ndarray, state: HighpassState) -> np.ndarray:
+        if data.size == 0:
             return data
-        rc = 1.0 / (2.0 * math.pi * self.highpass_cutoff_hz)
-        dt = 1.0 / float(sample_rate)
-        alpha = rc / (rc + dt)
-        y = np.empty_like(data)
-        prev_x = state.prev_input
-        prev_y = state.prev_output
-        for idx, x in enumerate(data):
-            out = alpha * (prev_y + x - prev_x)
-            y[idx] = out
-            prev_x = x
-            prev_y = out
-        state.prev_input = prev_x
-        state.prev_output = prev_y
-        return y
+        alpha = state.alpha
+        if alpha == 0.0:
+            state.prev_input = float(data[-1])
+            state.prev_output = 0.0
+            return np.zeros_like(data)
+
+        data64 = data.astype(np.float64, copy=False)
+        dx = np.empty_like(data64)
+        dx[0] = data64[0] - state.prev_input
+        if data64.size > 1:
+            np.subtract(data64[1:], data64[:-1], out=dx[1:])
+        increments = state.weights[: data64.size] * dx
+        z = np.cumsum(increments, dtype=np.float64)
+        z += alpha * state.prev_output
+        y = state.powers[: data64.size] * z
+        state.prev_input = float(data64[-1])
+        state.prev_output = float(y[-1])
+        return y.astype(data.dtype, copy=False)
+
+    def _apply_notch(self, data: np.ndarray, state: FilterState) -> np.ndarray:
+        if not state.notch_stages:
+            return data
+        output = data.astype(np.float64, copy=False)
+        for stage in state.notch_stages:
+            output = self._run_notch_stage(output, stage)
+        return output.astype(data.dtype, copy=False)
+
+    def _run_notch_stage(
+        self, data: np.ndarray, stage: NotchStageState
+    ) -> np.ndarray:
+        N = data.size
+        if N == 0:
+            return data
+        powers = stage.powers
+        g = stage.g
+        base = np.einsum("nij,j->ni", powers[:N], stage.state_vec)
+        if N > 1:
+            conv0 = np.convolve(data, g[:N, 0], mode="full")
+            conv1 = np.convolve(data, g[:N, 1], mode="full")
+            base[1:, 0] += conv0[: N - 1]
+            base[1:, 1] += conv1[: N - 1]
+        else:
+            conv0 = np.convolve(data, g[:N, 0], mode="full")
+            conv1 = np.convolve(data, g[:N, 1], mode="full")
+        stage_output = stage.d_gain * data + np.einsum("ni,i->n", base, stage.c_vec)
+        next_state = powers[N] @ stage.state_vec
+        next_state[0] += conv0[N - 1]
+        next_state[1] += conv1[N - 1]
+        stage.state_vec = next_state
+        return stage_output
 
     def _compute_notch_coeffs(
         self, sample_rate: int, frequency_hz: float, quality: float
@@ -244,53 +330,12 @@ class AudioFilterChain:
         a1 /= a0
         a2 /= a0
         return (b0, b1, b2, a1, a2)
-
-    def _apply_notch(self, data: np.ndarray, state: FilterState, sample_rate: int) -> np.ndarray:
-        if not self._notch_filters:
-            return data
-        if len(state.notch_states) != len(self._notch_filters):
-            state.notch_states = [NotchState() for _ in self._notch_filters]
-            state.notch_coeffs = [None for _ in self._notch_filters]
-        result = data
-        for idx, (freq, quality) in enumerate(self._notch_filters):
-            coeffs = state.notch_coeffs[idx]
-            if coeffs is None:
-                coeffs = self._compute_notch_coeffs(sample_rate, freq, quality)
-                state.notch_coeffs[idx] = coeffs
-            result = self._apply_notch_stage(result, state.notch_states[idx], coeffs)
-        return result
-
-    @staticmethod
-    def _apply_notch_stage(
-        data: np.ndarray,
-        notch_state: NotchState,
-        coeffs: Tuple[float, float, float, float, float],
-    ) -> np.ndarray:
-        b0, b1, b2, a1, a2 = coeffs
-        y = np.empty_like(data)
-        x1 = notch_state.x1
-        x2 = notch_state.x2
-        y1 = notch_state.y1
-        y2 = notch_state.y2
-        for idx, x0 in enumerate(data):
-            out = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-            y[idx] = out
-            x2 = x1
-            x1 = x0
-            y2 = y1
-            y1 = out
-        notch_state.x1 = x1
-        notch_state.x2 = x2
-        notch_state.y1 = y1
-        notch_state.y2 = y2
-        return y
-
     def _apply_gate(self, data: np.ndarray, state: FilterState) -> np.ndarray:
         spectrum = np.fft.rfft(data)
         mags = np.abs(spectrum)
 
-        if state.noise_estimate is None:
-            state.noise_estimate = mags
+        if state.noise_estimate is None or state.noise_estimate.shape != mags.shape:
+            state.noise_estimate = mags.astype(np.float32, copy=True)
         else:
             decay = float(np.clip(self.gate_decay, 0.0, 1.0))
             update = float(np.clip(self.gate_update, 0.0, 1.0))
@@ -306,7 +351,6 @@ class AudioFilterChain:
                     + (1.0 - decay) * mags[~higher]
                 )
 
-        # Guard against negative or zero values.
         noise = np.maximum(state.noise_estimate, 1e-6)
         threshold = noise * self.gate_sensitivity
         gain_floor = 10 ** (self.gate_reduction_db / 20.0)
