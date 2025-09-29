@@ -18,6 +18,10 @@ audio:
   # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
   gain: 2.5
 
+  # Unified live/recording filter chain. Configure filter presets through the
+  # dashboard; legacy streaming.extra_ffmpeg_args values are ignored.
+  filter_chain: []
+
   # WebRTC VAD aggressiveness. # WebRTC VAD aggressiveness (0..3).
   # 0 = least aggressive (most permissive, more false positives, fewer misses).
   # 3 = most aggressive (strictest, fewer false positives, more misses).
@@ -230,6 +234,8 @@ streaming:
   #   "hls"   – HTTP Live Streaming (higher latency, broad compatibility).
   #   "webrtc" – WebRTC audio stream (lower latency, modern browsers only).
   mode: "hls"
+  # Legacy streaming.extra_ffmpeg_args settings are ignored. Use audio.filter_chain
+  # to configure filters shared by the recorder and live preview.
   # When streaming.mode is "webrtc", audio frames are stored in a shared ring
   # buffer before they are forwarded to WebRTC peers. Increase this to tolerate
   # short stalls at the cost of RAM usage (seconds of audio history).

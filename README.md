@@ -157,6 +157,9 @@ The default HLS pipeline still relies on `lib.hls_mux.HLSTee` to buffer recent a
 
 HLS artifacts live under `<tmp_dir>/hls` (defaults to `/apps/tricorder/tmp/hls`). `ffmpeg` runs with `-hls_flags delete_segments` so disk usage stays bounded.
 
+The HLS encoder no longer honours legacy `streaming.extra_ffmpeg_args` values. Live previews inherit the same `audio.filter_chain` configuration used for captured events.
+Remove any redundant `-af` flags from existing configs and manage filters through the dashboard instead.
+
 ### WebRTC (optional)
 
 Setting `streaming.mode` to `webrtc` enables a lower-latency path tailored for modern browsers. The live daemon feeds raw PCM frames into `lib.webrtc_buffer.WebRTCBufferWriter`, which persists a circular buffer (`webrtc_buffer.raw`) alongside state metadata inside `<tmp_dir>/webrtc`. The dashboard exchanges SDP offers with `lib.webrtc_stream.WebRTCManager` via:

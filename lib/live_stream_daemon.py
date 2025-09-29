@@ -4,6 +4,7 @@ import time
 import subprocess
 import sys
 import signal
+from typing import Any
 from lib.segmenter import TimelineRecorder
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
@@ -12,15 +13,54 @@ from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 
 cfg = get_cfg()
+
+
+def _collect_legacy_extra_args(streaming_cfg: Any) -> list[str]:
+    if not isinstance(streaming_cfg, dict):
+        return []
+    raw = streaming_cfg.get("extra_ffmpeg_args")
+    if not raw:
+        raw = streaming_cfg.get("hls_extra_ffmpeg_args")
+    if isinstance(raw, (str, bytes)):
+        return [str(raw)]
+    if isinstance(raw, (list, tuple)):
+        collected: list[str] = []
+        for entry in raw:
+            if isinstance(entry, (str, bytes)):
+                collected.append(str(entry))
+        return collected
+    return []
+
+
+def _audio_filter_chain_enabled(audio_cfg: Any) -> bool:
+    if not isinstance(audio_cfg, dict):
+        return False
+    chain = audio_cfg.get("filter_chain")
+    if isinstance(chain, dict):
+        enabled = chain.get("enabled")
+        if isinstance(enabled, bool):
+            return enabled
+        if enabled is not None:
+            return bool(enabled)
+        filters_value = chain.get("filters")
+        if isinstance(filters_value, (list, tuple)):
+            return bool(filters_value)
+        return bool(chain)
+    return bool(chain)
+
+
+STREAMING_CFG = cfg.get("streaming", {})
+LEGACY_HLS_EXTRA_ARGS = _collect_legacy_extra_args(STREAMING_CFG)
+AUDIO_FILTER_CHAIN_ENABLED = _audio_filter_chain_enabled(cfg.get("audio", {}))
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 STATE_POLL_INTERVAL = 1.0
-STREAM_MODE = str(cfg.get("streaming", {}).get("mode", "hls")).strip().lower() or "hls"
+STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
 if STREAM_MODE not in {"hls", "webrtc"}:
     STREAM_MODE = "hls"
-WEBRTC_HISTORY_SECONDS = float(cfg.get("streaming", {}).get("webrtc_history_seconds", 8.0))
+WEBRTC_HISTORY_SECONDS = float(STREAMING_CFG.get("webrtc_history_seconds", 8.0))
 
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
@@ -86,6 +126,8 @@ def main():
             segment_time=2.0,
             history_seconds=60,
             bitrate="64k",
+            legacy_extra_ffmpeg_args=LEGACY_HLS_EXTRA_ARGS,
+            filter_chain_enabled=AUDIO_FILTER_CHAIN_ENABLED,
         )
         state_path = os.path.join(hls_dir, "controller_state.json")
         controller.set_state_path(state_path, persist=True)
