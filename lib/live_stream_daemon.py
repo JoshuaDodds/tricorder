@@ -336,17 +336,32 @@ def main():
             webrtc_writer.feed(frame)
 
     filter_pipeline: Optional[FilterPipeline] = None
-    if FILTER_CHAIN is not None:
+    filter_pipeline_launch_error_logged = False
+
+    def ensure_filter_pipeline() -> None:
+        nonlocal filter_pipeline, filter_pipeline_launch_error_logged
+        if FILTER_CHAIN is None or filter_pipeline is not None:
+            return
         try:
-            filter_pipeline = FilterPipeline(FILTER_CHAIN_CFG, SAMPLE_RATE, FRAME_BYTES)
-        except Exception as exc:
-            print(
-                f"[live] failed to launch filter worker: {exc!r} (using in-process filters)",
-                flush=True,
+            filter_pipeline = FilterPipeline(
+                FILTER_CHAIN_CFG,
+                SAMPLE_RATE,
+                FRAME_BYTES,
             )
+            filter_pipeline_launch_error_logged = False
+        except Exception as exc:
+            if not filter_pipeline_launch_error_logged:
+                print(
+                    f"[live] failed to launch filter worker: {exc!r} (using in-process filters)",
+                    flush=True,
+                )
+                filter_pipeline_launch_error_logged = True
             filter_pipeline = None
 
+    ensure_filter_pipeline()
+
     while not stop_requested:
+        ensure_filter_pipeline()
         p = None
         try:
             try:
@@ -420,6 +435,7 @@ def main():
                                     flush=True,
                                 )
                             filter_pipeline = None
+                            filter_pipeline_launch_error_logged = False
                             continue
                         if drained:
                             flush_processed(drained)
@@ -458,6 +474,7 @@ def main():
                                 flush=True,
                             )
                         filter_pipeline = None
+                        filter_pipeline_launch_error_logged = False
                         drained = []
                     if drained:
                         flush_processed(drained)
@@ -496,6 +513,7 @@ def main():
                             flush=True,
                         )
                     filter_pipeline = None
+                    filter_pipeline_launch_error_logged = False
                     drained = []
                 if drained:
                     flush_processed(drained)
@@ -527,6 +545,7 @@ def main():
                                 flush=True,
                             )
                         filter_pipeline = None
+                        filter_pipeline_launch_error_logged = False
                         drained = []
                     if drained:
                         flush_processed(drained)
