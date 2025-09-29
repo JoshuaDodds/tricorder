@@ -31,6 +31,31 @@ audio:
   # Suggested: 1–2 for quiet/controlled spaces; 2–3 for noisy rooms if false positives are a problem.
   vad_aggressiveness: 3
 
+  # Optional real-time filter chain for the live stream.
+  filter_chain:
+    # Master switch. Disable to bypass all filtering.
+    enabled: true
+
+    # First-order high-pass filter to clear sub-sonic rumble (Hz).
+    highpass:
+      enabled: true
+      cutoff_hz: 70.0
+
+    # Notch filter targeting mains hum (Hz) with a moderate Q.
+    notch:
+      enabled: true
+      freq_hz: 60.0
+      quality: 30.0
+
+    # Lightweight spectral gate to trim stationary hiss. Disabled by default
+    # to avoid tonal pumping artifacts on speech; enable only after listening tests.
+    spectral_gate:
+      enabled: false
+      sensitivity: 1.6   # Multiplier applied to the learned noise floor.
+      reduction_db: -18.0  # Gain applied below threshold (dB).
+      noise_update: 0.1    # Blend factor for new magnitude measurements.
+      noise_decay: 0.95    # Rate at which the floor drifts down when quiet.
+
 paths:
   # Scratch space for temporary WAVs and working files. Prefer tmpfs if available.
   tmp_dir: "/apps/tricorder/tmp"
