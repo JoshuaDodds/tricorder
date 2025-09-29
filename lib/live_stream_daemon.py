@@ -33,26 +33,11 @@ def _collect_legacy_extra_args(streaming_cfg: Any) -> list[str]:
     return []
 
 
-def _audio_filter_chain_enabled(audio_cfg: Any) -> bool:
-    if not isinstance(audio_cfg, dict):
-        return False
-    chain = audio_cfg.get("filter_chain")
-    if isinstance(chain, dict):
-        enabled = chain.get("enabled")
-        if isinstance(enabled, bool):
-            return enabled
-        if enabled is not None:
-            return bool(enabled)
-        filters_value = chain.get("filters")
-        if isinstance(filters_value, (list, tuple)):
-            return bool(filters_value)
-        return bool(chain)
-    return bool(chain)
-
-
 STREAMING_CFG = cfg.get("streaming", {})
 LEGACY_HLS_EXTRA_ARGS = _collect_legacy_extra_args(STREAMING_CFG)
-AUDIO_FILTER_CHAIN_ENABLED = _audio_filter_chain_enabled(cfg.get("audio", {}))
+FILTER_CHAIN_CFG = cfg.get("audio", {}).get("filter_chain")
+FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
+AUDIO_FILTER_CHAIN_ENABLED = FILTER_CHAIN is not None
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
@@ -62,9 +47,6 @@ STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
 if STREAM_MODE not in {"hls", "webrtc"}:
     STREAM_MODE = "hls"
 WEBRTC_HISTORY_SECONDS = float(STREAMING_CFG.get("webrtc_history_seconds", 8.0))
-
-FILTER_CHAIN_CFG = cfg.get("audio", {}).get("filter_chain")
-FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
