@@ -261,6 +261,12 @@ class AudioFilterChain:
     def _solve_first_order_recursive(
         coeff: complex, drive: np.ndarray, prev: complex
     ) -> np.ndarray:
+        """Solve y[n] = coeff * y[n-1] + drive[n] without breaking continuity.
+
+        The vectorized formulation mirrors the scalar recurrence that previously
+        ran inside the high-pass and notch loops, so existing filter responses
+        are preserved while reducing Python-level iteration overhead.
+        """
         if not drive.size:
             return drive
         coeff_val = complex(coeff)
