@@ -737,6 +737,7 @@ class TimelineRecorder:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
             elif "adaptive_rms_threshold" not in payload:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
+            payload["adaptive_rms_enabled"] = bool(self._adaptive.enabled)
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -760,6 +761,7 @@ class TimelineRecorder:
                 "last_stop_reason",
                 "adaptive_rms_threshold",
                 "current_rms",
+                "adaptive_rms_enabled",
                 "service_running",
                 "event_duration_seconds",
                 "event_size_bytes",
