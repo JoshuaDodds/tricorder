@@ -433,6 +433,12 @@ body[data-theme="light"] .app-menu-toggle {
   gap: 0.625rem;
 }
 
+.app-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .app-title {
   margin: 0;
   margin-left: -10px;

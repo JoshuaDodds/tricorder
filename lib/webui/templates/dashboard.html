@@ -46,150 +46,152 @@
       </div>
       <header class="app-header">
         <div class="titles">
-          <div class="app-menu-wrapper">
-            <button
-              id="app-menu-toggle"
-              class="icon-button app-menu-toggle"
-              type="button"
-              aria-haspopup="true"
-              aria-expanded="false"
-              aria-controls="app-menu"
-            >
-              <span class="sr-only">Open menu</span>
-              <span aria-hidden="true" class="menu-icon">
-                <span></span>
-                <span></span>
-                <span></span>
-              </span>
-            </button>
-            <div
-              id="app-menu"
-              class="app-menu"
-              role="menu"
-              aria-hidden="true"
-              aria-labelledby="app-menu-toggle"
-              hidden
-              data-visible="false"
-            >
-              <div class="menu-section" role="none">
-                <div class="menu-section-title" role="presentation">Recorder configuration</div>
-                <button
-                  id="recorder-menu-audio"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="audio"
-                >
-                  Audio input &amp; gain
-                </button>
-                <button
-                  id="recorder-menu-segmenter"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="segmenter"
-                >
-                  Event detection
-                </button>
-                <button
-                  id="recorder-menu-adaptive"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="adaptive_rms"
-                >
-                  Adaptive RMS
-                </button>
-                <button
-                  id="recorder-menu-ingest"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="ingest"
-                >
-                  Ingest pipeline
-                </button>
-                <button
-                  id="recorder-menu-transcription"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="transcription"
-                >
-                  Transcription
-                </button>
-                <button
-                  id="recorder-menu-logging"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="logging"
-                >
-                  Logging &amp; diagnostics
-                </button>
-                <button
-                  id="recorder-menu-streaming"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="streaming"
-                >
-                  Live streaming
-                </button>
-                <button
-                  id="recorder-menu-dashboard"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="dashboard"
-                >
-                  Dashboard API access
-                </button>
-              </div>
-              <div class="menu-section" role="none">
-                <div class="menu-section-title" role="presentation">Operations</div>
-                <button
-                  id="config-open"
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                >
-                  Configuration
-                </button>
-                <button
-                  id="archival-open"
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                >
-                  Archival settings
-                </button>
-                <button
-                  id="services-open"
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                >
-                  Services
-                </button>
+          <div class="app-brand">
+            <div class="app-menu-wrapper">
+              <button
+                id="app-menu-toggle"
+                class="icon-button app-menu-toggle"
+                type="button"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="app-menu"
+              >
+                <span class="sr-only">Open menu</span>
+                <span aria-hidden="true" class="menu-icon">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              </button>
+              <div
+                id="app-menu"
+                class="app-menu"
+                role="menu"
+                aria-hidden="true"
+                aria-labelledby="app-menu-toggle"
+                hidden
+                data-visible="false"
+              >
+                <div class="menu-section" role="none">
+                  <div class="menu-section-title" role="presentation">Recorder configuration</div>
+                  <button
+                    id="recorder-menu-audio"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="audio"
+                  >
+                    Audio input &amp; gain
+                  </button>
+                  <button
+                    id="recorder-menu-segmenter"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="segmenter"
+                  >
+                    Event detection
+                  </button>
+                  <button
+                    id="recorder-menu-adaptive"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="adaptive_rms"
+                  >
+                    Adaptive RMS
+                  </button>
+                  <button
+                    id="recorder-menu-ingest"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="ingest"
+                  >
+                    Ingest pipeline
+                  </button>
+                  <button
+                    id="recorder-menu-transcription"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="transcription"
+                  >
+                    Transcription
+                  </button>
+                  <button
+                    id="recorder-menu-logging"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="logging"
+                  >
+                    Logging &amp; diagnostics
+                  </button>
+                  <button
+                    id="recorder-menu-streaming"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="streaming"
+                  >
+                    Live streaming
+                  </button>
+                  <button
+                    id="recorder-menu-dashboard"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="dashboard"
+                  >
+                    Dashboard API access
+                  </button>
+                </div>
+                <div class="menu-section" role="none">
+                  <div class="menu-section-title" role="presentation">Operations</div>
+                  <button
+                    id="config-open"
+                    class="menu-item"
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    Configuration
+                  </button>
+                  <button
+                    id="archival-open"
+                    class="menu-item"
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    Archival settings
+                  </button>
+                  <button
+                    id="services-open"
+                    class="menu-item"
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    Services
+                  </button>
+                </div>
               </div>
             </div>
+            <h1 class="app-title">
+              <span class="sr-only">Tricorder dashboard home</span>
+              <img
+                src="{{ static_url('img/dashboard-logo.svg') }}"
+                class="app-title-logo"
+                alt=""
+                role="presentation"
+              />
+            </h1>
           </div>
-          <h1 class="app-title">
-            <span class="sr-only">Tricorder dashboard home</span>
-            <img
-              src="{{ static_url('img/dashboard-logo.svg') }}"
-              class="app-title-logo"
-              alt=""
-              role="presentation"
-            />
-          </h1>
         </div>
         <div class="header-actions">
           <div class="header-controls">
