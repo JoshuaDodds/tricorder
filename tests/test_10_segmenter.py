@@ -1,4 +1,8 @@
 # tests/test_10_segmenter.py
+import json
+
+import pytest
+
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 import lib.segmenter as segmenter
 
@@ -193,3 +197,69 @@ def test_apply_gain_scales_and_clips(monkeypatch):
     neg_sample = (-3).to_bytes(2, 'little', signed=True)
     scaled_neg = segmenter.TimelineRecorder._apply_gain(neg_sample)
     assert read_sample(scaled_neg) == -2
+
+
+def test_filter_chain_metrics_emit_structured_logs(monkeypatch, tmp_path):
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_path))
+    monkeypatch.setattr(segmenter, "FILTER_CHAIN_AVG_BUDGET_MS", 0.5)
+    monkeypatch.setattr(segmenter, "FILTER_CHAIN_PEAK_BUDGET_MS", 1.0)
+    monkeypatch.setattr(segmenter, "FILTER_CHAIN_LOG_THROTTLE_SEC", 0.0)
+    monkeypatch.setattr(segmenter, "DEBUG_VERBOSE", False)
+
+    fake_perf = [0.0]
+
+    def perf_counter():
+        current = fake_perf[0]
+        fake_perf[0] += 0.005
+        return current
+
+    fake_monotonic = [0.0]
+
+    def monotonic():
+        return fake_monotonic[0]
+
+    logs: list[str] = []
+
+    def fake_print(*args, **kwargs):  # pragma: no cover - trivial passthrough
+        if not args:
+            logs.append("")
+        elif len(args) == 1:
+            logs.append(str(args[0]))
+        else:
+            logs.append(" ".join(str(arg) for arg in args))
+
+    captured_extras: list[dict | None] = []
+
+    def fake_update(self, capturing, *, event=None, last_event=None, reason=None, extra=None):
+        captured_extras.append(extra)
+        self._status_cache = {"capturing": capturing}
+
+    monkeypatch.setattr(segmenter.time, "perf_counter", perf_counter)
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr("builtins.print", fake_print)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "_update_capture_status", fake_update, raising=False)
+
+    recorder = TimelineRecorder()
+
+    fake_monotonic[0] = 10.0
+    recorder.ingest(make_frame(2000), 0)
+    fake_monotonic[0] = 11.0
+    recorder.ingest(make_frame(2000), 1)
+
+    assert recorder._filter_avg_ms >= 5.0
+    assert recorder._filter_peak_ms >= recorder._filter_avg_ms
+
+    structured_logs = [entry for entry in logs if entry.startswith("{")]
+    assert structured_logs, "filter chain overages should emit structured logs"
+    payload = json.loads(structured_logs[-1])
+    assert payload["event"] == "filter_chain_budget_exceeded"
+    assert payload["avg_ms"] >= 5.0
+    assert payload["avg_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_AVG_BUDGET_MS)
+    assert payload["peak_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_PEAK_BUDGET_MS)
+
+    extras_with_metrics = [entry for entry in captured_extras if entry and "filter_chain_avg_ms" in entry]
+    assert extras_with_metrics, "capture status updates should include filter metrics"
+    latest = extras_with_metrics[-1]
+    assert latest["filter_chain_avg_ms"] >= 5.0
+    assert latest["filter_chain_avg_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_AVG_BUDGET_MS)
+    assert latest["filter_chain_peak_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_PEAK_BUDGET_MS)
