@@ -518,9 +518,38 @@ def _file_has_comments(path: Path) -> bool:
 CommentHints = tuple[list[str], str | None]
 
 
+def _find_comment_marker(segment: str) -> int | None:
+    in_single = False
+    in_double = False
+    index = 0
+    while index < len(segment):
+        char = segment[index]
+        if char == "#" and not in_single and not in_double:
+            return index
+        if in_double:
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                in_double = False
+        elif in_single:
+            if char == "'":
+                if index + 1 < len(segment) and segment[index + 1] == "'":
+                    index += 2
+                    continue
+                in_single = False
+        else:
+            if char == '"':
+                in_double = True
+            elif char == "'":
+                in_single = True
+        index += 1
+    return None
+
+
 def _extract_comment_hints(text: str) -> Dict[str, CommentHints]:
     hints: Dict[str, CommentHints] = {}
-    if not text:
+    if not text.strip():
         return hints
 
     stack: list[tuple[int, str]] = []
@@ -553,8 +582,9 @@ def _extract_comment_hints(text: str) -> Dict[str, CommentHints]:
         path = ".".join(entry[1] for entry in stack + [(indent, key)])
 
         inline_comment: str | None = None
-        if "#" in remainder:
-            comment_text = remainder.split("#", 1)[1].strip()
+        comment_index = _find_comment_marker(remainder)
+        if comment_index is not None:
+            comment_text = remainder[comment_index + 1 :].strip()
             if comment_text:
                 inline_comment = f"# {comment_text}"
 
@@ -613,13 +643,18 @@ def _apply_comment_hints(text: str, comment_hints: Mapping[str, CommentHints]) -
                 for comment_line in prefix_comments:
                     rendered.append(f"{indent_spaces}{comment_line}")
             if inline_comment:
-                base = line.split("#", 1)[0].rstrip()
-                line = f"{base}  {inline_comment}"
+                prefix, sep, remainder_full = line.partition(":")
+                if sep:
+                    comment_index = _find_comment_marker(remainder_full)
+                    if comment_index is not None:
+                        remainder_full = remainder_full[:comment_index]
+                    remainder_full = remainder_full.rstrip()
+                    base = f"{prefix}{sep}{remainder_full}".rstrip()
+                    line = f"{base}  {inline_comment}"
 
         rendered.append(line)
 
-        remainder_stripped = remainder.strip()
-        if remainder_stripped == "" or remainder_stripped.startswith("|") or remainder_stripped.startswith(">"):
+        if not (content := remainder.strip()) or content.startswith("|") or content.startswith(">"):
             stack.append((indent, key))
 
     ending = "\n" if text.endswith("\n") else ""
@@ -817,7 +852,11 @@ def _persist_settings_section(
         existing_text = ""
         try:
             existing_text = primary_path.read_text(encoding="utf-8")
-        except Exception:
+        except OSError as exc:
+            print(
+                f"Warning: unable to read configuration for comment hints: {exc}",
+                flush=True,
+            )
             existing_text = ""
         existing_comments = _extract_comment_hints(existing_text)
         template_comments: Dict[str, CommentHints] = {}
@@ -867,15 +906,22 @@ def _persist_settings_section(
     if comment_hints:
         try:
             rendered = primary_path.read_text(encoding="utf-8")
-        except Exception:
+        except OSError as exc:
+            print(
+                f"Warning: unable to read configuration for comment hint application: {exc}",
+                flush=True,
+            )
             rendered = ""
         if rendered:
             rewritten = _apply_comment_hints(rendered, comment_hints)
             if rewritten != rendered:
                 try:
                     primary_path.write_text(rewritten, encoding="utf-8")
-                except Exception:
-                    pass
+                except OSError as exc:
+                    print(
+                        f"Warning: unable to write configuration with comment hints: {exc}",
+                        flush=True,
+                    )
 
     return reload_cfg().get(section, {})
 
