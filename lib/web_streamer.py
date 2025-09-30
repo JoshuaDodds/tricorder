@@ -62,6 +62,84 @@ RECORDINGS_TIME_RANGE_SECONDS = {
 
 ARCHIVAL_BACKENDS = {"network_share", "rsync"}
 
+DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
+    {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
+]
+
+
+def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
+    """Normalize ICE server definitions into the WebRTC configuration format."""
+
+    def _clone_defaults() -> list[dict[str, object]]:
+        return [
+            {
+                key: (
+                    list(value)
+                    if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+                    else value
+                )
+                for key, value in entry.items()
+            }
+            for entry in DEFAULT_WEBRTC_ICE_SERVERS
+        ]
+
+    def _normalize_urls(value: object) -> list[str]:
+        urls: list[str] = []
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate:
+                urls.append(candidate)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for item in value:
+                if isinstance(item, str):
+                    candidate = item.strip()
+                    if candidate:
+                        urls.append(candidate)
+        return urls
+
+    if raw is None:
+        return _clone_defaults()
+
+    entries: list[dict[str, object]] = []
+
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        for part in parts:
+            urls = _normalize_urls(part)
+            if urls:
+                entries.append({"urls": urls})
+        return entries if entries else _clone_defaults()
+
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        items = list(raw)
+        if not items:
+            return []
+        for item in items:
+            if isinstance(item, str):
+                urls = _normalize_urls(item)
+                if urls:
+                    entries.append({"urls": urls})
+                continue
+            if isinstance(item, dict):
+                urls = _normalize_urls(item.get("urls"))
+                if not urls:
+                    continue
+                server: dict[str, object] = {"urls": urls}
+                username = item.get("username")
+                if isinstance(username, str):
+                    username = username.strip()
+                    if username:
+                        server["username"] = username
+                credential = item.get("credential")
+                if isinstance(credential, str):
+                    credential = credential.strip()
+                    if credential:
+                        server["credential"] = credential
+                entries.append(server)
+        return entries if entries else _clone_defaults()
+
+    return _clone_defaults()
+
 
 def _archival_defaults() -> dict[str, Any]:
     return {
@@ -1855,6 +1933,11 @@ def build_app() -> web.Application:
     streaming_cfg = cfg.get("streaming", {})
     stream_mode_raw = str(streaming_cfg.get("mode", "hls")).strip().lower()
     stream_mode = stream_mode_raw if stream_mode_raw in {"hls", "webrtc"} else "hls"
+    webrtc_ice_servers: list[dict[str, object]] = []
+    if stream_mode == "webrtc":
+        webrtc_ice_servers = _normalize_webrtc_ice_servers(
+            streaming_cfg.get("webrtc_ice_servers")
+        )
     app[STREAM_MODE_KEY] = stream_mode
 
     hls_dir: str | None = None
@@ -1881,6 +1964,7 @@ def build_app() -> web.Application:
             frame_ms=frame_ms,
             frame_bytes=frame_bytes,
             history_seconds=history_seconds,
+            ice_servers=webrtc_ice_servers,
         )
     app[WEBRTC_MANAGER_KEY] = webrtc_manager
     recordings_root = Path(cfg["paths"]["recordings_dir"])
@@ -2571,6 +2655,7 @@ def build_app() -> web.Application:
             page_title="Tricorder Dashboard",
             api_base=dashboard_api_base,
             stream_mode=stream_mode,
+            webrtc_ice_servers=webrtc_ice_servers,
         )
         return web.Response(text=html, content_type="text/html")
 

@@ -285,6 +285,16 @@ streaming:
   # buffer before they are forwarded to WebRTC peers. Increase this to tolerate
   # short stalls at the cost of RAM usage (seconds of audio history).
   webrtc_history_seconds: 8.0
+  # Optional list of STUN/TURN ICE servers exposed to WebRTC clients. Provide
+  # either strings ("stun:stun.example.com:3478") or objects with urls,
+  # username, and credential fields. Leave unset to use public STUN defaults
+  # suitable for Firefox and Chromium; set to [] to disable external ICE
+  # servers entirely.
+  # webrtc_ice_servers:
+  #   - "stun:stun.cloudflare.com:3478"
+  #   - urls: ["turn:turn.example.com:3478"]
+  #     username: "tricorder"
+  #     credential: "s3cret"
 
 dashboard:
   # Override the base URL used by the dashboard when making API and HLS requests.
