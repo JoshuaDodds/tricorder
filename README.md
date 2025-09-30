@@ -268,11 +268,12 @@ tricorder/
 Copy `updater.env-example` to `/etc/tricorder/update.env` (or another path referenced by the systemd unit) and set:
 
 - `TRICORDER_UPDATE_REMOTE` – Git URL to pull updates from.
-- `TRICORDER_UPDATE_BRANCH` – Branch to track (default `main`).
+- `TRICORDER_UPDATE_BRANCH` – Branch to track (default `main`). The updater always fetches this branch and resets the checkout to `origin/<branch>` before reinstalling.
 - `TRICORDER_UPDATE_DIR` – Working directory for the updater checkout (default `/apps/tricorder/repo`).
 - `TRICORDER_INSTALL_BASE` / `TRICORDER_INSTALL_SCRIPT` – Override install location or script if needed.
 - `TRICORDER_UPDATE_SERVICES` – Space-separated units to restart after an update.
 - `DEV=1` – Disable the updater and mark the install as dev mode so the systemd unit stays inactive even after a reboot.
+- `TRICORDER_DEV_MODE=1` or creating `<install_base>/.dev-mode` have the same effect as `DEV=1`. When any dev-mode flag is present the auto-update script exits immediately without cloning, resetting, or reinstalling so a developer's working tree is never touched.
 
 The timer is configured for short intervals in tests; adjust to a longer cadence in production.
 
