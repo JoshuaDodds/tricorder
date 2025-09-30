@@ -41,11 +41,33 @@ mkdir -p "$UPDATE_DIR"
 UPDATED=0
 
 if (( DEV_MODE == 0 )); then
-  log "Production mode: cloning a fresh checkout of $BRANCH from $REMOTE."
-  rm -rf "$SRC_DIR"
-  git clone --branch "$BRANCH" "$REMOTE" "$SRC_DIR"
-  git -C "$SRC_DIR" remote set-url origin "$REMOTE"
-  UPDATED=1
+  log "Production mode: checking $BRANCH on $REMOTE for updates."
+  if [[ ! -d "$SRC_DIR/.git" ]]; then
+    log "No existing checkout found; cloning $REMOTE into $SRC_DIR."
+    rm -rf "$SRC_DIR"
+    git clone --branch "$BRANCH" "$REMOTE" "$SRC_DIR"
+    git -C "$SRC_DIR" remote set-url origin "$REMOTE"
+    UPDATED=1
+  else
+    git -C "$SRC_DIR" remote set-url origin "$REMOTE"
+    if ! git -C "$SRC_DIR" fetch origin "$BRANCH" --prune >/dev/null 2>&1; then
+      log "Production mode: git fetch for origin/$BRANCH failed; skipping update."
+    else
+      REMOTE_HEAD=$(git -C "$SRC_DIR" rev-parse "origin/$BRANCH" 2>/dev/null || echo "")
+      if [[ -z "$REMOTE_HEAD" ]]; then
+        log "Production mode: remote branch origin/$BRANCH not found; skipping update."
+      else
+        LOCAL_HEAD=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo "")
+        if [[ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]]; then
+          log "Production mode: new commits detected; updating checkout."
+          git -C "$SRC_DIR" checkout -B "$BRANCH" "$REMOTE_HEAD" >/dev/null 2>&1 || \
+            git -C "$SRC_DIR" checkout "$BRANCH"
+          git -C "$SRC_DIR" reset --hard "$REMOTE_HEAD"
+          UPDATED=1
+        fi
+      fi
+    fi
+  fi
 else
   log "Dev mode enabled; refreshing existing checkout in $SRC_DIR."
   if [[ ! -d "$SRC_DIR/.git" ]]; then
@@ -102,7 +124,7 @@ if [[ ! -x "$INSTALL_PATH" ]]; then
 fi
 
 log "Running installer: $INSTALL_PATH"
-DEV=0 BASE="$INSTALL_BASE" bash "$INSTALL_PATH"
+DEV="$DEV_MODE" BASE="$INSTALL_BASE" bash "$INSTALL_PATH"
 
 for unit in $SERVICES; do
   if systemctl list-unit-files "$unit" >/dev/null 2>&1; then
