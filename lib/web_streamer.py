@@ -800,12 +800,19 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         return normalized, ["Request body must be a JSON object"]
 
     existing_filters: list[dict[str, Any]] = []
+    existing_stage_configs: dict[str, dict[str, Any]] = {}
     try:
         cfg_snapshot = get_cfg()
         current_audio = cfg_snapshot.get("audio", {}) if isinstance(cfg_snapshot, dict) else {}
         current_filters = current_audio.get("filter_chain") if isinstance(current_audio, dict) else None
         if isinstance(current_filters, dict):
             existing_filters = _copy_filter_stage_sequence(current_filters.get("filters"))
+            for stage_key in AUDIO_FILTER_STAGE_SPECS:
+                stage_cfg = current_filters.get(stage_key)
+                if isinstance(stage_cfg, dict):
+                    existing_stage_configs[stage_key] = {
+                        key: copy.deepcopy(val) for key, val in stage_cfg.items()
+                    }
         elif isinstance(current_filters, Sequence) and not isinstance(current_filters, (str, bytes)):
             existing_filters = _copy_filter_stage_sequence(current_filters)
     except Exception:
@@ -850,6 +857,18 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         normalized["vad_aggressiveness"] = vad
 
     filters_payload = payload.get("filter_chain")
+    stages = normalized.get("filter_chain")
+    if isinstance(stages, dict) and existing_stage_configs:
+        for stage_key, stage_cfg in existing_stage_configs.items():
+            defaults = stages.get(stage_key)
+            if isinstance(defaults, dict):
+                merged = {key: copy.deepcopy(val) for key, val in defaults.items()}
+                merged.update(stage_cfg)
+                stages[stage_key] = merged
+            else:
+                stages[stage_key] = {
+                    key: copy.deepcopy(val) for key, val in stage_cfg.items()
+                }
     if isinstance(filters_payload, dict) or filters_payload is None:
         if filters_payload is None:
             filters_payload = {}
@@ -869,7 +888,8 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
                 defaults = AUDIO_FILTER_DEFAULTS.get(stage_key)
                 target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
                 stages[stage_key] = target
-            target["enabled"] = _bool_from_any(stage_payload.get("enabled"))
+            if "enabled" in stage_payload:
+                target["enabled"] = _bool_from_any(stage_payload.get("enabled"))
             for field_name, (min_value, max_value) in field_specs.items():
                 if field_name not in stage_payload:
                     continue
