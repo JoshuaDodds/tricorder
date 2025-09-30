@@ -201,10 +201,14 @@ class FilterPipeline:
     def drain_all(self) -> list[Tuple[bytes, Optional[str]]]:
         if self._failed:
             raise FilterPipelineError(self._fail_reason)
-        results = self._drain(block=True, limit=None)
-        if self._pending:
+        results = self._drain(block=False, limit=None)
+        while self._pending:
+            chunk = self._drain(block=True, limit=None)
+            if chunk:
+                results.extend(chunk)
+                continue
             self._ensure_worker_alive()
-            if self._is_stalled():
+            if self._pending and self._is_stalled():
                 raise self._fail_with_pending("filter worker stalled (no output)")
         return results
 
