@@ -841,6 +841,12 @@ body[data-theme="light"] .app-menu-toggle {
   font-weight: 500;
 }
 
+.input-group small {
+  font-weight: 400;
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
 .input-group input,
 .input-group select,
 .ghost-button,

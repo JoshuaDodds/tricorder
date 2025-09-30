@@ -508,6 +508,18 @@
                   </select>
                 </label>
                 <label class="input-group">
+                  <span>Time range <small>(h = hour, d = day)</small></span>
+                  <select id="filter-time-range">
+                    <option value="">All time</option>
+                    <option value="1h">Past 1 hour (1h)</option>
+                    <option value="2h">Past 2 hours (2h)</option>
+                    <option value="4h">Past 4 hours (4h)</option>
+                    <option value="8h">Past 8 hours (8h)</option>
+                    <option value="12h">Past 12 hours (12h)</option>
+                    <option value="1d">Past 1 day (1d)</option>
+                  </select>
+                </label>
+                <label class="input-group">
                   <span>Limit</span>
                   <input id="filter-limit" type="number" min="1" max="1000" value="200" />
                 </label>
