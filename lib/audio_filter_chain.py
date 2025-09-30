@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+import cmath
 import math
 
 import numpy as np
@@ -46,7 +47,8 @@ class FilterState:
 class _NotchFilterParams:
     sample_rate: int
     zero: complex
-    pole: complex
+    pole1: complex
+    pole2: complex
     scale: float
 
 
@@ -297,20 +299,20 @@ class AudioFilterChain:
         sin_omega = math.sin(omega)
         alpha = sin_omega / (2.0 * q)
         denom = 1.0 + alpha
-        # Poles are complex conjugates with magnitude sqrt(a2) where a2 = (1 - alpha)/(1 + alpha).
-        a2 = max(0.0, (1.0 - alpha) / denom)
-        pole_radius = math.sqrt(a2)
+        # Denominator coefficients follow the RBJ cookbook biquad after normalizing by (1 + alpha).
+        a1 = -2.0 * cos_omega / denom
+        a2 = (1.0 - alpha) / denom
         zero = cos_omega + 1j * sin_omega
-        one_minus_alpha_sq = max(1e-12, 1.0 - alpha * alpha)
-        cos_theta = cos_omega / math.sqrt(one_minus_alpha_sq)
-        cos_theta = max(-1.0, min(1.0, cos_theta))
-        theta = math.acos(cos_theta)
-        pole = pole_radius * (math.cos(theta) + 1j * math.sin(theta))
+        discriminant = complex(a1 * a1 - 4.0 * a2)
+        sqrt_disc = cmath.sqrt(discriminant)
+        pole1 = (-a1 + sqrt_disc) / 2.0
+        pole2 = (-a1 - sqrt_disc) / 2.0
         scale = 1.0 / denom
         return _NotchFilterParams(
             sample_rate=sample_rate,
             zero=zero,
-            pole=pole,
+            pole1=pole1,
+            pole2=pole2,
             scale=scale,
         )
 
@@ -350,11 +352,11 @@ class AudioFilterChain:
         notch_state.prev_stage1 = stage1[-1]
 
         stage3 = self._solve_first_order_recursive(
-            params.pole, stage2, notch_state.prev_stage3
+            params.pole1, stage2, notch_state.prev_stage3
         )
         notch_state.prev_stage3 = stage3[-1]
         stage4 = self._solve_first_order_recursive(
-            np.conjugate(params.pole), stage3, notch_state.prev_stage4
+            params.pole2, stage3, notch_state.prev_stage4
         )
         notch_state.prev_stage4 = stage4[-1]
         final = (params.scale * stage4).real.astype(data.dtype, copy=False)
