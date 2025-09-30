@@ -3557,8 +3557,8 @@ def build_app() -> web.Application:
         if not values:
             return None
 
-        idle = values[3] if len(values) > 3 else 0
-        iowait = values[4] if len(values) > 4 else 0
+        idle = values[3] if len(values) >= 4 else 0
+        iowait = values[4] if len(values) >= 5 else 0
         total = sum(values)
         return total, idle + iowait
 
