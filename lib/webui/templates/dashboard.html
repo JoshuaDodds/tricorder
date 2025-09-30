@@ -834,7 +834,8 @@
               </div>
               <h4 class="settings-subheading">Filter chain</h4>
               <p class="settings-subheading-description">
-                Enable lightweight filters to tame rumble, hiss, or bed noise before the segmenter sees the audio.
+                Enable lightweight filters to tame rumble, hiss, or bed noise before the segmenter sees the audio. Start with the
+                high-pass filter, then layer in narrow notches for hums, and finally add noise gating once the noise floor is steady.
               </p>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
@@ -853,7 +854,10 @@
                   />
                   <span id="audio-filter-highpass-cutoff-value" class="filter-value" aria-live="off">90&nbsp;Hz</span>
                 </div>
-                <p class="field-description">Remove low-frequency rumble from HVAC systems, footsteps, or desk bumps.</p>
+                <p class="field-description">
+                  Roll off sub-bass rumble from HVAC, footsteps, or desk bumps. Sweep between 80–120&nbsp;Hz; stop just before the
+                  voices you care about start to thin out.
+                </p>
               </div>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
@@ -884,12 +888,15 @@
                   />
                   <span id="audio-filter-notch-quality-value" class="filter-value" aria-live="off">Q&nbsp;30</span>
                 </div>
-                <p class="field-description">Carve out persistent hums (50/60&nbsp;Hz) or whistles without impacting the rest of the spectrum.</p>
+                <p class="field-description">
+                  Carve out persistent hums (50/60&nbsp;Hz) or whistles without touching everything else. Aim the frequency at the
+                  offending tone and keep Q in the 20–40 range for precise cuts.
+                </p>
               </div>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
                   <input id="audio-filter-spectral-enabled" type="checkbox" />
-                  <label for="audio-filter-spectral-enabled">Spectral gate</label>
+                  <label for="audio-filter-spectral-enabled">Spectral noise gate</label>
                 </div>
                 <div class="filter-slider">
                   <label class="filter-slider-label" for="audio-filter-spectral-sensitivity">Sensitivity</label>
@@ -939,7 +946,10 @@
                   />
                   <span id="audio-filter-spectral-decay-value" class="filter-value" aria-live="off">0.95</span>
                 </div>
-                <p class="field-description">Adaptive gate tuned for constant ambient noise. Lower sensitivity reacts faster; adjust reduction to taste.</p>
+                <p class="field-description">
+                  Adaptive noise gate for steady ambient beds. Use 1.2–1.8 sensitivity for HVAC rumble, pull reduction into the
+                  −12 to −24&nbsp;dB window, then fine-tune update/decay to trade chatter for smooth releases.
+                </p>
               </div>
               <h4 class="settings-subheading">Calibration helpers</h4>
               <p class="settings-subheading-description">
