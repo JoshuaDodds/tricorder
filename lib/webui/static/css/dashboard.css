@@ -1015,6 +1015,10 @@ button.small {
   margin-top: 0.75rem;
 }
 
+.player-card .player-meta {
+  margin-top: 1rem;
+}
+
 .player-row {
   background: transparent;
 }
