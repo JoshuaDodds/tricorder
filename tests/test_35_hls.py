@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import shutil
 import time
@@ -46,6 +47,60 @@ def test_hlstee_stop_cleans_outputs(tmp_path):
 
     assert not playlist.exists()
     assert not segment.exists()
+
+
+def test_hlstee_ignores_legacy_extra_args(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="hls_mux")
+    tee = HLSTee(
+        out_dir=str(tmp_path),
+        sample_rate=48000,
+        legacy_extra_ffmpeg_args=["--legacy-flag"],
+    )
+    cmd = tee._build_ffmpeg_command()
+
+    assert "--legacy-flag" not in cmd
+    assert any("deprecated" in record.message for record in caplog.records)
+
+
+def test_hlstee_warns_on_filter_args_when_chain_enabled(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="hls_mux")
+    caplog.clear()
+
+    HLSTee(
+        out_dir=str(tmp_path),
+        sample_rate=48000,
+        legacy_extra_ffmpeg_args=["-af", "highpass=f=80"],
+        filter_chain_enabled=True,
+    )
+
+    assert any("audio.filter_chain" in record.message for record in caplog.records)
+
+
+def test_live_stream_filter_chain_flag_respects_disabled_stages(monkeypatch):
+    import copy
+    import importlib
+
+    from lib import config as config_module
+    import lib.live_stream_daemon as live_stream_daemon
+
+    original_cfg = copy.deepcopy(config_module.get_cfg())
+    disabled_cfg = copy.deepcopy(original_cfg)
+    disabled_cfg["audio"]["filter_chain"] = {
+        "enabled": True,
+        "highpass": {"enabled": False},
+        "notch": {"enabled": False},
+        "spectral_gate": {"enabled": False},
+        "filters": [],
+    }
+
+    monkeypatch.setattr(config_module, "_cfg_cache", disabled_cfg, raising=False)
+    module = importlib.reload(live_stream_daemon)
+
+    assert module.FILTER_CHAIN is None
+    assert module.AUDIO_FILTER_CHAIN_ENABLED is False
+
+    monkeypatch.setattr(config_module, "_cfg_cache", original_cfg, raising=False)
+    importlib.reload(live_stream_daemon)
 
 
 class DummyHLSTee:

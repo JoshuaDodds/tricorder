@@ -37,6 +37,21 @@ _DEFAULTS: Dict[str, Any] = {
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "filter_chain": {
+            "highpass": {"enabled": False, "cutoff_hz": 90.0},
+            "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
+            "spectral_gate": {
+                "enabled": False,
+                "sensitivity": 1.5,
+                "reduction_db": -18.0,
+                "noise_update": 0.1,
+                "noise_decay": 0.95,
+            },
+        },
+        "calibration": {
+            "auto_noise_profile": False,
+            "auto_gain": False,
+        },
     },
     "paths": {
         "tmp_dir": "/apps/tricorder/tmp",
@@ -385,7 +400,7 @@ def get_cfg() -> Dict[str, Any]:
     if _cfg_cache is not None:
         return _cfg_cache
 
-    cfg = dict(_DEFAULTS)
+    cfg = copy.deepcopy(_DEFAULTS)
 
     # Derive project root relative to this file (lib/ -> project root)
     try:
