@@ -14,6 +14,7 @@
   <body
     data-tricorder-api-base="{{ api_base | default('', true) }}"
     data-tricorder-stream-mode="{{ stream_mode | default('hls', true) }}"
+    data-tricorder-webrtc-ice-servers='{{ webrtc_ice_servers | default([], true) | tojson }}'
   >
     <div class="app-shell">
       <div
@@ -272,22 +273,28 @@
         </div>
       </header>
       <section class="status-bar">
-        <div class="stat stat-recordings">
-          <span class="label">Recordings</span>
-          <span class="value" id="recording-count">0</span>
-        </div>
-        <div class="stat stat-selected">
-          <span class="label">Selected</span>
-          <span class="value" id="selected-count">0</span>
-        </div>
-        <div class="stat stat-selection-combined">
-          <div class="stat-combined-row">
+        <div class="stat stat-counts">
+          <div class="stat-count-row">
             <span class="label">Recordings</span>
-            <span class="value" id="recording-count-mobile">0</span>
+            <span class="value" id="recording-count">0</span>
           </div>
-          <div class="stat-combined-row">
+          <div class="stat-count-row">
             <span class="label">Selected</span>
-            <span class="value" id="selected-count-mobile">0</span>
+            <span class="value" id="selected-count">0</span>
+          </div>
+        </div>
+        <div class="stat stat-resource stat-cpu">
+          <span class="label">CPU</span>
+          <div class="stat-resource-values">
+            <span class="value" id="cpu-usage-value">--</span>
+            <span class="stat-resource-detail" id="cpu-load-average">--</span>
+          </div>
+        </div>
+        <div class="stat stat-resource stat-memory">
+          <span class="label">Memory</span>
+          <div class="stat-resource-values">
+            <span class="value" id="memory-usage-value">--</span>
+            <span class="stat-resource-detail" id="memory-usage-detail">--</span>
           </div>
         </div>
         <div class="stat storage-stat stat-storage">
@@ -340,14 +347,16 @@
               <span>Waveform</span>
               <span class="waveform-status" id="waveform-status"></span>
             </div>
-            <div class="waveform-container" id="waveform-container" hidden>
-              <canvas id="waveform-canvas"></canvas>
+            <div class="waveform-clock-row" data-active="false">
               <div
                 id="waveform-clock"
                 class="waveform-clock"
                 aria-hidden="true"
                 data-active="false"
               >--:--:--</div>
+            </div>
+            <div class="waveform-container" id="waveform-container" hidden>
+              <canvas id="waveform-canvas"></canvas>
               <div
                 id="waveform-trigger-marker"
                 class="waveform-marker marker-trigger"
@@ -366,9 +375,26 @@
               </div>
               <div id="waveform-cursor" class="waveform-cursor" aria-hidden="true"></div>
             </div>
+            <div class="waveform-rms-row" id="waveform-rms-row" data-active="false">
+              <div
+                id="waveform-rms-value"
+                class="waveform-rms"
+                aria-hidden="true"
+                data-active="false"
+              >
+                RMS --
+              </div>
+            </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
           </div>
-          <div class="player-meta" id="player-meta">Select a recording to preview.</div>
+          <div class="player-meta" id="player-meta">
+            <div class="player-meta-text" id="player-meta-text">Select a recording to preview.</div>
+            <div class="player-meta-actions action-buttons" id="player-meta-actions" hidden>
+              <a id="player-download" class="ghost-button small" download>Download</a>
+              <button id="player-rename" class="ghost-button small" type="button">Rename</button>
+              <button id="player-delete" class="danger-button small" type="button">Delete</button>
+            </div>
+          </div>
           <div
             id="clipper-container"
             class="clipper-container"
@@ -505,6 +531,18 @@
                   <span>Day</span>
                   <select id="filter-day">
                     <option value="">All days</option>
+                  </select>
+                </label>
+                <label class="input-group">
+                  <span>Time range <small>(h = hour, d = day)</small></span>
+                  <select id="filter-time-range">
+                    <option value="">All time</option>
+                    <option value="1h">Past 1 hour (1h)</option>
+                    <option value="2h">Past 2 hours (2h)</option>
+                    <option value="4h">Past 4 hours (4h)</option>
+                    <option value="8h">Past 8 hours (8h)</option>
+                    <option value="12h">Past 12 hours (12h)</option>
+                    <option value="1d">Past 1 day (1d)</option>
                   </select>
                 </label>
                 <label class="input-group">

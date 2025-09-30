@@ -204,6 +204,8 @@ Setting `streaming.mode` to `webrtc` enables a lower-latency path tailored for m
 - `/webrtc/stop` – tears down the peer connection for the provided session.
 - `/webrtc/stats` – reports listener counts, dependency status, and encoder activity.
 
+When WebRTC mode is enabled the dashboard advertises a default pair of public STUN servers so Firefox can negotiate host candidates reliably. Override `streaming.webrtc_ice_servers` in `config.yaml` to point at organisation-controlled STUN/TURN infrastructure or set it to an empty list to disable external ICE discovery entirely. Each entry may be a string URL or an object with `urls`, `username`, and `credential` fields for TURN endpoints.
+
 WebRTC support depends on [`aiortc`](https://github.com/aiortc/aiortc) and [`av`](https://github.com/PyAV-Org/PyAV); both packages ship in `requirements.txt`. When those dependencies are unavailable, `create_answer()` returns `None` and `/webrtc/stats` surfaces a helpful reason so dashboards can surface the failure. The dashboard automatically switches to WebRTC playback when the mode is enabled and falls back to HLS otherwise.
 
 Switching between modes only requires updating `streaming.mode` and restarting `voice-recorder.service` + `web-streamer.service` so both the capture daemon and dashboard pick up the new configuration.

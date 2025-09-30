@@ -24,6 +24,7 @@ async def test_dashboard_page_structure(aiohttp_client):
     assert 'href="/static/css/dashboard.css"' in body
     assert 'src="/static/js/dashboard.js"' in body
     assert 'data-tricorder-stream-mode="hls"' in body
+    assert "data-tricorder-webrtc-ice-servers" in body
 
 
 @pytest.mark.asyncio
@@ -107,6 +108,12 @@ async def test_webrtc_mode_registers_webrtc_routes(monkeypatch, tmp_path, aiohtt
 
     client = await aiohttp_client(web_streamer.build_app())
 
+    dashboard_response = await client.get("/")
+    assert dashboard_response.status == 200
+    dashboard_body = await dashboard_response.text()
+    assert "data-tricorder-webrtc-ice-servers" in dashboard_body
+    assert "stun.cloudflare.com" in dashboard_body
+
     start_response = await client.get("/webrtc/start")
     assert start_response.status == 200
 
@@ -127,6 +134,38 @@ async def test_webrtc_mode_registers_webrtc_routes(monkeypatch, tmp_path, aiohtt
 
     legacy_response = await client.get("/hls")
     assert legacy_response.status == 404
+
+
+def test_normalize_webrtc_ice_servers_defaults():
+    servers = web_streamer._normalize_webrtc_ice_servers(None)
+    assert servers
+    assert servers[0]["urls"] == ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]
+
+
+def test_normalize_webrtc_ice_servers_custom_entries():
+    payload = [
+        " stun:stun.example.org:3478 ",
+        {
+            "urls": ["turn:turn.example.org:3478", ""],
+            "username": " user ",
+            "credential": " pass ",
+        },
+        {"urls": "stun:stun.backup.example.org"},
+    ]
+    servers = web_streamer._normalize_webrtc_ice_servers(payload)
+    url_sets = {tuple(server.get("urls", [])) for server in servers}
+    assert url_sets == {
+        ("stun:stun.example.org:3478",),
+        ("turn:turn.example.org:3478",),
+        ("stun:stun.backup.example.org",),
+    }
+    auth_server = next(server for server in servers if server.get("username"))
+    assert auth_server["username"] == "user"
+    assert auth_server["credential"] == "pass"
+
+
+def test_normalize_webrtc_ice_servers_disable():
+    assert web_streamer._normalize_webrtc_ice_servers([]) == []
 
 
 def test_parse_show_output_handles_blank_fields():

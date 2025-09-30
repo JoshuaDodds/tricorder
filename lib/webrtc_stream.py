@@ -114,12 +114,14 @@ if _AIORTC_IMPORT_ERROR is None:
             frame_ms: int,
             frame_bytes: int,
             history_seconds: float,
+            ice_servers: Optional[list[dict[str, object]]] = None,
         ) -> None:
             self._buffer_dir = buffer_dir
             self._sample_rate = int(sample_rate)
             self._frame_ms = int(frame_ms)
             self._frame_bytes = int(frame_bytes)
             self._buffer_size = max(int(history_seconds * (1000.0 / self._frame_ms)), 2) * self._frame_bytes
+            self._ice_servers = list(ice_servers or [])
             self._sessions: Dict[str, WebRTCSession] = {}
             self._lock = asyncio.Lock()
             self._log = logging.getLogger("webrtc_manager")
@@ -177,7 +179,10 @@ if _AIORTC_IMPORT_ERROR is None:
                 frame_bytes=self._frame_bytes,
             )
 
-            pc = RTCPeerConnection()
+            configuration = None
+            if self._ice_servers:
+                configuration = {"iceServers": self._ice_servers}
+            pc = RTCPeerConnection(configuration=configuration)
             pc.addTrack(track)
 
             done = asyncio.get_running_loop().create_future()
@@ -227,6 +232,7 @@ else:
             frame_ms: int,
             frame_bytes: int,
             history_seconds: float,
+            ice_servers: Optional[list[dict[str, object]]] = None,
         ) -> None:
             self._buffer_dir = buffer_dir
             self._sample_rate = int(sample_rate)

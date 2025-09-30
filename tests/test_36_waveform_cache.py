@@ -27,6 +27,10 @@ def test_generate_waveform_produces_peaks(tmp_path):
     assert data["peak_scale"] == 32767
     assert len(data["peaks"]) == 8
     assert all(isinstance(value, int) for value in data["peaks"])
+    assert len(data["rms_values"]) == 4
+    assert all(isinstance(value, int) for value in data["rms_values"])
+    assert max(data["rms_values"]) <= data["peak_scale"]
+    assert min(data["rms_values"]) >= 0
     assert payload["duration_seconds"] == pytest.approx(data["duration_seconds"], rel=1e-6)
     assert max(data["peaks"]) <= data["peak_scale"]
     assert min(data["peaks"]) >= -data["peak_scale"]
@@ -73,3 +77,5 @@ def test_backfill_missing_waveforms(tmp_path):
 
     assert missing_payload["frame_count"] == len(samples)
     assert stale_payload["frame_count"] == len(samples)
+    assert len(missing_payload.get("rms_values", [])) == 4
+    assert len(stale_payload.get("rms_values", [])) == 4

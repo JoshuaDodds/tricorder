@@ -60,6 +60,7 @@ def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
         "duration_seconds": duration,
         "peak_scale": 32767,
         "peaks": [0, 0],
+        "rms_values": [0],
     }
     target.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -73,7 +74,7 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
         handle.writeframes(b"\x00\x00" * frame_count)
 
 
-def test_recordings_listing_filters(dashboard_env):
+def test_recordings_listing_filters(dashboard_env, monkeypatch):
     async def runner():
         day_a = dashboard_env / "20240101"
         day_b = dashboard_env / "20240102"
@@ -108,6 +109,7 @@ def test_recordings_listing_filters(dashboard_env):
             assert all(item.get("waveform_path") for item in payload["items"])
             assert "20240101" in payload["available_days"]
             assert "20240102" in payload["available_days"]
+            assert payload.get("time_range") == ""
 
             resp = await client.get("/api/recordings?day=20240101&limit=10")
             data = await resp.json()
@@ -116,6 +118,13 @@ def test_recordings_listing_filters(dashboard_env):
             resp = await client.get("/api/recordings?search=beta")
             search = await resp.json()
             assert [item["name"] for item in search["items"]] == ["beta"]
+
+            monkeypatch.setattr(web_streamer.time, "time", lambda: 1_700_030_000)
+            resp = await client.get("/api/recordings?time_range=1h&limit=10")
+            recent = await resp.json()
+            assert recent.get("time_range") == "1h"
+            assert recent["total"] == 0
+            assert recent["items"] == []
         finally:
             await client.close()
             await server.close()
@@ -415,6 +424,68 @@ audio:
     asyncio.run(runner())
 
 
+def test_system_health_reports_resources(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/system-health")
+            assert resp.status == 200
+            assert resp.headers.get("Cache-Control") == "no-store"
+            payload = await resp.json()
+
+            resources = payload.get("resources")
+            assert isinstance(resources, dict)
+
+            cpu = resources.get("cpu")
+            memory = resources.get("memory")
+            assert isinstance(cpu, dict)
+            assert isinstance(memory, dict)
+
+            assert "percent" in cpu
+            assert "load_1m" in cpu
+            assert "cores" in cpu
+
+            cpu_percent = cpu.get("percent")
+            if cpu_percent is not None:
+                assert isinstance(cpu_percent, (int, float))
+                assert 0 <= cpu_percent <= 100
+
+            load_1m = cpu.get("load_1m")
+            if load_1m is not None:
+                assert isinstance(load_1m, (int, float))
+                assert load_1m >= 0
+
+            cores = cpu.get("cores")
+            assert isinstance(cores, (int, float))
+            assert cores >= 1
+
+            total_bytes = memory.get("total_bytes")
+            assert isinstance(total_bytes, (int, float))
+            assert total_bytes > 0
+
+            used_bytes = memory.get("used_bytes")
+            if used_bytes is not None:
+                assert isinstance(used_bytes, (int, float))
+                assert used_bytes >= 0
+
+            available_bytes = memory.get("available_bytes")
+            if available_bytes is not None:
+                assert isinstance(available_bytes, (int, float))
+                assert available_bytes >= 0
+
+            memory_percent = memory.get("percent")
+            if memory_percent is not None:
+                assert isinstance(memory_percent, (int, float))
+                assert 0 <= memory_percent <= 100
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_audio_settings_preserve_filter_stage_list(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -604,6 +675,11 @@ def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
+    # existing body unchanged…
+    asyncio.run(runner())
+
+
 def test_audio_settings_rehydrate_comments_when_missing(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -676,8 +752,8 @@ def test_audio_settings_rehydrate_comments_when_missing(tmp_path, monkeypatch):
             await server.close()
 
     asyncio.run(runner())
-
-
+    
+    
 def test_audio_settings_skip_restart_when_inactive(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -1484,6 +1560,99 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
             assert scheduled[0][2] == pytest.approx(0.5, rel=0, abs=1e-6)
             status = payload.get("status", {})
             assert status.get("unit") == "web-streamer.service"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Recorder",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+            ),
+            "web-streamer.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "enabled",
+                "Web UI",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+            ),
+        }
+
+        systemctl_calls: list[list[str]] = []
+        scheduled: list[tuple[str, list[str], float]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = show_map.get(unit)
+                if values is None:
+                    values = (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "yes",
+                        "yes",
+                        "no",
+                        "yes",
+                        "",
+                    )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
+            return 0, "", ""
+
+        def fake_enqueue(unit: str, actions, delay: float = 0.5) -> None:
+            scheduled.append((unit, list(actions), delay))
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(web_streamer, "_enqueue_service_actions", fake_enqueue)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/services/voice-recorder.service/action",
+                json={"action": "restart"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["requested_action"] == "restart"
+            assert payload["executed_action"] == "restart"
+            assert payload.get("ok") is True
+
+            assert [
+                call for call in systemctl_calls if call[:2] == ["restart", "voice-recorder.service"]
+            ]
+
+            kick_calls = [
+                item for item in scheduled if item[0] == "web-streamer.service" and item[1] == ["start"]
+            ]
+            assert kick_calls, "Expected dashboard web service to be started"
+            assert kick_calls[0][2] == pytest.approx(1.0, rel=0, abs=1e-6)
         finally:
             await client.close()
             await server.close()
