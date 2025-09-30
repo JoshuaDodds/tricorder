@@ -1049,7 +1049,30 @@ button.small {
 .player-meta {
   color: var(--text-muted);
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
 }
+
+.player-meta-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.player-meta-actions {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.player-meta-actions[hidden] {
+  display: none;
+}
+
 
 .live-stream-panel {
   overflow: hidden;
