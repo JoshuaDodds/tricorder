@@ -263,9 +263,10 @@ class AudioFilterChain:
     ) -> np.ndarray:
         """Solve y[n] = coeff * y[n-1] + drive[n] without breaking continuity.
 
-        The vectorized formulation mirrors the scalar recurrence that previously
-        ran inside the high-pass and notch loops, so existing filter responses
-        are preserved while reducing Python-level iteration overhead.
+        The implementation keeps the numerically stable recurrence that powered
+        the original scalar loop, ensuring coefficients with small magnitude do
+        not overflow while still producing an ndarray output for downstream
+        vectorized stages.
         """
         if not drive.size:
             return drive
@@ -276,15 +277,14 @@ class AudioFilterChain:
         work_dtype = np.complex128 if work_complex else np.float64
         drive_arr = drive.astype(work_dtype, copy=False)
         prev_val = work_dtype(prev)
-        idx = np.arange(drive.size, dtype=np.float64)
         coeff_scalar = coeff_val if work_complex else coeff_val.real
         coeff_arr = work_dtype(coeff_scalar)
-        inv_powers = np.power(coeff_arr, -idx)
-        scaled = drive_arr * inv_powers
-        partial = np.cumsum(scaled, dtype=work_dtype)
-        coeff_pows = np.power(coeff_arr, idx)
-        prev_term = np.power(coeff_arr, idx + 1) * prev_val
-        result = coeff_pows * partial + prev_term
+        result = np.empty_like(drive_arr)
+        acc = coeff_arr * prev_val + drive_arr[0]
+        result[0] = acc
+        for idx in range(1, drive_arr.size):
+            acc = coeff_arr * acc + drive_arr[idx]
+            result[idx] = acc
         return result.astype(drive.dtype, copy=False)
 
     def _compute_notch_coeffs(
@@ -293,14 +293,19 @@ class AudioFilterChain:
         freq = max(1.0, min(float(frequency_hz), sample_rate / 2 - 1.0))
         q = max(0.1, float(quality))
         omega = 2.0 * math.pi * (freq / sample_rate)
+        cos_omega = math.cos(omega)
         sin_omega = math.sin(omega)
         alpha = sin_omega / (2.0 * q)
         denom = 1.0 + alpha
         # Poles are complex conjugates with magnitude sqrt(a2) where a2 = (1 - alpha)/(1 + alpha).
         a2 = max(0.0, (1.0 - alpha) / denom)
         pole_radius = math.sqrt(a2)
-        zero = math.cos(omega) + 1j * math.sin(omega)
-        pole = pole_radius * zero
+        zero = cos_omega + 1j * sin_omega
+        one_minus_alpha_sq = max(1e-12, 1.0 - alpha * alpha)
+        cos_theta = cos_omega / math.sqrt(one_minus_alpha_sq)
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        theta = math.acos(cos_theta)
+        pole = pole_radius * (math.cos(theta) + 1j * math.sin(theta))
         scale = 1.0 / denom
         return _NotchFilterParams(
             sample_rate=sample_rate,
