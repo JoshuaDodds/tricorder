@@ -17,12 +17,32 @@ import copy
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, MutableMapping, Sequence
+
+try:
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+except Exception:
+    YAML = None  # type: ignore[assignment]
+    CommentedMap = None  # type: ignore[assignment]
+    CommentedSeq = None  # type: ignore[assignment]
 
 try:
     import yaml
 except Exception:
     yaml = None  # pyyaml should be installed; if not, only defaults will be used.
+
+if YAML:
+    _ROUND_TRIP_YAML = YAML(typ="rt")
+    _ROUND_TRIP_YAML.indent(mapping=2, sequence=4, offset=2)
+    _ROUND_TRIP_YAML.default_flow_style = False
+    _ROUND_TRIP_YAML.allow_unicode = True
+    try:
+        _ROUND_TRIP_YAML.preserve_quotes = True  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+else:  # pragma: no cover - exercised when ruamel.yaml is not available.
+    _ROUND_TRIP_YAML = None
 
 EVENT_TAG_DEFAULTS: Dict[str, str] = {
     "human": "Human",
@@ -466,6 +486,92 @@ def search_paths() -> list[Path]:
     return list(_search_paths)
 
 
+def _empty_mapping() -> MutableMapping[str, Any]:
+    if CommentedMap is not None:
+        return CommentedMap()
+    return {}
+
+
+def _convert_to_round_trip(value: Any) -> Any:
+    if CommentedMap is not None:
+        if isinstance(value, CommentedMap) or isinstance(value, CommentedSeq):
+            return value
+        if isinstance(value, Mapping) and not isinstance(value, (str, bytes)):
+            converted = CommentedMap()
+            for key, sub_value in value.items():
+                converted[key] = _convert_to_round_trip(sub_value)
+            return converted
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            converted_seq = CommentedSeq()
+            for item in value:
+                converted_seq.append(_convert_to_round_trip(item))
+            return converted_seq
+    return copy.deepcopy(value)
+
+
+def _ensure_mapping(container: MutableMapping[str, Any], key: str) -> MutableMapping[str, Any]:
+    existing = container.get(key)
+    if isinstance(existing, MutableMapping):
+        return existing
+    if isinstance(existing, Mapping):
+        converted = _convert_to_round_trip(existing)
+        if isinstance(converted, MutableMapping):
+            container[key] = converted
+            return converted
+    new_map = _convert_to_round_trip({})
+    assert isinstance(new_map, MutableMapping)
+    container[key] = new_map
+    return new_map
+
+
+def _replace_mapping(
+    target: MutableMapping[str, Any],
+    updates: Mapping[str, Any],
+    *,
+    prune: bool,
+) -> None:
+    if prune:
+        for existing_key in list(target.keys()):
+            if existing_key not in updates:
+                try:
+                    del target[existing_key]
+                except Exception:
+                    pass
+    for key, value in updates.items():
+        if isinstance(value, Mapping) and not isinstance(value, (str, bytes)):
+            nested: MutableMapping[str, Any]
+            existing = target.get(key)
+            if isinstance(existing, MutableMapping):
+                nested = existing
+            else:
+                converted = _convert_to_round_trip(value)
+                if isinstance(converted, MutableMapping):
+                    target[key] = converted
+                    nested = converted
+                    continue
+                nested = _empty_mapping()
+                target[key] = nested
+            _replace_mapping(nested, value, prune=prune)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            target[key] = _convert_to_round_trip(value)
+        else:
+            target[key] = copy.deepcopy(value)
+
+
+def _load_yaml_for_update(path: Path) -> MutableMapping[str, Any]:
+    if _ROUND_TRIP_YAML is not None:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    data = _ROUND_TRIP_YAML.load(handle)  # type: ignore[arg-type]
+            except Exception as exc:
+                raise ConfigPersistenceError(f"Unable to read configuration: {exc}") from exc
+            if isinstance(data, MutableMapping):
+                return data
+        return _empty_mapping()
+    return {}
+
+
 def _load_raw_yaml(path: Path) -> Dict[str, Any]:
     if not yaml:
         raise ConfigPersistenceError("PyYAML is required to update configuration files")
@@ -481,8 +587,8 @@ def _load_raw_yaml(path: Path) -> Dict[str, Any]:
     return {}
 
 
-def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
-    if not yaml:
+def _dump_yaml(path: Path, payload: MutableMapping[str, Any] | Dict[str, Any]) -> None:
+    if _ROUND_TRIP_YAML is None and not yaml:
         raise ConfigPersistenceError("PyYAML is required to update configuration files")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -490,13 +596,16 @@ def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
         raise ConfigPersistenceError(f"Unable to create configuration directory: {exc}") from exc
     try:
         with path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(
-                payload,
-                handle,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-            )
+            if _ROUND_TRIP_YAML is not None:
+                _ROUND_TRIP_YAML.dump(payload, handle)  # type: ignore[arg-type]
+            else:
+                yaml.safe_dump(  # type: ignore[union-attr]
+                    payload,
+                    handle,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                )
     except Exception as exc:
         raise ConfigPersistenceError(f"Unable to write configuration: {exc}") from exc
 
@@ -509,18 +618,27 @@ def _persist_settings_section(
 
     primary_path = primary_config_path()
     current = _load_raw_yaml(primary_path)
-    updated = copy.deepcopy(current)
+
+    if _ROUND_TRIP_YAML is not None:
+        updated = _load_yaml_for_update(primary_path)
+        if isinstance(updated, dict) and not isinstance(updated, MutableMapping):
+            updated = _convert_to_round_trip(updated)
+    else:
+        updated = _convert_to_round_trip(current)
+        if not isinstance(updated, MutableMapping):
+            updated = _convert_to_round_trip({})
+
+    if not isinstance(updated, MutableMapping):
+        raise ConfigPersistenceError("Configuration root must be a mapping")
+
+    target = _ensure_mapping(updated, section)
+    if not isinstance(target, MutableMapping):
+        raise ConfigPersistenceError(f"Configuration section {section!r} is not a mapping")
 
     if merge:
-        base: Dict[str, Any] = {}
-        existing = updated.get(section)
-        if isinstance(existing, dict):
-            base = copy.deepcopy(existing)
-        for key, value in settings.items():
-            base[key] = copy.deepcopy(value)
-        updated[section] = base
+        _replace_mapping(target, settings, prune=False)
     else:
-        updated[section] = copy.deepcopy(settings)
+        _replace_mapping(target, settings, prune=True)
 
     _dump_yaml(primary_path, updated)
     return reload_cfg().get(section, {})

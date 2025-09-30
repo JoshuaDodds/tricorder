@@ -519,6 +519,99 @@ def test_audio_settings_preserve_filter_stage_list(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (
+            "audio:\n"
+            "  device: hw:1,0  # usb device mapping\n"
+            "  sample_rate: 48000\n"
+            "  frame_ms: 20\n"
+            "  gain: 2.0  # front-end gain guidance\n"
+            "  vad_aggressiveness: 2\n"
+            "  filter_chain:\n"
+            "    highpass:\n"
+            "      enabled: false  # high-pass toggle\n"
+            "      cutoff_hz: 90.0  # high-pass cutoff\n"
+            "    spectral_gate:\n"
+            "      enabled: false  # spectral gate toggle\n"
+            "      sensitivity: 1.5\n"
+            "      reduction_db: -18.0  # gate reduction depth\n"
+            "      noise_update: 0.10  # gate update speed\n"
+            "      noise_decay: 0.95  # gate release smoothing\n"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            update_payload = {
+                "device": "hw:CARD=Device,DEV=0",
+                "sample_rate": 48000,
+                "frame_ms": 20,
+                "gain": 3.0,
+                "vad_aggressiveness": 3,
+                "filter_chain": {
+                    "highpass": {"enabled": True, "cutoff_hz": 110.0},
+                    "spectral_gate": {
+                        "enabled": True,
+                        "sensitivity": 1.4,
+                        "reduction_db": -20.0,
+                        "noise_update": 0.15,
+                        "noise_decay": 0.92,
+                    },
+                },
+            }
+
+            resp = await client.post("/api/config/audio", json=update_payload)
+            assert resp.status == 200
+
+            persisted_text = config_path.read_text(encoding="utf-8")
+            assert "# front-end gain guidance" in persisted_text
+            assert "# high-pass toggle" in persisted_text
+            assert "# high-pass cutoff" in persisted_text
+            assert "# gate reduction depth" in persisted_text
+            assert "# gate update speed" in persisted_text
+            assert "# gate release smoothing" in persisted_text
+
+            lines = persisted_text.splitlines()
+            gain_line = next(line for line in lines if "gain:" in line and "front-end" in line)
+            assert "3.0" in gain_line or "3" in gain_line
+            cutoff_line = next(line for line in lines if "cutoff_hz" in line and "high-pass cutoff" in line)
+            assert "110" in cutoff_line
+            reduction_line = next(line for line in lines if "reduction_db" in line and "gate reduction depth" in line)
+            assert "-20" in reduction_line
+
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_audio_settings_skip_restart_when_inactive(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

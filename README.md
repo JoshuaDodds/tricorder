@@ -130,6 +130,15 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
+### Audio filter chain tuning
+
+Open the ☰ menu → **Recorder configuration** → **Filters** to adjust the capture-time filter chain. The controls map directly to `audio.filter_chain` in `config.yaml`; the UI saves changes back to the YAML file while preserving inline comments. Suggested workflow:
+
+- **High-pass filter** – Sweep the cutoff between 80–120&nbsp;Hz to remove HVAC/handling rumble. Stop once speech starts losing warmth; this keeps the VAD from chasing sub-bass energy.
+- **Notch filter** – Target persistent hums or whistles (50/60&nbsp;Hz and harmonics). Keep Q in the 20–40 range for surgical cuts and only enable the stages you need.
+- **Spectral noise gate** – This is the dashboard’s “noise gating” control. Start with sensitivity between 1.2–1.8 and reduction between −12 to −24&nbsp;dB; lower sensitivity numbers clamp harder. Use the **Noise update** slider (0.05–0.2) to decide how quickly the gate learns new noise and **Noise decay** (0.9–0.98) to smooth releases.
+- **Calibration helpers** – Enable the quick actions when you want the dashboard to capture a fresh noise profile or launch `room_tuner.py` for gain recalibration.
+
 Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`). Transcript JSON files live next to each recording; the dashboard automatically includes transcript excerpts in the listings and search covers both filenames and transcript text.
 
 ---
@@ -309,6 +318,8 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `logging` – developer-mode verbosity toggle.
 - `notifications` – optional webhook/email alerts when events finish recording.
 - `streaming` – live stream transport configuration (HLS/WebRTC).
+
+The dashboard writes updates back to `config.yaml` using `ruamel.yaml` so inline documentation stays intact; the dependency ships in `requirements.txt` for both runtime and UI edits.
 
 ### Idle hum mitigation
 
