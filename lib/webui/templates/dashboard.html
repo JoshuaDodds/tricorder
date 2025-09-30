@@ -272,22 +272,28 @@
         </div>
       </header>
       <section class="status-bar">
-        <div class="stat stat-recordings">
-          <span class="label">Recordings</span>
-          <span class="value" id="recording-count">0</span>
-        </div>
-        <div class="stat stat-selected">
-          <span class="label">Selected</span>
-          <span class="value" id="selected-count">0</span>
-        </div>
-        <div class="stat stat-selection-combined">
-          <div class="stat-combined-row">
+        <div class="stat stat-counts">
+          <div class="stat-count-row">
             <span class="label">Recordings</span>
-            <span class="value" id="recording-count-mobile">0</span>
+            <span class="value" id="recording-count">0</span>
           </div>
-          <div class="stat-combined-row">
+          <div class="stat-count-row">
             <span class="label">Selected</span>
-            <span class="value" id="selected-count-mobile">0</span>
+            <span class="value" id="selected-count">0</span>
+          </div>
+        </div>
+        <div class="stat stat-resource stat-cpu">
+          <span class="label">CPU</span>
+          <div class="stat-resource-values">
+            <span class="value" id="cpu-usage-value">--</span>
+            <span class="stat-resource-detail" id="cpu-load-average">--</span>
+          </div>
+        </div>
+        <div class="stat stat-resource stat-memory">
+          <span class="label">Memory</span>
+          <div class="stat-resource-values">
+            <span class="value" id="memory-usage-value">--</span>
+            <span class="stat-resource-detail" id="memory-usage-detail">--</span>
           </div>
         </div>
         <div class="stat storage-stat stat-storage">

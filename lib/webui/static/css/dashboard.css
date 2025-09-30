@@ -673,9 +673,10 @@ body[data-theme="light"] .app-menu-toggle {
   display: inline-flex;
 }
 
+
 .status-bar {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 1rem;
 }
 
@@ -702,22 +703,38 @@ body[data-theme="light"] .app-menu-toggle {
   font-weight: 600;
 }
 
-.status-bar .stat-selection-combined {
-  display: none;
+.status-bar .stat-counts {
   gap: 0.75rem;
 }
 
-.stat-combined-row {
+.stat-count-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 0.75rem;
 }
 
-.stat-combined-row + .stat-combined-row {
-  border-top: 1px solid var(--table-border);
-  padding-top: 0.75rem;
-  margin-top: 0.75rem;
+.status-bar .stat-counts .value,
+.status-bar .stat-resource .value {
+  font-size: 1.3rem;
+}
+
+.stat-resource {
+  gap: 0.6rem;
+}
+
+.stat-resource-values {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.stat-resource-detail {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .storage-progress {
@@ -2569,17 +2586,6 @@ body[data-scroll-locked="true"] {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-  }
-
-  .status-bar .stat-recordings,
-  .status-bar .stat-selected {
-    display: none;
-  }
-
-  .status-bar .stat-selection-combined {
-    display: flex;
-    flex-direction: column;
-    order: 0;
   }
 
   .status-bar .stat-storage {

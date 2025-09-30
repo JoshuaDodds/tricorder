@@ -3534,12 +3534,148 @@ def build_app() -> web.Application:
             canonical_fn=_canonical_dashboard_settings,
         )
 
+    cpu_last_sample: tuple[int, int] | None = None
+    cpu_last_percent: float | None = None
+    cpu_core_count = max(os.cpu_count() or 1, 1)
+
+    def _read_cpu_sample() -> tuple[int, int] | None:
+        try:
+            with open("/proc/stat", "r", encoding="utf-8") as handle:
+                line = handle.readline()
+        except OSError:
+            return None
+
+        parts = line.split()
+        if not parts or parts[0] != "cpu":
+            return None
+
+        try:
+            values = [int(part) for part in parts[1:8]]
+        except ValueError:
+            return None
+
+        if not values:
+            return None
+
+        idle = values[3] if len(values) > 3 else 0
+        iowait = values[4] if len(values) > 4 else 0
+        total = sum(values)
+        return total, idle + iowait
+
+    def _read_memory_stats() -> dict[str, float | int | None] | None:
+        total_kib: int | None = None
+        available_kib: int | None = None
+        free_kib: int | None = None
+
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            total_kib = int(parts[1])
+                    elif line.startswith("MemAvailable:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            available_kib = int(parts[1])
+                    elif line.startswith("MemFree:") and free_kib is None:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            free_kib = int(parts[1])
+
+                    if total_kib is not None and available_kib is not None:
+                        break
+        except (OSError, ValueError):
+            return None
+
+        if total_kib is None or total_kib <= 0:
+            return None
+
+        if available_kib is None:
+            available_kib = free_kib
+
+        total_bytes = total_kib * 1024
+        available_bytes = available_kib * 1024 if available_kib is not None else None
+        used_bytes = None
+        percent = None
+
+        if available_bytes is not None:
+            used_bytes = max(total_bytes - available_bytes, 0)
+            if total_bytes > 0:
+                percent = (used_bytes / total_bytes) * 100.0
+
+        return {
+            "total_bytes": total_bytes,
+            "available_bytes": available_bytes,
+            "used_bytes": used_bytes,
+            "percent": percent,
+        }
+
     async def system_health(_: web.Request) -> web.Response:
+        nonlocal cpu_last_sample, cpu_last_percent
+
         state = sd_card_health.load_state()
-        payload = {
+        payload: dict[str, Any] = {
             "generated_at": time.time(),
             "sd_card": sd_card_health.state_summary(state),
         }
+
+        cpu_percent: float | None = None
+        cpu_load_1m: float | None = None
+        cpu_sample = _read_cpu_sample()
+
+        if cpu_sample is not None:
+            total, idle_all = cpu_sample
+            if cpu_last_sample is not None:
+                last_total, last_idle = cpu_last_sample
+                total_delta = total - last_total
+                idle_delta = idle_all - last_idle
+                busy_delta = total_delta - idle_delta
+                if total_delta > 0:
+                    cpu_percent = max(0.0, min(100.0, (busy_delta / total_delta) * 100.0))
+
+            cpu_last_sample = cpu_sample
+            if cpu_percent is not None:
+                cpu_last_percent = cpu_percent
+
+        try:
+            load_1m, _load_5m, _load_15m = os.getloadavg()
+            cpu_load_1m = float(load_1m)
+        except (AttributeError, OSError):
+            cpu_load_1m = None
+
+        if cpu_percent is None:
+            if cpu_last_percent is not None:
+                cpu_percent = cpu_last_percent
+            elif cpu_load_1m is not None and cpu_core_count > 0:
+                cpu_percent = max(0.0, min(100.0, (cpu_load_1m / cpu_core_count) * 100.0))
+
+        memory_stats = _read_memory_stats()
+        memory_percent = None
+        memory_total = None
+        memory_available = None
+        memory_used = None
+
+        if memory_stats is not None:
+            memory_percent = memory_stats.get("percent")
+            memory_total = memory_stats.get("total_bytes")
+            memory_available = memory_stats.get("available_bytes")
+            memory_used = memory_stats.get("used_bytes")
+
+        payload["resources"] = {
+            "cpu": {
+                "percent": cpu_percent,
+                "load_1m": cpu_load_1m,
+                "cores": cpu_core_count,
+            },
+            "memory": {
+                "percent": memory_percent,
+                "total_bytes": memory_total,
+                "available_bytes": memory_available,
+                "used_bytes": memory_used,
+            },
+        }
+
         return web.json_response(payload)
 
     async def services_list(request: web.Request) -> web.Response:

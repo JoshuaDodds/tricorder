@@ -415,6 +415,67 @@ audio:
     asyncio.run(runner())
 
 
+def test_system_health_reports_resources(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/system-health")
+            assert resp.status == 200
+            payload = await resp.json()
+
+            resources = payload.get("resources")
+            assert isinstance(resources, dict)
+
+            cpu = resources.get("cpu")
+            memory = resources.get("memory")
+            assert isinstance(cpu, dict)
+            assert isinstance(memory, dict)
+
+            assert "percent" in cpu
+            assert "load_1m" in cpu
+            assert "cores" in cpu
+
+            cpu_percent = cpu.get("percent")
+            if cpu_percent is not None:
+                assert isinstance(cpu_percent, (int, float))
+                assert 0 <= cpu_percent <= 100
+
+            load_1m = cpu.get("load_1m")
+            if load_1m is not None:
+                assert isinstance(load_1m, (int, float))
+                assert load_1m >= 0
+
+            cores = cpu.get("cores")
+            assert isinstance(cores, (int, float))
+            assert cores >= 1
+
+            total_bytes = memory.get("total_bytes")
+            assert isinstance(total_bytes, (int, float))
+            assert total_bytes > 0
+
+            used_bytes = memory.get("used_bytes")
+            if used_bytes is not None:
+                assert isinstance(used_bytes, (int, float))
+                assert used_bytes >= 0
+
+            available_bytes = memory.get("available_bytes")
+            if available_bytes is not None:
+                assert isinstance(available_bytes, (int, float))
+                assert available_bytes >= 0
+
+            memory_percent = memory.get("percent")
+            if memory_percent is not None:
+                assert isinstance(memory_percent, (int, float))
+                assert 0 <= memory_percent <= 100
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_audio_settings_preserve_filter_stage_list(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
