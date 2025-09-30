@@ -21,7 +21,7 @@ def run_git(*args, cwd=None):
     subprocess.run(["git", *args], cwd=cwd, check=True, env=env)
 
 
-def create_remote_repo(tmp_path):
+def create_remote_repo(tmp_path, install_script_contents=None):
     remote_path = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", remote_path], check=True)
 
@@ -31,13 +31,13 @@ def create_remote_repo(tmp_path):
     run_git("checkout", "-b", "main", cwd=worktree)
 
     install_script = worktree / "install.sh"
-    install_script.write_text(
-        """#!/usr/bin/env bash
+    if install_script_contents is None:
+        install_script_contents = """#!/usr/bin/env bash
 set -euo pipefail
-mkdir -p \"${BASE}\"
-echo \"install run DEV=${DEV:-unset}\" >> \"${BASE}/install.log\"
+mkdir -p "${BASE}"
+echo "install run DEV=${DEV:-unset}" >> "${BASE}/install.log"
 """
-    )
+    install_script.write_text(install_script_contents)
     install_script.chmod(0o755)
 
     run_git("add", "install.sh", cwd=worktree)
@@ -83,7 +83,7 @@ def make_env(remote, update_dir, install_base, extra=None):
     return env
 
 
-def run_auto_update(env):
+def run_auto_update(env, *, expect_failure=False):
     result = subprocess.run(
         [str(SCRIPT_PATH)],
         check=False,
@@ -92,6 +92,8 @@ def run_auto_update(env):
         env=env,
     )
     if result.returncode != 0:
+        if expect_failure:
+            return result
         raise AssertionError(
             f"auto update failed with code {result.returncode}: {result.stderr}"
         )
@@ -135,3 +137,45 @@ def test_auto_update_propagates_dev_flag(tmp_path):
     entry = log_path.read_text().strip().splitlines()[-1]
     assert entry.endswith("DEV=1"), f"expected DEV=1 in install log, got {entry!r}"
     assert (install_base / ".dev-mode").exists()
+
+
+def test_auto_update_retries_after_failed_install(tmp_path):
+    failing_script = """#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${BASE}"
+attempts_file="${BASE}/attempts"
+count=0
+if [[ -f "${attempts_file}" ]]; then
+  count=$(<"${attempts_file}")
+fi
+count=$((count + 1))
+printf '%s\n' "${count}" >"${attempts_file}"
+if [[ ! -f "${BASE}/allow-success" ]]; then
+  echo "failing on attempt ${count}" >&2
+  exit 3
+fi
+echo "install run DEV=${DEV:-unset}" >> "${BASE}/install.log"
+"""
+    remote, _ = create_remote_repo(tmp_path, install_script_contents=failing_script)
+    update_dir = tmp_path / "update"
+    install_base = tmp_path / "install"
+    env = make_env(remote, update_dir, install_base)
+
+    result = run_auto_update(env, expect_failure=True)
+    assert result.returncode != 0
+    attempts_file = install_base / "attempts"
+    assert attempts_file.exists()
+    assert attempts_file.read_text().strip() == "1"
+    sentinel = update_dir / ".last_install_failed"
+    assert sentinel.exists(), "failure sentinel should be present after install failure"
+
+    (install_base / "allow-success").write_text("ok")
+
+    run_auto_update(env)
+
+    assert attempts_file.read_text().strip() == "2"
+    log_path = install_base / "install.log"
+    assert log_path.exists()
+    entries = log_path.read_text().strip().splitlines()
+    assert len(entries) == 1
+    assert not sentinel.exists(), "failure sentinel should be cleared after successful install"

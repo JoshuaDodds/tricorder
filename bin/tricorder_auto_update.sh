@@ -38,6 +38,8 @@ fi
 
 mkdir -p "$UPDATE_DIR"
 
+INSTALL_FAILURE_SENTINEL="$UPDATE_DIR/.last_install_failed"
+
 UPDATED=0
 
 if (( DEV_MODE == 0 )); then
@@ -110,8 +112,12 @@ else
 fi
 
 if (( UPDATED == 0 )); then
-  log "Repository already up to date."
-  exit 0
+  if [[ -f "$INSTALL_FAILURE_SENTINEL" ]]; then
+    log "Previous install failure detected; retrying even without new commits."
+  else
+    log "Repository already up to date."
+    exit 0
+  fi
 fi
 
 git -C "$SRC_DIR" reset --hard HEAD
@@ -124,6 +130,7 @@ if [[ ! -x "$INSTALL_PATH" ]]; then
 fi
 
 log "Running installer: $INSTALL_PATH"
+date -Is >"$INSTALL_FAILURE_SENTINEL"
 DEV="$DEV_MODE" BASE="$INSTALL_BASE" bash "$INSTALL_PATH"
 
 for unit in $SERVICES; do
@@ -140,5 +147,7 @@ done
 if systemctl list-unit-files dropbox.path >/dev/null 2>&1; then
   systemctl start dropbox.path >/dev/null 2>&1 || true
 fi
+
+rm -f "$INSTALL_FAILURE_SENTINEL"
 
 log "Auto-update complete."
