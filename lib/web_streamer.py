@@ -62,6 +62,8 @@ RECORDINGS_TIME_RANGE_SECONDS = {
 
 ARCHIVAL_BACKENDS = {"network_share", "rsync"}
 
+CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
+
 DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
 ]
@@ -2862,6 +2864,32 @@ def build_app() -> web.Application:
 
             if encoding.get("pending") or encoding.get("active"):
                 status["encoding"] = encoding
+
+        now = time.time()
+        updated_at_value = status.get("updated_at")
+        stale = True
+        if isinstance(updated_at_value, (int, float)) and math.isfinite(updated_at_value):
+            age = now - updated_at_value
+            if math.isfinite(age) and 0 <= age <= CAPTURE_STATUS_STALE_AFTER_SECONDS:
+                stale = False
+        else:
+            status["updated_at"] = None
+
+        service_running = bool(status.get("service_running", False))
+
+        if stale or not service_running:
+            status["capturing"] = False
+            status.pop("event", None)
+            status.pop("event_duration_seconds", None)
+            status.pop("event_size_bytes", None)
+            status.pop("encoding", None)
+            status["service_running"] = False
+            if not status.get("last_stop_reason"):
+                status["last_stop_reason"] = (
+                    "status stale" if stale else "service offline"
+                )
+        else:
+            status["service_running"] = True
 
         return status
 
