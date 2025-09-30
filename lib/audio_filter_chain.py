@@ -270,7 +270,7 @@ class AudioFilterChain:
         """
         if not drive.size:
             return drive
-        coeff_val = complex(coeff)
+        coeff_val = coeff
         if abs(coeff_val) < 1e-12:
             return drive.astype(drive.dtype, copy=True)
         work_complex = np.iscomplexobj(drive) or abs(coeff_val.imag) > 1e-18
