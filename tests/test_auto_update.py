@@ -1,10 +1,19 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "bin" / "tricorder_auto_update.sh"
+
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="git command unavailable; auto-update integration tests require git",
+)
 
 
 GIT_ENV = {
