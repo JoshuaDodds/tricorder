@@ -20,11 +20,11 @@ audio:
 
 
   # Unified live/recording filter chain. Configure filter presets through the
-  # dashboard; legacy streaming.extra_ffmpeg_args values are ignored.
+  # dashboard; legacy streaming.extra_ffmpeg_args values are ignored. Start with
+  # a gentle high-pass, layer in notch filters for mains hum, then dial in the
+  # spectral noise gate once the room tone is steady.
 
-filter_chain: []
-
-  # WebRTC VAD aggressiveness. # WebRTC VAD aggressiveness (0..3).
+  # WebRTC VAD aggressiveness (0..3).
   # 0 = least aggressive (most permissive, more false positives, fewer misses).
   # 3 = most aggressive (strictest, fewer false positives, more misses).
   # Suggested: 1–2 for quiet/controlled spaces; 2–3 for noisy rooms if false positives are a problem.
@@ -34,16 +34,22 @@ filter_chain: []
   # independently to tame troublesome frequency bands before event detection.
   filter_chain:
     highpass:
-      # Remove low-frequency rumble from HVAC systems or desk bumps. Suggested 60–160 Hz.
+      # Remove low-frequency rumble from HVAC systems or desk bumps. 80–120 Hz
+      # keeps voices intact while taming sub-bass energy.
       enabled: false
       cutoff_hz: 90.0
     notch:
-      # Carve out a narrow band (e.g., mains hum) by frequency and Q. Suggested Q 20–40 for 50/60 Hz hum.
+      # Carve out a narrow band (e.g., mains hum). Aim the frequency at the
+      # offending tone (50/60 Hz and harmonics) and keep Q between 20–40 for
+      # surgical cuts.
       enabled: false
       freq_hz: 60.0
       quality: 30.0
     spectral_gate:
-      # Adaptive noise gate tuned for constant noise floors. Lower sensitivity tracks noise faster.
+      # Adaptive noise gate tuned for constant noise floors. Sensitivity 1.2–1.8
+      # follows HVAC/fan beds; reduction −12 to −24 dB hides noise without
+      # obvious pumping. Lower noise_update chases changes faster; higher
+      # noise_decay smooths release.
       enabled: false
       sensitivity: 1.5
       reduction_db: -18.0
