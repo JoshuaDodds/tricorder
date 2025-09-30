@@ -314,6 +314,16 @@ def _audio_defaults() -> dict[str, Any]:
     }
 
 
+def _copy_filter_stage_sequence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    copied: list[dict[str, Any]] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            copied.append({key: copy.deepcopy(val) for key, val in entry.items()})
+    return copied
+
+
 def _segmenter_defaults() -> dict[str, Any]:
     return {
         "pre_pad_ms": 2000,
@@ -411,7 +421,8 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             stages = result.get("filter_chain")
             if not isinstance(stages, dict):
                 stages = {}
-                result["filter_chain"] = stages
+            else:
+                stages = copy.deepcopy(stages)
             for key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
                 target = stages.get(key)
                 if not isinstance(target, dict):
@@ -439,6 +450,26 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
                     if max_value is not None and numeric > max_value:
                         numeric = float(max_value)
                     target[field_name] = numeric
+            extra_filters = filters.get("filters")
+            if isinstance(extra_filters, Sequence) and not isinstance(extra_filters, (str, bytes)):
+                copied = _copy_filter_stage_sequence(extra_filters)
+                if copied:
+                    stages["filters"] = copied
+                else:
+                    stages.pop("filters", None)
+            result["filter_chain"] = stages
+        elif isinstance(filters, Sequence) and not isinstance(filters, (str, bytes)):
+            stages = result.get("filter_chain")
+            if not isinstance(stages, dict):
+                stages = {}
+            else:
+                stages = copy.deepcopy(stages)
+            copied = _copy_filter_stage_sequence(filters)
+            if copied:
+                stages["filters"] = copied
+            else:
+                stages.pop("filters", None)
+            result["filter_chain"] = stages
 
         calibration = raw.get("calibration")
         if isinstance(calibration, dict):
@@ -768,6 +799,18 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(payload, dict):
         return normalized, ["Request body must be a JSON object"]
 
+    existing_filters: list[dict[str, Any]] = []
+    try:
+        cfg_snapshot = get_cfg()
+        current_audio = cfg_snapshot.get("audio", {}) if isinstance(cfg_snapshot, dict) else {}
+        current_filters = current_audio.get("filter_chain") if isinstance(current_audio, dict) else None
+        if isinstance(current_filters, dict):
+            existing_filters = _copy_filter_stage_sequence(current_filters.get("filters"))
+        elif isinstance(current_filters, Sequence) and not isinstance(current_filters, (str, bytes)):
+            existing_filters = _copy_filter_stage_sequence(current_filters)
+    except Exception:
+        existing_filters = []
+
     device = payload.get("device")
     if isinstance(device, str) and device.strip():
         normalized["device"] = device.strip()
@@ -807,9 +850,9 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         normalized["vad_aggressiveness"] = vad
 
     filters_payload = payload.get("filter_chain")
-    if filters_payload is None:
-        filters_payload = {}
-    if isinstance(filters_payload, dict):
+    if isinstance(filters_payload, dict) or filters_payload is None:
+        if filters_payload is None:
+            filters_payload = {}
         stages = normalized.get("filter_chain")
         if not isinstance(stages, dict):
             stages = {}
@@ -839,8 +882,22 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
                 )
                 if candidate is not None:
                     target[field_name] = candidate
+        filters_list = filters_payload.get("filters") if isinstance(filters_payload, dict) else None
+        if isinstance(filters_list, Sequence) and not isinstance(filters_list, (str, bytes)):
+            stages["filters"] = _copy_filter_stage_sequence(filters_list)
+        elif "filters" in filters_payload:
+            # filters key present but not a proper sequence
+            errors.append("filter_chain.filters must be an array of objects")
+        elif existing_filters:
+            stages["filters"] = _copy_filter_stage_sequence(existing_filters)
+    elif isinstance(filters_payload, Sequence) and not isinstance(filters_payload, (str, bytes)):
+        stages = normalized.get("filter_chain")
+        if not isinstance(stages, dict):
+            stages = {}
+            normalized["filter_chain"] = stages
+        stages["filters"] = _copy_filter_stage_sequence(filters_payload)
     else:
-        errors.append("filter_chain must be an object")
+        errors.append("filter_chain must be an object or array")
 
     calibration_payload = payload.get("calibration")
     if calibration_payload is None:
