@@ -675,11 +675,6 @@ def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
-def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
-    # existing body unchanged…
-    asyncio.run(runner())
-
-
 def test_audio_settings_rehydrate_comments_when_missing(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
