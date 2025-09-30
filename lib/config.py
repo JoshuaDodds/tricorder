@@ -515,6 +515,117 @@ def _file_has_comments(path: Path) -> bool:
     return False
 
 
+CommentHints = tuple[list[str], str | None]
+
+
+def _extract_comment_hints(text: str) -> Dict[str, CommentHints]:
+    hints: Dict[str, CommentHints] = {}
+    if not text:
+        return hints
+
+    stack: list[tuple[int, str]] = []
+    pending_comments: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            pending_comments.append(stripped)
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+        if stripped.startswith("- "):
+            pending_comments = []
+            continue
+
+        key, sep, remainder = stripped.partition(":")
+        if not sep:
+            pending_comments = []
+            continue
+
+        key = key.strip()
+        remainder = remainder.lstrip()
+        path = ".".join(entry[1] for entry in stack + [(indent, key)])
+
+        inline_comment: str | None = None
+        if "#" in remainder:
+            comment_text = remainder.split("#", 1)[1].strip()
+            if comment_text:
+                inline_comment = f"# {comment_text}"
+
+        prefix_comments = list(pending_comments)
+        if prefix_comments or inline_comment:
+            hints[path] = (prefix_comments, inline_comment)
+
+        pending_comments = []
+
+        if remainder == "":
+            stack.append((indent, key))
+
+    return hints
+
+
+def _apply_comment_hints(text: str, comment_hints: Mapping[str, CommentHints]) -> str:
+    if not text or not comment_hints:
+        return text
+
+    lines = text.splitlines()
+    stack: list[tuple[int, str]] = []
+    rendered: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            rendered.append(line)
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+        if stripped.startswith("#"):
+            rendered.append(line)
+            continue
+
+        if stripped.startswith("- "):
+            rendered.append(line)
+            continue
+
+        key, sep, remainder = stripped.partition(":")
+        if not sep:
+            rendered.append(line)
+            continue
+
+        key = key.strip()
+        path = ".".join(entry[1] for entry in stack + [(indent, key)])
+
+        hint = comment_hints.get(path)
+        if hint:
+            prefix_comments, inline_comment = hint
+            if prefix_comments:
+                indent_spaces = " " * indent
+                for comment_line in prefix_comments:
+                    rendered.append(f"{indent_spaces}{comment_line}")
+            if inline_comment:
+                base = line.split("#", 1)[0].rstrip()
+                line = f"{base}  {inline_comment}"
+
+        rendered.append(line)
+
+        remainder_stripped = remainder.strip()
+        if remainder_stripped == "" or remainder_stripped.startswith("|") or remainder_stripped.startswith(">"):
+            stack.append((indent, key))
+
+    ending = "\n" if text.endswith("\n") else ""
+    return "\n".join(rendered) + ending
+
+
 def _load_comment_template() -> MutableMapping[str, Any] | None:
     global _template_cache
     if _ROUND_TRIP_YAML is None:
@@ -701,6 +812,27 @@ def _persist_settings_section(
     primary_path = primary_config_path()
     current = _load_raw_yaml(primary_path)
 
+    comment_hints: Dict[str, CommentHints] = {}
+    if _ROUND_TRIP_YAML is None:
+        existing_text = ""
+        try:
+            existing_text = primary_path.read_text(encoding="utf-8")
+        except Exception:
+            existing_text = ""
+        existing_comments = _extract_comment_hints(existing_text)
+        template_comments: Dict[str, CommentHints] = {}
+        if CONFIG_TEMPLATE_YAML:
+            template_comments = _extract_comment_hints(CONFIG_TEMPLATE_YAML)
+        comment_hints = {
+            key: (list(prefix), inline)
+            for key, (prefix, inline) in template_comments.items()
+        }
+        for key, (prefix, inline) in existing_comments.items():
+            base_prefix, base_inline = comment_hints.get(key, ([], None))
+            merged_prefix = prefix if prefix else base_prefix
+            merged_inline = inline if inline is not None else base_inline
+            comment_hints[key] = (list(merged_prefix), merged_inline)
+
     updated: MutableMapping[str, Any] | Any
 
     if _ROUND_TRIP_YAML is not None:
@@ -731,6 +863,20 @@ def _persist_settings_section(
         _replace_mapping(target, settings, prune=True)
 
     _dump_yaml(primary_path, updated)
+
+    if comment_hints:
+        try:
+            rendered = primary_path.read_text(encoding="utf-8")
+        except Exception:
+            rendered = ""
+        if rendered:
+            rewritten = _apply_comment_hints(rendered, comment_hints)
+            if rewritten != rendered:
+                try:
+                    primary_path.write_text(rewritten, encoding="utf-8")
+                except Exception:
+                    pass
+
     return reload_cfg().get(section, {})
 
 
