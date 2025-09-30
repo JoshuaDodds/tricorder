@@ -432,6 +432,7 @@ def test_system_health_reports_resources(dashboard_env):
         try:
             resp = await client.get("/api/system-health")
             assert resp.status == 200
+            assert resp.headers.get("Cache-Control") == "no-store"
             payload = await resp.json()
 
             resources = payload.get("resources")
