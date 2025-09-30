@@ -86,6 +86,8 @@ def make_env(remote, update_dir, install_base, extra=None):
     systemctl.chmod(0o755)
     env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
 
+    env["DEV"] = "0"
+
     if extra:
         env.update(extra)
 
@@ -131,7 +133,7 @@ def test_auto_update_skips_install_when_no_changes(tmp_path):
     assert len(final_lines) == 2
 
 
-def test_auto_update_propagates_dev_flag(tmp_path):
+def test_auto_update_skips_when_dev_mode_enabled(tmp_path):
     remote, _ = create_remote_repo(tmp_path)
     update_dir = tmp_path / "update"
     install_base = tmp_path / "install"
@@ -140,11 +142,10 @@ def test_auto_update_propagates_dev_flag(tmp_path):
 
     env = make_env(remote, update_dir, install_base)
 
-    run_auto_update(env)
+    result = run_auto_update(env)
     log_path = install_base / "install.log"
-    assert log_path.exists()
-    entry = log_path.read_text().strip().splitlines()[-1]
-    assert entry.endswith("DEV=1"), f"expected DEV=1 in install log, got {entry!r}"
+    assert not log_path.exists(), "dev mode should prevent installer from running"
+    assert "Dev mode enabled" in result.stdout
     assert (install_base / ".dev-mode").exists()
 
 
@@ -188,3 +189,47 @@ echo "install run DEV=${DEV:-unset}" >> "${BASE}/install.log"
     entries = log_path.read_text().strip().splitlines()
     assert len(entries) == 1
     assert not sentinel.exists(), "failure sentinel should be cleared after successful install"
+
+
+def test_auto_update_honors_branch_override(tmp_path):
+    remote, worktree = create_remote_repo(tmp_path)
+    run_git("checkout", "-b", "staging", cwd=worktree)
+
+    install_script = worktree / "install.sh"
+    install_script.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${BASE}"
+echo "staging install v1 DEV=${DEV:-unset}" >> "${BASE}/install.log"
+"""
+    )
+    run_git("commit", "-am", "staging installer v1", cwd=worktree)
+    run_git("push", "-u", "origin", "staging", cwd=worktree)
+
+    update_dir = tmp_path / "update"
+    install_base = tmp_path / "install"
+    env = make_env(
+        remote,
+        update_dir,
+        install_base,
+        extra={"TRICORDER_UPDATE_BRANCH": "staging"},
+    )
+
+    run_auto_update(env)
+    log_path = install_base / "install.log"
+    lines = log_path.read_text().strip().splitlines()
+    assert lines == ["staging install v1 DEV=0"]
+
+    install_script.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${BASE}"
+echo "staging install v2 DEV=${DEV:-unset}" >> "${BASE}/install.log"
+"""
+    )
+    run_git("commit", "-am", "staging installer v2", cwd=worktree)
+    run_git("push", "origin", "staging", cwd=worktree)
+
+    run_auto_update(env)
+    lines = log_path.read_text().strip().splitlines()
+    assert lines == ["staging install v1 DEV=0", "staging install v2 DEV=0"]
