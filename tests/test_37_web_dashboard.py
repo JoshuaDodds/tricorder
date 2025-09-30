@@ -60,6 +60,7 @@ def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
         "duration_seconds": duration,
         "peak_scale": 32767,
         "peaks": [0, 0],
+        "rms_values": [0],
     }
     target.write_text(json.dumps(payload), encoding="utf-8")
 
