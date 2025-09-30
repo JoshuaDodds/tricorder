@@ -28,6 +28,11 @@ except Exception:
     CommentedSeq = None  # type: ignore[assignment]
 
 try:
+    from .config_template import CONFIG_TEMPLATE_YAML
+except Exception:
+    CONFIG_TEMPLATE_YAML = None  # type: ignore[assignment]
+
+try:
     import yaml
 except Exception:
     yaml = None  # pyyaml should be installed; if not, only defaults will be used.
@@ -158,6 +163,7 @@ _warned_yaml_missing = False
 _search_paths: list[Path] = []
 _active_config_path: Path | None = None
 _primary_config_path: Path | None = None
+_template_cache: MutableMapping[str, Any] | None = None
 
 
 class ConfigPersistenceError(Exception):
@@ -492,6 +498,82 @@ def _empty_mapping() -> MutableMapping[str, Any]:
     return {}
 
 
+def _file_has_comments(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            return True
+        idx = line.find("#")
+        if idx > 0 and line[idx - 1].isspace():
+            return True
+    return False
+
+
+def _load_comment_template() -> MutableMapping[str, Any] | None:
+    global _template_cache
+    if _ROUND_TRIP_YAML is None:
+        return None
+    if _template_cache is None:
+        candidates: list[Path] = []
+        template_env = os.getenv("TRICORDER_CONFIG_TEMPLATE")
+        if template_env:
+            try:
+                candidates.append(Path(template_env).expanduser())
+            except Exception:
+                candidates.append(Path(template_env))
+        candidates.extend(
+            [
+                Path("/etc/tricorder/config.template.yaml"),
+                Path("/apps/tricorder/config.template.yaml"),
+            ]
+        )
+        project_root = Path(__file__).resolve().parents[1]
+        candidates.extend(
+            [
+                project_root / "config.template.yaml",
+                project_root / "docs" / "config-template.yaml",
+            ]
+        )
+
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    with candidate.open("r", encoding="utf-8") as handle:
+                        loaded = _ROUND_TRIP_YAML.load(handle)  # type: ignore[arg-type]
+                    if isinstance(loaded, MutableMapping):
+                        _template_cache = _convert_to_round_trip(loaded)
+                        break
+            except Exception:
+                continue
+
+        if _template_cache is None and CONFIG_TEMPLATE_YAML:
+            try:
+                loaded = _ROUND_TRIP_YAML.load(CONFIG_TEMPLATE_YAML)
+                if isinstance(loaded, MutableMapping):
+                    _template_cache = _convert_to_round_trip(loaded)
+            except Exception:
+                _template_cache = None
+
+    if _template_cache is None:
+        return None
+    return _convert_to_round_trip(_template_cache)
+
+
+def _template_with_values(values: Mapping[str, Any]) -> MutableMapping[str, Any] | None:
+    template = _load_comment_template()
+    if template is None:
+        return None
+    if isinstance(values, Mapping):
+        _replace_mapping(template, values, prune=False)
+    return template
+
+
 def _convert_to_round_trip(value: Any) -> Any:
     if CommentedMap is not None:
         if isinstance(value, CommentedMap) or isinstance(value, CommentedSeq):
@@ -619,10 +701,18 @@ def _persist_settings_section(
     primary_path = primary_config_path()
     current = _load_raw_yaml(primary_path)
 
+    updated: MutableMapping[str, Any] | Any
+
     if _ROUND_TRIP_YAML is not None:
-        updated = _load_yaml_for_update(primary_path)
-        if isinstance(updated, dict) and not isinstance(updated, MutableMapping):
-            updated = _convert_to_round_trip(updated)
+        template_candidate: MutableMapping[str, Any] | None = None
+        if not _file_has_comments(primary_path):
+            template_candidate = _template_with_values(current)
+        if template_candidate is not None:
+            updated = template_candidate
+        else:
+            updated = _load_yaml_for_update(primary_path)
+            if isinstance(updated, dict) and not isinstance(updated, MutableMapping):
+                updated = _convert_to_round_trip(updated)
     else:
         updated = _convert_to_round_trip(current)
         if not isinstance(updated, MutableMapping):

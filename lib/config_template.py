@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Comment template for regenerating config.yaml inline docs.
+
+This blob mirrors the canonical `config.yaml` shipped with Tricorder and is
+used to rehydrate inline documentation for installs that previously lost the
+comments via legacy dashboard saves. Update this file whenever `config.yaml`
+changes to keep guidance synchronized.
+"""
+CONFIG_TEMPLATE_YAML = """
+# Tricorder configuration
+# Guidelines:
+# - This file is the single source of truth for tunables.
+# - Units are noted per field. Values outside suggested ranges may degrade performance on low-power devices.
+
+audio:
+  # ALSA device identifier. Use `arecord -l` to list devices.
+  # Examples: "hw:1,0", "hw:CARD=Device,DEV=0"
+  device: "hw:CARD=Device,DEV=0"
+
+  # Sample rate in Hz. Valid: 16000, 32000, 48000. Default is 48000 for best VAD and Opus quality.
+  sample_rate: 48000
+
+  # Frame size in milliseconds. Valid: 10, 20, 30. Default 20ms (WebRTC VAD friendly).
+  frame_ms: 20
+
+  # Software gain multiplier (linear). Typical safe range: 0.5 → 4.0
+  # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
+  gain: 2.5
+
+
+  # Unified live/recording filter chain. Configure filter presets through the
+  # dashboard; legacy streaming.extra_ffmpeg_args values are ignored. Start with
+  # a gentle high-pass, layer in notch filters for mains hum, then dial in the
+  # spectral noise gate once the room tone is steady.
+
+  # WebRTC VAD aggressiveness (0..3).
+  # 0 = least aggressive (most permissive, more false positives, fewer misses).
+  # 3 = most aggressive (strictest, fewer false positives, more misses).
+  # Suggested: 1–2 for quiet/controlled spaces; 2–3 for noisy rooms if false positives are a problem.
+  vad_aggressiveness: 3
+
+  # Optional filter stages applied to the live capture stream. Each stage can be enabled
+  # independently to tame troublesome frequency bands before event detection.
+  filter_chain:
+    highpass:
+      # Remove low-frequency rumble from HVAC systems or desk bumps. 80–120 Hz
+      # keeps voices intact while taming sub-bass energy.
+      enabled: false
+      cutoff_hz: 90.0
+    notch:
+      # Carve out a narrow band (e.g., mains hum). Aim the frequency at the
+      # offending tone (50/60 Hz and harmonics) and keep Q between 20–40 for
+      # surgical cuts.
+      enabled: false
+      freq_hz: 60.0
+      quality: 30.0
+    spectral_gate:
+      # Adaptive noise gate tuned for constant noise floors. Sensitivity 1.2–1.8
+      # follows HVAC/fan beds; reduction −12 to −24 dB hides noise without
+      # obvious pumping. Lower noise_update chases changes faster; higher
+      # noise_decay smooths release.
+      enabled: false
+      sensitivity: 1.5
+      reduction_db: -18.0
+      noise_update: 0.1
+      noise_decay: 0.95
+
+  # Toggle optional capture-time calibration helpers. When enabled the dashboard exposes quick
+  # actions to capture a fresh noise profile or recompute gain using the room tuner utility.
+  calibration:
+    auto_noise_profile: false
+    auto_gain: false
+
+paths:
+  # Scratch space for temporary WAVs and working files. Prefer tmpfs if available.
+  tmp_dir: "/apps/tricorder/tmp"
+
+  # Destination for encoded .opus recordings. Ensure adequate storage and rotation.
+  recordings_dir: "/apps/tricorder/recordings"
+
+  # Folder watched for externally dropped files to ingest.
+  dropbox_dir: "/apps/tricorder/dropbox"
+
+  # Per-run ingestion work area (files are atomically moved here before processing).
+  ingest_work_dir: "/apps/tricorder/tmp/ingest"
+
+  # Script used to encode and store finalized events. Must accept: <tmp_wav_path> <base_name>
+  encoder_script: "/apps/tricorder/bin/encode_and_store.sh"
+
+archival:
+  # Enable automatic upload of freshly encoded recordings for off-device backups.
+  enabled: false
+
+  # Backend controls how files are transferred after encoding.
+  # Supported values:
+  #   - "network_share": copy to a mounted SMB/NFS path on the local filesystem.
+  #   - "rsync": stream files to a remote rsync/SSH endpoint.
+  backend: "network_share"
+
+  network_share:
+    # Destination root on the mounted share. Subdirectories mirror recordings_dir layout.
+    target_dir: "/mnt/archive/tricorder"
+
+  rsync:
+    # Remote destination in rsync syntax (user@host:/path). Required when backend == "rsync".
+    destination: "user@example.com:/srv/tricorder/archive"
+
+    # Optional SSH identity file. Leave blank to use the default SSH agent/keys.
+    ssh_identity: "/home/pi/.ssh/id_ed25519"
+
+    # Additional rsync CLI options. Defaults to ["-az"].
+    options: ["-az"]
+
+    # Extra SSH options appended to the remote shell command.
+    ssh_options: ["-oStrictHostKeyChecking=yes"]
+
+  # When true, upload waveform JSON sidecars alongside audio.
+  include_waveform_sidecars: false
+
+  # When true, upload transcript JSON sidecars alongside audio.
+  include_transcript_sidecars: true
+
+segmenter:
+  # Pre-roll saved before trigger (milliseconds). Captures leading context (e.g., first spoken word).
+  # Typical: 500–3000 ms. Higher uses more RAM/IO.
+  pre_pad_ms: 2000
+
+  # Post-roll after activity stops (milliseconds). Prevents cutting off during short pauses.
+  # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
+  post_pad_ms: 7000
+
+  # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
+  # Typical: 200–1200 depending on mic and environment.
+  rms_threshold: 320 # was 300
+
+  # Sliding window length for “keep alive” logic (frames). With 20ms frames, 30 ≈ 600ms.
+  # Typical: 20–60 frames.
+  keep_window_frames: 60
+
+  # Number of consecutive active frames required to start an event.
+  # With 20ms frames: 25 ≈ 500ms of sustained activity. Increase to debounce short noises.
+  start_consecutive: 46
+
+  # Minimum active frames within the recent window to refresh post-roll (prevents premature end).
+  keep_consecutive: 35 # start moving up if recordings are too long
+
+  # Optional noise reduction toggles.
+  # USE_RNNOISE: High-quality but CPU-heavy; generally not recommended on Pi Zero 2 W.
+  # USE_NOISEREDUCE: Experimental; may interfere with VAD; test before enabling.
+  use_rnnoise: false
+  use_noisereduce: false
+
+  # If true, denoise audio before VAD. Can degrade VAD accuracy; keep false unless validated.
+  denoise_before_vad: false
+
+  # Moving-average and peak timing budgets (milliseconds) for the filter chain (gain + denoise).
+  # Keep both values below audio.frame_ms so real-time capture stays ahead of the input stream.
+  filter_chain_avg_budget_ms: 6.0
+  filter_chain_peak_budget_ms: 15.0
+
+  # Number of recent frames to include in the moving average (higher = smoother, but slower to react).
+  filter_chain_metrics_window: 50
+
+  # Minimum seconds between structured WARN logs when budgets are exceeded. Lower during tuning.
+  filter_chain_log_throttle_sec: 30.0
+
+  # Writer flush threshold for WAV buffering (bytes). Larger = fewer writes, more memory.
+  # Typical: 65536–262144 (64–256 KB).
+  flush_threshold_bytes: 131072
+
+  # Max queued frames before backpressure/drop (safety). With 20ms @ 48k mono: 512 ≈ 10.24s of audio.
+  # Keep modest to avoid memory spikes. Typical: 256–1024.
+  max_queue_frames: 512
+
+  # Optional custom labels for event classifications. These strings are embedded in filenames,
+  # notification payloads, and transcript metadata.
+  event_tags:
+    human: "Human"
+    other: "Other"
+    both: "Both"
+
+adaptive_rms:
+  # Enable adaptive thresholding to track background RMS levels. When false, the fixed
+  # segmenter.rms_threshold is used.
+  enabled: false
+
+  # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
+  min_thresh: 0.01
+
+  # Multiplier applied to the background P95 value when computing the candidate threshold.
+  margin: 1.2
+
+  # Seconds between adaptive threshold updates. Larger values smooth out short-term swings.
+  update_interval_sec: 5.0
+
+  # Length of the rolling window (seconds) used to estimate the background RMS distribution.
+  window_sec: 10.0
+
+  # Relative change required before applying a new threshold (0.1 ⇒ ±10%).
+  hysteresis_tolerance: 0.1
+
+  # Percentile (0.0-1.0] used when lowering the threshold after noise subsides.
+  # Smaller values release faster once the room quiets; higher values stay conservative.
+  release_percentile: 0.5
+
+ingest:
+  # Number of consecutive size-stability checks required before accepting a file.
+  # Prevents racing with partial/incomplete files.
+  # Typical: 2–5.
+  stable_checks: 2
+
+  # Seconds between stability checks. Increase if sources write slowly.
+  # Typical: 0.5–2.0 s.
+  stable_interval_sec: 1.0
+
+  # Allowed filename extensions (lowercase, include leading dot).
+  allowed_ext: [".wav", ".opus", ".flac", ".mp3"]
+
+  # Common suffixes indicating partial/incomplete downloads or temp files to ignore.
+  ignore_suffixes: [".part", ".partial", ".tmp", ".incomplete", ".opdownload", ".crdownload"]
+
+transcription:
+  # Enable offline speech-to-text using the configured engine. When disabled no transcript files are written.
+  enabled: false
+
+  # Supported engines: "vosk" (default). Vosk runs entirely offline using a Kaldi acoustic model.
+  engine: "vosk"
+
+  # Only events tagged with these types are transcribed. Default restricts transcripts to Human-tagged segments.
+  types: ["Human"]
+
+  # Path to the unpacked Vosk model directory (download separately, e.g. vosk-model-small-en-us-0.15).
+  vosk_model_path: "/apps/tricorder/models/vosk-small-en-us-0.15"
+
+  # Audio is resampled to this sample rate before feeding the recognizer. 16000 Hz matches Vosk small English models.
+  target_sample_rate: 16000
+
+  # Include per-word timestamps/confidence values in the transcript payload (slightly larger JSON files).
+  include_words: true
+
+  # Set >0 to request alternative transcript hypotheses when supported by the model.
+  max_alternatives: 0
+
+logging:
+  # Developer-mode verbose logging (equivalent to setting DEV=1 in the environment).
+  # When true, emits per-second debug lines from the segmenter.
+  dev_mode: true
+
+notifications:
+  # Optional notifications when events finish recording. Leave disabled to avoid network calls.
+  enabled: false
+
+  # Filter notifications to specific event types ("Human", "Other", "Both"). Empty list notifies for all.
+  allowed_event_types: ["Human", "Both"]
+
+  # Minimum trigger RMS required to notify. Set to 0 to allow all events or increase to catch only loud clips.
+  min_trigger_rms: 400
+
+  webhook:
+    # HTTP endpoint to receive JSON payloads with event metadata. Leave blank to disable webhook delivery.
+    url: ""
+    method: "POST"
+    headers: {}
+    timeout_sec: 5.0
+
+  email:
+    # SMTP settings for email notifications. Leave smtp_host blank to disable email delivery.
+    smtp_host: ""
+    smtp_port: 587
+    use_tls: true
+    use_ssl: false
+    username: ""
+    password: ""
+    from: "tricorder@example.com"
+    to: ["alerts@example.com"]
+    subject_template: "Tricorder event: {etype} (RMS {trigger_rms})"
+    body_template: |
+      Event {base_name} completed on {host}.
+      Type: {etype}
+      Trigger RMS: {trigger_rms}
+      Average RMS: {avg_rms}
+      Duration: {duration_seconds}s
+      Start: {started_at}
+      Reason: {end_reason}
+
+streaming:
+  # Live streaming mode exposed in the dashboard. Valid values:
+  #   "hls"   – HTTP Live Streaming (higher latency, broad compatibility).
+  #   "webrtc" – WebRTC audio stream (lower latency, modern browsers only).
+  mode: "hls"
+  # Legacy streaming.extra_ffmpeg_args settings are ignored. Use audio.filter_chain
+  # to configure filters shared by the recorder and live preview.
+  # When streaming.mode is "webrtc", audio frames are stored in a shared ring
+  # buffer before they are forwarded to WebRTC peers. Increase this to tolerate
+  # short stalls at the cost of RAM usage (seconds of audio history).
+  webrtc_history_seconds: 8.0
+
+dashboard:
+  # Override the base URL used by the dashboard when making API and HLS requests.
+  # Useful when the static dashboard is hosted separately from the recorder.
+  # Example: "https://recorder.local:8080". When set, the web streamer enables
+  # CORS (Access-Control-Allow-Origin: *) so remote dashboards can call the API
+  # and HLS endpoints directly. Leave blank to use the current origin.
+  api_base: "http://192.168.1.137:8080"
+  # Services exposed through the dashboard controls card. Each entry may include a
+  # friendly label and optional description for the UI. Units must be resolvable by
+  # systemd on the host.
+  services:
+    - unit: "voice-recorder.service"
+      label: "Recorder"
+      description: "Segments microphone input into individual events."
+    - unit: "web-streamer.service"
+      label: "Web UI"
+      description: "Serves the dashboard and live stream."
+
+  # Unit that should be restarted automatically when stopped or reloaded through
+  # the dashboard to keep the management interface reachable.
+  web_service: "web-streamer.service"
+
+"""

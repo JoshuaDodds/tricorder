@@ -104,6 +104,14 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 
 ---
 
+## Branching model
+
+Active recorder fixes graduate through the `staging-bugs-and-adjustments` branch before landing in release branches. When opening
+maintenance PRs (like the configuration comment preservation work) target `staging-bugs-and-adjustments` so reviewers see diffs
+against the latest staging state rather than the mainline release snapshot.
+
+---
+
 ## Automatic archival uploads
 
 Freshly encoded recordings can be mirrored off-device for long-term storage using the new archival plug-ins. Configure the `archival` section in `config.yaml` to enable one of the backends (or open the dashboard’s ☰ menu → **Archival settings** to edit the same options in the UI — changes stay in sync with `config.yaml`):
@@ -309,6 +317,8 @@ Environment variables override YAML values. Common overrides include:
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
 - `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.
 - `EVENT_TAG_HUMAN`, `EVENT_TAG_OTHER`, `EVENT_TAG_BOTH` — override event labels without editing YAML.
+- `TRICORDER_CONFIG_TEMPLATE` — optional absolute path to a commented template used to rehydrate inline guidance if the active
+  YAML lost its comments.
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 

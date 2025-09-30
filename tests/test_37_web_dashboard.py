@@ -675,6 +675,80 @@ def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_audio_settings_rehydrate_comments_when_missing(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (
+            "audio:\n"
+            "  device: hw:1,0\n"
+            "  gain: 1.8\n"
+            "  vad_aggressiveness: 1\n"
+            "  filter_chain:\n"
+            "    highpass:\n"
+            "      enabled: false\n"
+            "      cutoff_hz: 80.0\n"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+    monkeypatch.setattr(config, "_template_cache", None, raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            update_payload = {
+                "device": "hw:CARD=Device,DEV=0",
+                "sample_rate": 48000,
+                "frame_ms": 20,
+                "gain": 2.6,
+                "vad_aggressiveness": 2,
+                "filter_chain": {
+                    "highpass": {"enabled": True, "cutoff_hz": 115.0},
+                },
+            }
+
+            resp = await client.post("/api/config/audio", json=update_payload)
+            assert resp.status == 200
+
+            persisted_text = config_path.read_text(encoding="utf-8")
+            assert "# ALSA device identifier" in persisted_text
+            assert "# Unified live/recording filter chain" in persisted_text
+            assert "gain:" in persisted_text
+
+            persisted = yaml.safe_load(persisted_text)
+            assert persisted["audio"]["gain"] == pytest.approx(2.6)
+            assert persisted["audio"]["device"] == "hw:CARD=Device,DEV=0"
+            assert persisted["audio"]["filter_chain"]["highpass"]["enabled"] is True
+            assert persisted["audio"]["filter_chain"]["highpass"]["cutoff_hz"] == pytest.approx(115.0)
+
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+    
+    
 def test_audio_settings_skip_restart_when_inactive(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
