@@ -21,6 +21,7 @@ except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - exercise
     _AIORTC_IMPORT_ERROR: Exception | None = exc
     _RTCConfiguration = None
     _RTCPeerConnection = None
+    _RTCIceServer = None
     _RTCSessionDescription = None
     _MediaStreamTrack = None
     _av = None
