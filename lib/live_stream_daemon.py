@@ -395,6 +395,26 @@ def main():
                     frame_idx += 1
                     last_frame_time = time.monotonic()
 
+            def process_with_filter_chain(raw_frame: bytes) -> None:
+                nonlocal filter_chain_error_logged
+                processed = raw_frame
+                if FILTER_CHAIN is not None:
+                    try:
+                        processed = FILTER_CHAIN.process(
+                            SAMPLE_RATE, FRAME_BYTES, raw_frame
+                        )
+                        if filter_chain_error_logged:
+                            filter_chain_error_logged = False
+                    except Exception as exc:
+                        if not filter_chain_error_logged:
+                            print(
+                                f"[live] filter chain error: {exc!r} (falling back to raw frames)",
+                                flush=True,
+                            )
+                            filter_chain_error_logged = True
+                        processed = raw_frame
+                flush_processed([(processed, None)])
+
             assert p.stdout is not None
             stderr_fd = p.stderr.fileno() if p.stderr is not None else None
             os.set_blocking(p.stdout.fileno(), True)
@@ -437,25 +457,12 @@ def main():
                             filter_pipeline = None
                             filter_pipeline_launch_error_logged = False
                             ensure_filter_pipeline()
+                            process_with_filter_chain(frame)
                             continue
                         if drained:
                             flush_processed(drained)
                         continue
-                    processed = frame
-                    if FILTER_CHAIN is not None:
-                        try:
-                            processed = FILTER_CHAIN.process(SAMPLE_RATE, FRAME_BYTES, frame)
-                            if filter_chain_error_logged:
-                                filter_chain_error_logged = False
-                        except Exception as exc:
-                            if not filter_chain_error_logged:
-                                print(
-                                    f"[live] filter chain error: {exc!r} (falling back to raw frames)",
-                                    flush=True,
-                                )
-                                filter_chain_error_logged = True
-                            processed = frame
-                    flush_processed([(processed, None)])
+                    process_with_filter_chain(frame)
 
                 if filter_pipeline is not None:
                     try:
