@@ -29,6 +29,7 @@ Endpoints:
 import argparse
 import asyncio
 import contextlib
+import copy
 import functools
 import json
 import logging
@@ -269,6 +270,33 @@ _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
 _TRANSCRIPTION_ENGINES = {"vosk"}
+AUDIO_FILTER_STAGE_SPECS: dict[str, dict[str, tuple[float | None, float | None]]] = {
+    "highpass": {
+        "cutoff_hz": (20.0, 2000.0),
+    },
+    "notch": {
+        "freq_hz": (20.0, 20000.0),
+        "quality": (0.1, 100.0),
+    },
+    "spectral_gate": {
+        "sensitivity": (0.1, 4.0),
+        "reduction_db": (-60.0, 0.0),
+        "noise_update": (0.0, 1.0),
+        "noise_decay": (0.0, 1.0),
+    },
+}
+
+AUDIO_FILTER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "highpass": {"enabled": False, "cutoff_hz": 90.0},
+    "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
+    "spectral_gate": {
+        "enabled": False,
+        "sensitivity": 1.5,
+        "reduction_db": -18.0,
+        "noise_update": 0.1,
+        "noise_decay": 0.95,
+    },
+}
 
 
 def _audio_defaults() -> dict[str, Any]:
@@ -278,6 +306,11 @@ def _audio_defaults() -> dict[str, Any]:
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
+        "calibration": {
+            "auto_noise_profile": False,
+            "auto_gain": False,
+        },
     }
 
 
@@ -372,6 +405,51 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         vad = raw.get("vad_aggressiveness")
         if isinstance(vad, (int, float)) and not isinstance(vad, bool):
             result["vad_aggressiveness"] = int(vad)
+
+        filters = raw.get("filter_chain")
+        if isinstance(filters, dict):
+            stages = result.get("filter_chain")
+            if not isinstance(stages, dict):
+                stages = {}
+                result["filter_chain"] = stages
+            for key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
+                target = stages.get(key)
+                if not isinstance(target, dict):
+                    defaults = AUDIO_FILTER_DEFAULTS.get(key)
+                    target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
+                    stages[key] = target
+                payload = filters.get(key)
+                if not isinstance(payload, dict):
+                    continue
+                if "enabled" in payload:
+                    target["enabled"] = _bool_from_any(payload.get("enabled"))
+                for field_name, (min_value, max_value) in field_specs.items():
+                    if field_name not in payload:
+                        continue
+                    value = payload.get(field_name)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        numeric = float(value)
+                    else:
+                        try:
+                            numeric = float(value)
+                        except (TypeError, ValueError):
+                            continue
+                    if min_value is not None and numeric < min_value:
+                        numeric = float(min_value)
+                    if max_value is not None and numeric > max_value:
+                        numeric = float(max_value)
+                    target[field_name] = numeric
+
+        calibration = raw.get("calibration")
+        if isinstance(calibration, dict):
+            target = result.get("calibration")
+            if not isinstance(target, dict):
+                target = {}
+                result["calibration"] = target
+            if "auto_noise_profile" in calibration:
+                target["auto_noise_profile"] = _bool_from_any(calibration.get("auto_noise_profile"))
+            if "auto_gain" in calibration:
+                target["auto_gain"] = _bool_from_any(calibration.get("auto_gain"))
     return result
 
 
@@ -727,6 +805,59 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     )
     if vad is not None:
         normalized["vad_aggressiveness"] = vad
+
+    filters_payload = payload.get("filter_chain")
+    if filters_payload is None:
+        filters_payload = {}
+    if isinstance(filters_payload, dict):
+        stages = normalized.get("filter_chain")
+        if not isinstance(stages, dict):
+            stages = {}
+            normalized["filter_chain"] = stages
+        for stage_key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
+            stage_payload = filters_payload.get(stage_key)
+            if stage_payload is None:
+                continue
+            if not isinstance(stage_payload, dict):
+                errors.append(f"filter_chain.{stage_key} must be an object")
+                continue
+            target = stages.get(stage_key)
+            if not isinstance(target, dict):
+                defaults = AUDIO_FILTER_DEFAULTS.get(stage_key)
+                target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
+                stages[stage_key] = target
+            target["enabled"] = _bool_from_any(stage_payload.get("enabled"))
+            for field_name, (min_value, max_value) in field_specs.items():
+                if field_name not in stage_payload:
+                    continue
+                candidate = _coerce_float(
+                    stage_payload.get(field_name),
+                    f"filter_chain.{stage_key}.{field_name}",
+                    errors,
+                    min_value=min_value,
+                    max_value=max_value,
+                )
+                if candidate is not None:
+                    target[field_name] = candidate
+    else:
+        errors.append("filter_chain must be an object")
+
+    calibration_payload = payload.get("calibration")
+    if calibration_payload is None:
+        calibration_payload = {}
+    if isinstance(calibration_payload, dict):
+        target = normalized.get("calibration")
+        if not isinstance(target, dict):
+            target = {}
+            normalized["calibration"] = target
+        if "auto_noise_profile" in calibration_payload:
+            target["auto_noise_profile"] = _bool_from_any(
+                calibration_payload.get("auto_noise_profile")
+            )
+        if "auto_gain" in calibration_payload:
+            target["auto_gain"] = _bool_from_any(calibration_payload.get("auto_gain"))
+    else:
+        errors.append("calibration must be an object")
 
     return normalized, errors
 
@@ -2448,6 +2579,22 @@ def build_app() -> web.Application:
             elif normalized in {"0", "false", "no", "off", "stopped"}:
                 status["service_running"] = False
 
+        adaptive_threshold = raw.get("adaptive_rms_threshold")
+        if isinstance(adaptive_threshold, (int, float)) and math.isfinite(adaptive_threshold):
+            status["adaptive_rms_threshold"] = int(adaptive_threshold)
+
+        adaptive_enabled_raw = raw.get("adaptive_rms_enabled")
+        if isinstance(adaptive_enabled_raw, bool):
+            status["adaptive_rms_enabled"] = adaptive_enabled_raw
+        elif isinstance(adaptive_enabled_raw, (int, float)):
+            status["adaptive_rms_enabled"] = bool(adaptive_enabled_raw)
+        elif isinstance(adaptive_enabled_raw, str):
+            normalized = adaptive_enabled_raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                status["adaptive_rms_enabled"] = True
+            elif normalized in {"0", "false", "no", "off", "disabled"}:
+                status["adaptive_rms_enabled"] = False
+
         duration_seconds = raw.get("event_duration_seconds")
         if isinstance(duration_seconds, (int, float)) and math.isfinite(duration_seconds):
             status["event_duration_seconds"] = max(0.0, float(duration_seconds))
@@ -2455,6 +2602,22 @@ def build_app() -> web.Application:
         event_size_bytes = raw.get("event_size_bytes")
         if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
             status["event_size_bytes"] = max(0, int(event_size_bytes))
+
+        avg_ms = raw.get("filter_chain_avg_ms")
+        if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):
+            status["filter_chain_avg_ms"] = float(avg_ms)
+
+        peak_ms = raw.get("filter_chain_peak_ms")
+        if isinstance(peak_ms, (int, float)) and math.isfinite(peak_ms):
+            status["filter_chain_peak_ms"] = float(peak_ms)
+
+        avg_budget = raw.get("filter_chain_avg_budget_ms")
+        if isinstance(avg_budget, (int, float)) and math.isfinite(avg_budget):
+            status["filter_chain_avg_budget_ms"] = float(avg_budget)
+
+        peak_budget = raw.get("filter_chain_peak_budget_ms")
+        if isinstance(peak_budget, (int, float)) and math.isfinite(peak_budget):
+            status["filter_chain_peak_budget_ms"] = float(peak_budget)
 
         encoding_raw = raw.get("encoding")
         if isinstance(encoding_raw, dict):

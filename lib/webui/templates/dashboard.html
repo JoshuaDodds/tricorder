@@ -46,142 +46,152 @@
       </div>
       <header class="app-header">
         <div class="titles">
-          <div class="app-menu-wrapper">
-            <button
-              id="app-menu-toggle"
-              class="icon-button app-menu-toggle"
-              type="button"
-              aria-haspopup="true"
-              aria-expanded="false"
-              aria-controls="app-menu"
-            >
-              <span class="sr-only">Open menu</span>
-              <span aria-hidden="true" class="menu-icon">
-                <span></span>
-                <span></span>
-                <span></span>
-              </span>
-            </button>
-            <div
-              id="app-menu"
-              class="app-menu"
-              role="menu"
-              aria-hidden="true"
-              aria-labelledby="app-menu-toggle"
-              hidden
-              data-visible="false"
-            >
-              <div class="menu-section" role="none">
-                <div class="menu-section-title" role="presentation">Recorder configuration</div>
-                <button
-                  id="recorder-menu-audio"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="audio"
-                >
-                  Audio input &amp; gain
-                </button>
-                <button
-                  id="recorder-menu-segmenter"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="segmenter"
-                >
-                  Event detection
-                </button>
-                <button
-                  id="recorder-menu-adaptive"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="adaptive_rms"
-                >
-                  Adaptive RMS
-                </button>
-                <button
-                  id="recorder-menu-ingest"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="ingest"
-                >
-                  Ingest pipeline
-                </button>
-                <button
-                  id="recorder-menu-transcription"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="transcription"
-                >
-                  Transcription
-                </button>
-                <button
-                  id="recorder-menu-logging"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="logging"
-                >
-                  Logging &amp; diagnostics
-                </button>
-                <button
-                  id="recorder-menu-streaming"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="streaming"
-                >
-                  Live streaming
-                </button>
-                <button
-                  id="recorder-menu-dashboard"
-                  class="menu-item recorder-menu-item"
-                  type="button"
-                  role="menuitem"
-                  data-recorder-section="dashboard"
-                >
-                  Dashboard API access
-                </button>
-              </div>
-              <div class="menu-section" role="none">
-                <div class="menu-section-title" role="presentation">Operations</div>
-                <button
-                  id="config-open"
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                >
-                  Configuration
-                </button>
-                <button
-                  id="archival-open"
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                >
-                  Archival settings
-                </button>
-                <button
-                  id="services-open"
-                  class="menu-item"
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                >
-                  Services
-                </button>
+          <div class="app-brand">
+            <div class="app-menu-wrapper">
+              <button
+                id="app-menu-toggle"
+                class="icon-button app-menu-toggle"
+                type="button"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="app-menu"
+              >
+                <span class="sr-only">Open menu</span>
+                <span aria-hidden="true" class="menu-icon">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              </button>
+              <div
+                id="app-menu"
+                class="app-menu"
+                role="menu"
+                aria-hidden="true"
+                aria-labelledby="app-menu-toggle"
+                hidden
+                data-visible="false"
+              >
+                <div class="menu-section" role="none">
+                  <div class="menu-section-title" role="presentation">Recorder configuration</div>
+                  <button
+                    id="recorder-menu-audio"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="audio"
+                  >
+                    Audio input &amp; gain
+                  </button>
+                  <button
+                    id="recorder-menu-segmenter"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="segmenter"
+                  >
+                    Event detection
+                  </button>
+                  <button
+                    id="recorder-menu-adaptive"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="adaptive_rms"
+                  >
+                    Adaptive RMS
+                  </button>
+                  <button
+                    id="recorder-menu-ingest"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="ingest"
+                  >
+                    Ingest pipeline
+                  </button>
+                  <button
+                    id="recorder-menu-transcription"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="transcription"
+                  >
+                    Transcription
+                  </button>
+                  <button
+                    id="recorder-menu-logging"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="logging"
+                  >
+                    Logging &amp; diagnostics
+                  </button>
+                  <button
+                    id="recorder-menu-streaming"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="streaming"
+                  >
+                    Live streaming
+                  </button>
+                  <button
+                    id="recorder-menu-dashboard"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="dashboard"
+                  >
+                    Dashboard API access
+                  </button>
+                </div>
+                <div class="menu-section" role="none">
+                  <div class="menu-section-title" role="presentation">Operations</div>
+                  <button
+                    id="config-open"
+                    class="menu-item"
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    Configuration
+                  </button>
+                  <button
+                    id="archival-open"
+                    class="menu-item"
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    Archival settings
+                  </button>
+                  <button
+                    id="services-open"
+                    class="menu-item"
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    Services
+                  </button>
+                </div>
               </div>
             </div>
+            <h1 class="app-title">
+              <span class="sr-only">Tricorder dashboard home</span>
+              <img
+                src="{{ static_url('img/dashboard-logo.svg') }}"
+                class="app-title-logo"
+                alt=""
+                role="presentation"
+              />
+            </h1>
           </div>
-          <h1>Dashboard</h1>
         </div>
         <div class="header-actions">
           <div class="header-controls">
@@ -820,6 +830,147 @@
                 </select>
                 <p class="field-description">
                   Controls the WebRTC voice detector sensitivity. Higher values reject more noise but may miss quiet speech.
+                </p>
+              </div>
+              <h4 class="settings-subheading">Filter chain</h4>
+              <p class="settings-subheading-description">
+                Enable lightweight filters to tame rumble, hiss, or bed noise before the segmenter sees the audio.
+              </p>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-highpass-enabled" type="checkbox" />
+                  <label for="audio-filter-highpass-enabled">High-pass filter</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-highpass-cutoff">Cutoff</label>
+                  <input
+                    id="audio-filter-highpass-cutoff"
+                    type="range"
+                    min="20"
+                    max="2000"
+                    step="10"
+                    value="90"
+                  />
+                  <span id="audio-filter-highpass-cutoff-value" class="filter-value" aria-live="off">90&nbsp;Hz</span>
+                </div>
+                <p class="field-description">Remove low-frequency rumble from HVAC systems, footsteps, or desk bumps.</p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-notch-enabled" type="checkbox" />
+                  <label for="audio-filter-notch-enabled">Notch filter</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-notch-frequency">Frequency</label>
+                  <input
+                    id="audio-filter-notch-frequency"
+                    type="range"
+                    min="20"
+                    max="20000"
+                    step="10"
+                    value="60"
+                  />
+                  <span id="audio-filter-notch-frequency-value" class="filter-value" aria-live="off">60&nbsp;Hz</span>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-notch-quality">Quality</label>
+                  <input
+                    id="audio-filter-notch-quality"
+                    type="range"
+                    min="1"
+                    max="80"
+                    step="1"
+                    value="30"
+                  />
+                  <span id="audio-filter-notch-quality-value" class="filter-value" aria-live="off">Q&nbsp;30</span>
+                </div>
+                <p class="field-description">Carve out persistent hums (50/60&nbsp;Hz) or whistles without impacting the rest of the spectrum.</p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-spectral-enabled" type="checkbox" />
+                  <label for="audio-filter-spectral-enabled">Spectral gate</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-sensitivity">Sensitivity</label>
+                  <input
+                    id="audio-filter-spectral-sensitivity"
+                    type="range"
+                    min="0.1"
+                    max="4"
+                    step="0.1"
+                    value="1.5"
+                  />
+                  <span id="audio-filter-spectral-sensitivity-value" class="filter-value" aria-live="off">1.5</span>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-reduction">Reduction</label>
+                  <input
+                    id="audio-filter-spectral-reduction"
+                    type="range"
+                    min="-60"
+                    max="0"
+                    step="1"
+                    value="-18"
+                  />
+                  <span id="audio-filter-spectral-reduction-value" class="filter-value" aria-live="off">−18&nbsp;dB</span>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-update">Noise update rate</label>
+                  <input
+                    id="audio-filter-spectral-update"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0.1"
+                  />
+                  <span id="audio-filter-spectral-update-value" class="filter-value" aria-live="off">0.10</span>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-spectral-decay">Noise decay</label>
+                  <input
+                    id="audio-filter-spectral-decay"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0.95"
+                  />
+                  <span id="audio-filter-spectral-decay-value" class="filter-value" aria-live="off">0.95</span>
+                </div>
+                <p class="field-description">Adaptive gate tuned for constant ambient noise. Lower sensitivity reacts faster; adjust reduction to taste.</p>
+              </div>
+              <h4 class="settings-subheading">Calibration helpers</h4>
+              <p class="settings-subheading-description">
+                Surface quick actions in the dashboard for recalibrating ambient noise and input gain with the room tuner.
+              </p>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="audio-calibration-noise" type="checkbox" />
+                  <label for="audio-calibration-noise">Allow noise profile calibration shortcut</label>
+                </div>
+                <p class="field-description">Adds a dashboard action to capture a fresh background noise profile.</p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="audio-calibration-gain" type="checkbox" />
+                  <label for="audio-calibration-gain">Allow gain recalibration shortcut</label>
+                </div>
+                <p class="field-description">Exposes a guided gain recalibration using the room tuner utility.</p>
+              </div>
+              <div class="settings-field calibration-action">
+                <button id="audio-calibrate-noise" class="ghost-button" type="button">
+                  Calibrate noise profile
+                </button>
+                <p class="field-description">Launches the room tuner in a new tab to capture the current ambient noise floor.</p>
+                <p
+                  id="audio-calibration-noise-hint"
+                  class="field-description"
+                  hidden
+                  aria-hidden="true"
+                >
+                  Enable “Allow noise profile calibration shortcut” above to use this action.
                 </p>
               </div>
               <div class="settings-section-footer">

@@ -18,11 +18,43 @@ audio:
   # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
   gain: 2.5
 
+
+  # Unified live/recording filter chain. Configure filter presets through the
+  # dashboard; legacy streaming.extra_ffmpeg_args values are ignored.
+
+filter_chain: []
+
   # WebRTC VAD aggressiveness. # WebRTC VAD aggressiveness (0..3).
   # 0 = least aggressive (most permissive, more false positives, fewer misses).
   # 3 = most aggressive (strictest, fewer false positives, more misses).
   # Suggested: 1–2 for quiet/controlled spaces; 2–3 for noisy rooms if false positives are a problem.
   vad_aggressiveness: 3
+
+  # Optional filter stages applied to the live capture stream. Each stage can be enabled
+  # independently to tame troublesome frequency bands before event detection.
+  filter_chain:
+    highpass:
+      # Remove low-frequency rumble from HVAC systems or desk bumps. Suggested 60–160 Hz.
+      enabled: false
+      cutoff_hz: 90.0
+    notch:
+      # Carve out a narrow band (e.g., mains hum) by frequency and Q. Suggested Q 20–40 for 50/60 Hz hum.
+      enabled: false
+      freq_hz: 60.0
+      quality: 30.0
+    spectral_gate:
+      # Adaptive noise gate tuned for constant noise floors. Lower sensitivity tracks noise faster.
+      enabled: false
+      sensitivity: 1.5
+      reduction_db: -18.0
+      noise_update: 0.1
+      noise_decay: 0.95
+
+  # Toggle optional capture-time calibration helpers. When enabled the dashboard exposes quick
+  # actions to capture a fresh noise profile or recompute gain using the room tuner utility.
+  calibration:
+    auto_noise_profile: false
+    auto_gain: false
 
 paths:
   # Scratch space for temporary WAVs and working files. Prefer tmpfs if available.
@@ -105,6 +137,17 @@ segmenter:
 
   # If true, denoise audio before VAD. Can degrade VAD accuracy; keep false unless validated.
   denoise_before_vad: false
+
+  # Moving-average and peak timing budgets (milliseconds) for the filter chain (gain + denoise).
+  # Keep both values below audio.frame_ms so real-time capture stays ahead of the input stream.
+  filter_chain_avg_budget_ms: 6.0
+  filter_chain_peak_budget_ms: 15.0
+
+  # Number of recent frames to include in the moving average (higher = smoother, but slower to react).
+  filter_chain_metrics_window: 50
+
+  # Minimum seconds between structured WARN logs when budgets are exceeded. Lower during tuning.
+  filter_chain_log_throttle_sec: 30.0
 
   # Writer flush threshold for WAV buffering (bytes). Larger = fewer writes, more memory.
   # Typical: 65536–262144 (64–256 KB).
@@ -230,6 +273,8 @@ streaming:
   #   "hls"   – HTTP Live Streaming (higher latency, broad compatibility).
   #   "webrtc" – WebRTC audio stream (lower latency, modern browsers only).
   mode: "hls"
+  # Legacy streaming.extra_ffmpeg_args settings are ignored. Use audio.filter_chain
+  # to configure filters shared by the recorder and live preview.
   # When streaming.mode is "webrtc", audio frames are stored in a shared ring
   # buffer before they are forwarded to WebRTC peers. Increase this to tolerate
   # short stalls at the cost of RAM usage (seconds of audio history).
