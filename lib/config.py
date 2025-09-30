@@ -617,8 +617,8 @@ def _replace_mapping(
             if existing_key not in updates:
                 try:
                     del target[existing_key]
-                except Exception:
-                    pass
+                except KeyError:
+                    continue
     for key, value in updates.items():
         if isinstance(value, Mapping) and not isinstance(value, (str, bytes)):
             nested: MutableMapping[str, Any]

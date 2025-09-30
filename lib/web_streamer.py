@@ -46,7 +46,7 @@ import wave
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
@@ -111,6 +111,23 @@ def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
             if urls:
                 entries.append({"urls": urls})
         return entries if entries else _clone_defaults()
+
+    if isinstance(raw, Mapping):
+        urls = _normalize_urls(raw.get("urls"))
+        if not urls:
+            return _clone_defaults()
+        server: dict[str, object] = {"urls": urls}
+        username = raw.get("username")
+        if isinstance(username, str):
+            username = username.strip()
+            if username:
+                server["username"] = username
+        credential = raw.get("credential")
+        if isinstance(credential, str):
+            credential = credential.strip()
+            if credential:
+                server["credential"] = credential
+        return [server]
 
     if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
         items = list(raw)
