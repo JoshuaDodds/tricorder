@@ -1408,6 +1408,39 @@ button.small {
   opacity: 1;
 }
 
+.waveform-rms-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 0.75rem;
+}
+
+.waveform-rms-row[data-active="false"] {
+  display: none;
+}
+
+.waveform-rms {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.75rem;
+  border-radius: 0.65rem;
+  background: var(--dialog-surface);
+  color: var(--text);
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", "Courier New", monospace;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: 0 12px 28px var(--surface-soft);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.waveform-rms[data-active="true"] {
+  opacity: 1;
+}
+
 .waveform-container {
   position: relative;
   width: 100%;
