@@ -118,22 +118,22 @@ segmenter:
 
   # Post-roll after activity stops (milliseconds). Prevents cutting off during short pauses.
   # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
-  post_pad_ms: 7000
+  post_pad_ms: 3000
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
-  rms_threshold: 320 # was 300
+  rms_threshold: 300
 
   # Sliding window length for “keep alive” logic (frames). With 20ms frames, 30 ≈ 600ms.
   # Typical: 20–60 frames.
-  keep_window_frames: 60
+  keep_window_frames: 30
 
   # Number of consecutive active frames required to start an event.
   # With 20ms frames: 25 ≈ 500ms of sustained activity. Increase to debounce short noises.
-  start_consecutive: 46
+  start_consecutive: 25
 
   # Minimum active frames within the recent window to refresh post-roll (prevents premature end).
-  keep_consecutive: 35 # start moving up if recordings are too long
+  keep_consecutive: 25
 
   # Optional noise reduction toggles.
   # USE_RNNOISE: High-quality but CPU-heavy; generally not recommended on Pi Zero 2 W.
