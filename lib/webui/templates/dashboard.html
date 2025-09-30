@@ -14,6 +14,7 @@
   <body
     data-tricorder-api-base="{{ api_base | default('', true) }}"
     data-tricorder-stream-mode="{{ stream_mode | default('hls', true) }}"
+    data-tricorder-webrtc-ice-servers='{{ webrtc_ice_servers | default([], true) | tojson }}'
   >
     <div class="app-shell">
       <div
