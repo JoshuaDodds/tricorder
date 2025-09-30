@@ -340,14 +340,16 @@
               <span>Waveform</span>
               <span class="waveform-status" id="waveform-status"></span>
             </div>
-            <div class="waveform-container" id="waveform-container" hidden>
-              <canvas id="waveform-canvas"></canvas>
+            <div class="waveform-clock-row" data-active="false">
               <div
                 id="waveform-clock"
                 class="waveform-clock"
                 aria-hidden="true"
                 data-active="false"
               >--:--:--</div>
+            </div>
+            <div class="waveform-container" id="waveform-container" hidden>
+              <canvas id="waveform-canvas"></canvas>
               <div
                 id="waveform-trigger-marker"
                 class="waveform-marker marker-trigger"
