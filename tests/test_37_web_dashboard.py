@@ -73,7 +73,7 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
         handle.writeframes(b"\x00\x00" * frame_count)
 
 
-def test_recordings_listing_filters(dashboard_env):
+def test_recordings_listing_filters(dashboard_env, monkeypatch):
     async def runner():
         day_a = dashboard_env / "20240101"
         day_b = dashboard_env / "20240102"
@@ -108,6 +108,7 @@ def test_recordings_listing_filters(dashboard_env):
             assert all(item.get("waveform_path") for item in payload["items"])
             assert "20240101" in payload["available_days"]
             assert "20240102" in payload["available_days"]
+            assert payload.get("time_range") == ""
 
             resp = await client.get("/api/recordings?day=20240101&limit=10")
             data = await resp.json()
@@ -116,6 +117,13 @@ def test_recordings_listing_filters(dashboard_env):
             resp = await client.get("/api/recordings?search=beta")
             search = await resp.json()
             assert [item["name"] for item in search["items"]] == ["beta"]
+
+            monkeypatch.setattr(web_streamer.time, "time", lambda: 1_700_030_000)
+            resp = await client.get("/api/recordings?time_range=1h&limit=10")
+            recent = await resp.json()
+            assert recent.get("time_range") == "1h"
+            assert recent["total"] == 0
+            assert recent["items"] == []
         finally:
             await client.close()
             await server.close()

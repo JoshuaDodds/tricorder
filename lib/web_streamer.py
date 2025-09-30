@@ -51,6 +51,14 @@ from typing import Any, Iterable, Sequence
 
 DEFAULT_RECORDINGS_LIMIT = 200
 MAX_RECORDINGS_LIMIT = 1000
+RECORDINGS_TIME_RANGE_SECONDS = {
+    "1h": 60 * 60,
+    "2h": 2 * 60 * 60,
+    "4h": 4 * 60 * 60,
+    "8h": 8 * 60 * 60,
+    "12h": 12 * 60 * 60,
+    "1d": 24 * 60 * 60,
+}
 
 ARCHIVAL_BACKENDS = {"network_share", "rsync"}
 
@@ -2763,6 +2771,13 @@ def build_app() -> web.Application:
 
         search = query.get("search", "").strip().lower()
 
+        raw_time_range = query.get("time_range", "").strip().lower()
+        time_range_value = ""
+        cutoff_epoch: float | None = None
+        if raw_time_range in RECORDINGS_TIME_RANGE_SECONDS:
+            time_range_value = raw_time_range
+            cutoff_epoch = time.time() - RECORDINGS_TIME_RANGE_SECONDS[raw_time_range]
+
         def _collect(key: str) -> set[str]:
             collected: set[str] = set()
             for raw in query.getall(key, []):
@@ -2820,6 +2835,17 @@ def build_app() -> web.Application:
                 continue
             if ext_filter and ext.lower() not in ext_filter:
                 continue
+            if cutoff_epoch is not None:
+                record_epoch: float | None = None
+                start_epoch = item.get("start_epoch")
+                if isinstance(start_epoch, (int, float)) and math.isfinite(start_epoch):
+                    record_epoch = float(start_epoch)
+                else:
+                    modified_value = item.get("modified")
+                    if isinstance(modified_value, (int, float)) and math.isfinite(modified_value):
+                        record_epoch = float(modified_value)
+                if record_epoch is not None and record_epoch < cutoff_epoch:
+                    continue
 
             filtered.append(item)
             try:
@@ -2891,6 +2917,7 @@ def build_app() -> web.Application:
             "total_size_bytes": total_size,
             "offset": offset,
             "limit": limit,
+            "time_range": time_range_value,
         }
 
     async def recordings_api(request: web.Request) -> web.Response:
