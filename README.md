@@ -36,16 +36,25 @@ and a literal description of this project’s **three core recording functions**
 
 ```mermaid
 graph TD
-    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py];
-    B -->|frames| C["TimelineRecorder (segmenter.py)"];
+    HW[USB microphone / ALSA device] -->|PCM stream| AR["arecord (hardware capture)"];
+    AR -->|raw frames| FP["Audio filter pipeline\n(FilterPipeline + AudioFilterChain)"];
+    FP -->|filtered frames| LS[live_stream_daemon.py];
+
+    LS -->|frames| C["TimelineRecorder (segmenter.py)"];
     C -->|tmp WAV| D[encode_and_store.sh];
     D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"];
 
-    B -->|frames| H["HLSTee (hls_mux.py)"];
-    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"];
-    I -->|static files| J["web_streamer.py + webui"];
-    J -->|HTTP: dashboard + APIs| K[Browsers / Clients];
-    J -->|encoder control| H;
+    subgraph "Live streaming outputs"
+        LS -->|frames| H["HLSTee (hls_mux.py)"];
+        H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"];
+        I -->|static files| J["web_streamer.py + webui"];
+        J -->|HTTP: dashboard + APIs| K[Browsers / Clients];
+        J -->|encoder control| CTRL["HLS controller (hls_controller.py)"];
+        CTRL -->|start / stop| H;
+
+        LS -->|frames| WBR["WebRTCBufferWriter (webrtc_buffer.py)"];
+        WBR -->|frame history| J;
+    end
 
     subgraph "Dropbox ingest"
         F["Incoming file (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py];
@@ -53,7 +62,7 @@ graph TD
     end
 
     subgraph "Background services"
-        SM_voice_recorder[voice-recorder.service] --> B;
+        SM_voice_recorder[voice-recorder.service] --> LS;
         SM_web_streamer[web-streamer.service] --> J;
         SM_dropbox[dropbox.path + dropbox.service] --> G;
         SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E;
@@ -62,7 +71,16 @@ graph TD
     end
 ```
 
-Waveform sidecars are produced via `lib.waveform_cache` during the encode step so the dashboard can render previews instantly. When speech transcription is enabled, `lib.transcription` stores a `.transcript.json` sidecar next to each audio file. The same encoder pipeline is reused for live capture and for files dropped into the ingest directory.
+Frames originate on the USB microphone (or other ALSA device) and are pulled across the USB bus by an `arecord` subprocess that `live_stream_daemon.py` supervises. Each PCM frame flows through the following stages:
+
+1. **Capture guardrails** – `live_stream_daemon.py` restarts `arecord` on failure and preserves frame ordering so downstream queues never see duplicates.
+2. **Filter offload** – `FilterPipeline` ships frames to a helper process that runs the configured `AudioFilterChain`. This keeps DSP work off the capture loop while still surfacing filter failures back to the supervisor.
+3. **Fan-out hub** – the daemon forwards filtered frames to two destinations:
+   - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, and coordination with `bin/encode_and_store.sh`.
+   - `HLSTee` / `WebRTCBufferWriter` so live listeners can attach without disturbing capture cadence.
+4. **Encoding + storage** – the encoder script writes Opus, waveform JSON, and optional transcript sidecars into `/apps/tricorder/recordings`.
+
+`lib.hls_controller` brokers HLS encoder lifecycles on behalf of the dashboard, while the WebRTC branch keeps a bounded history buffer that the browser drains when establishing a peer connection. Dropbox ingest feeds the same timeline recorder, guaranteeing that external files experience identical filtering, encoding, waveform generation, and transcription steps.
 
 ---
 
