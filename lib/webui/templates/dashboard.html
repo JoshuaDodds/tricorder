@@ -368,7 +368,14 @@
             </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
           </div>
-          <div class="player-meta" id="player-meta">Select a recording to preview.</div>
+          <div class="player-meta" id="player-meta">
+            <div class="player-meta-text" id="player-meta-text">Select a recording to preview.</div>
+            <div class="player-meta-actions action-buttons" id="player-meta-actions" hidden>
+              <a id="player-download" class="ghost-button small" download>Download</a>
+              <button id="player-rename" class="ghost-button small" type="button">Rename</button>
+              <button id="player-delete" class="danger-button small" type="button">Delete</button>
+            </div>
+          </div>
           <div
             id="clipper-container"
             class="clipper-container"
