@@ -1324,6 +1324,99 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
     asyncio.run(runner())
 
 
+def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Recorder",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+            ),
+            "web-streamer.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "enabled",
+                "Web UI",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+            ),
+        }
+
+        systemctl_calls: list[list[str]] = []
+        scheduled: list[tuple[str, list[str], float]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = show_map.get(unit)
+                if values is None:
+                    values = (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "yes",
+                        "yes",
+                        "no",
+                        "yes",
+                        "",
+                    )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
+            return 0, "", ""
+
+        def fake_enqueue(unit: str, actions, delay: float = 0.5) -> None:
+            scheduled.append((unit, list(actions), delay))
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(web_streamer, "_enqueue_service_actions", fake_enqueue)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post(
+                "/api/services/voice-recorder.service/action",
+                json={"action": "restart"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["requested_action"] == "restart"
+            assert payload["executed_action"] == "restart"
+            assert payload.get("ok") is True
+
+            assert [
+                call for call in systemctl_calls if call[:2] == ["restart", "voice-recorder.service"]
+            ]
+
+            kick_calls = [
+                item for item in scheduled if item[0] == "web-streamer.service" and item[1] == ["start"]
+            ]
+            assert kick_calls, "Expected dashboard web service to be started"
+            assert kick_calls[0][2] == pytest.approx(1.0, rel=0, abs=1e-6)
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_rename_endpoint(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240104"

@@ -1790,6 +1790,20 @@ def _enqueue_service_actions(
     loop.create_task(_runner())
 
 
+def _kick_auto_restart_units(
+    auto_restart_units: Iterable[str], *, skip: Iterable[str] = (), delay: float = 1.0
+) -> None:
+    skip_set = {str(item or "").strip() for item in skip}
+    if not auto_restart_units:
+        return
+
+    for candidate in auto_restart_units:
+        unit = str(candidate or "").strip()
+        if not unit or unit in skip_set:
+            continue
+        _enqueue_service_actions(unit, ["start"], delay=delay)
+
+
 def build_app() -> web.Application:
     log = logging.getLogger("web_streamer")
     cfg = get_cfg()
@@ -3632,6 +3646,9 @@ def build_app() -> web.Application:
                 response["message"] = "Reload unsupported; restarted instead."
             elif message:
                 response["message"] = message
+
+        if executed_action in {"stop", "restart"}:
+            _kick_auto_restart_units(auto_restart, skip={unit})
 
         status = await _collect_service_state(entry_map[unit], auto_restart)
         response["status"] = status
