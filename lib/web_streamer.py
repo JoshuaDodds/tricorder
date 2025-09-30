@@ -3717,7 +3717,7 @@ def build_app() -> web.Application:
             },
         }
 
-        return web.json_response(payload)
+        return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
     async def services_list(request: web.Request) -> web.Response:
         entries = request.app.get(SERVICE_ENTRIES_KEY, [])
