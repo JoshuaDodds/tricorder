@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import os
 import sys
+from collections.abc import MutableMapping, MutableSequence
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -23,6 +24,14 @@ try:
     import yaml
 except Exception:
     yaml = None  # pyyaml should be installed; if not, only defaults will be used.
+
+try:
+    from ruamel.yaml import YAML as _RoundTripYAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+except Exception:  # pragma: no cover - handled by runtime checks
+    _RoundTripYAML = None
+    CommentedMap = None  # type: ignore[assignment]
+    CommentedSeq = None  # type: ignore[assignment]
 
 EVENT_TAG_DEFAULTS: Dict[str, str] = {
     "human": "Human",
@@ -142,6 +151,78 @@ _primary_config_path: Path | None = None
 
 class ConfigPersistenceError(Exception):
     """Raised when configuration changes cannot be persisted."""
+
+def _ensure_round_trip_yaml() -> _RoundTripYAML:
+    if _RoundTripYAML is None:
+        raise ConfigPersistenceError(
+            "ruamel.yaml is required to update configuration files while preserving comments"
+        )
+    yaml_rt = _RoundTripYAML()
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    yaml_rt.preserve_quotes = True
+    yaml_rt.width = 120
+    return yaml_rt
+
+def _new_commented_map() -> MutableMapping[str, Any]:
+    if CommentedMap is not None:
+        return CommentedMap()
+    return {}
+
+def _new_commented_seq() -> MutableSequence[Any]:
+    if CommentedSeq is not None:
+        return CommentedSeq()
+    return []
+
+def _to_round_trip(value: Any) -> Any:
+    if isinstance(value, MutableMapping):
+        mapping = _new_commented_map()
+        for key, nested in value.items():
+            mapping[key] = _to_round_trip(nested)
+        return mapping
+    if isinstance(value, list):
+        seq = _new_commented_seq()
+        for item in value:
+            seq.append(_to_round_trip(item))
+        return seq
+    return copy.deepcopy(value)
+
+def _load_round_trip_document(path: Path) -> MutableMapping[str, Any]:
+    yaml_rt = _ensure_round_trip_yaml()
+    if not path.exists():
+        return _new_commented_map()
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = yaml_rt.load(handle) or _new_commented_map()
+    except Exception as exc:  # pragma: no cover - exercised in integration
+        raise ConfigPersistenceError(f"Unable to read configuration: {exc}") from exc
+    if not isinstance(data, MutableMapping):
+        return _new_commented_map()
+    return data
+
+def _apply_mapping_update(
+    target: MutableMapping[str, Any],
+    updates: Mapping[str, Any],
+    *,
+    prune_missing: bool,
+) -> MutableMapping[str, Any]:
+    if prune_missing:
+        for key in list(target.keys()):
+            if key not in updates:
+                del target[key]
+    for key, value in updates.items():
+        if isinstance(value, Mapping):
+            existing = target.get(key)
+            if isinstance(existing, MutableMapping):
+                target[key] = _apply_mapping_update(
+                    existing, value, prune_missing=prune_missing
+                )
+            else:
+                target[key] = _to_round_trip(value)
+        elif isinstance(value, list):
+            target[key] = _to_round_trip(value)
+        else:
+            target[key] = copy.deepcopy(value)
+    return target
 
 def _load_yaml_if_exists(path: Path) -> Dict[str, Any]:
     global _warned_yaml_missing
@@ -466,29 +547,24 @@ def search_paths() -> list[Path]:
     return list(_search_paths)
 
 
-def _load_raw_yaml(path: Path) -> Dict[str, Any]:
-    if not yaml:
-        raise ConfigPersistenceError("PyYAML is required to update configuration files")
-    if not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            payload = yaml.safe_load(handle) or {}
-            if isinstance(payload, dict):
-                return payload
-    except Exception as exc:
-        raise ConfigPersistenceError(f"Unable to read configuration: {exc}") from exc
-    return {}
-
-
 def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
-    if not yaml:
-        raise ConfigPersistenceError("PyYAML is required to update configuration files")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         raise ConfigPersistenceError(f"Unable to create configuration directory: {exc}") from exc
     try:
+        if _RoundTripYAML is not None:
+            document = payload
+            if not isinstance(document, MutableMapping):
+                document = _to_round_trip(document)
+            yaml_rt = _ensure_round_trip_yaml()
+            with path.open("w", encoding="utf-8") as handle:
+                yaml_rt.dump(document, handle)
+            return
+        if not yaml:
+            raise ConfigPersistenceError(
+                "PyYAML is required to update configuration files"
+            )
         with path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(
                 payload,
@@ -508,21 +584,20 @@ def _persist_settings_section(
         raise ConfigPersistenceError(f"{section} settings payload must be a mapping")
 
     primary_path = primary_config_path()
-    current = _load_raw_yaml(primary_path)
-    updated = copy.deepcopy(current)
-
-    if merge:
-        base: Dict[str, Any] = {}
-        existing = updated.get(section)
-        if isinstance(existing, dict):
-            base = copy.deepcopy(existing)
-        for key, value in settings.items():
-            base[key] = copy.deepcopy(value)
-        updated[section] = base
+    document = _load_round_trip_document(primary_path)
+    section_node: MutableMapping[str, Any]
+    existing_section = document.get(section)
+    if isinstance(existing_section, MutableMapping):
+        section_node = existing_section
     else:
-        updated[section] = copy.deepcopy(settings)
+        section_node = _new_commented_map()
+    document[section] = _apply_mapping_update(
+        section_node,
+        settings,
+        prune_missing=not merge,
+    )
 
-    _dump_yaml(primary_path, updated)
+    _dump_yaml(primary_path, document)
     return reload_cfg().get(section, {})
 
 

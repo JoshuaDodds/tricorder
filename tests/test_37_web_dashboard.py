@@ -252,6 +252,54 @@ archival:
     asyncio.run(runner())
 
 
+def test_config_comments_preserved(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+# heading comment
+archival:
+  # toggle comment
+  enabled: false
+  backend: network_share
+  # nested comment
+  network_share:
+    target_dir: "/mnt/archive/tricorder"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "enabled": True,
+                "backend": "network_share",
+                "network_share": {"target_dir": "/mnt/archive/tricorder"},
+            }
+            resp = await client.post("/api/config/archival", json=payload)
+            assert resp.status == 200
+
+            persisted = config_path.read_text(encoding="utf-8")
+            assert "# heading comment" in persisted
+            assert "# toggle comment" in persisted
+            assert "# nested comment" in persisted
+            assert "enabled: true" in persisted
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_archival_settings_validation_error(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("archival:\n  enabled: false\n", encoding="utf-8")

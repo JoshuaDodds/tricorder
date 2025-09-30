@@ -310,6 +310,8 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `notifications` – optional webhook/email alerts when events finish recording.
 - `streaming` – live stream transport configuration (HLS/WebRTC).
 
+The dashboard edits these sections through the API. Configuration updates rely on `ruamel.yaml`’s round-trip loader/dumper (bundled in `requirements.txt`) so inline comments in `config.yaml` remain intact when settings are changed from the web UI.
+
 ### Idle hum mitigation
 
 `audio.filter_chain` accepts a list of notch filters executed before the segmenter sees PCM data. Each entry uses the form:
