@@ -415,6 +415,102 @@ audio:
     asyncio.run(runner())
 
 
+def test_audio_settings_preserve_filter_stage_list(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (
+            "audio:\n"
+            "  device: hw:1,0\n"
+            "  filter_chain:\n"
+            "    - type: notch\n"
+            "      frequency: 120.0\n"
+            "      q: 14.5\n"
+            "      gain_db: -12.0\n"
+            "    - type: notch\n"
+            "      frequency: 240.0\n"
+            "      q: 16.0\n"
+            "      gain_db: -18.0\n"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/audio")
+            assert resp.status == 200
+            payload = await resp.json()
+            filters = payload["audio"]["filter_chain"].get("filters")
+            assert isinstance(filters, list)
+            assert len(filters) == 2
+            assert filters[0]["frequency"] == pytest.approx(120.0)
+            assert filters[1]["frequency"] == pytest.approx(240.0)
+
+            update_payload = {
+                "device": "hw:1,0",
+                "sample_rate": 48000,
+                "frame_ms": 20,
+                "gain": 3.0,
+                "vad_aggressiveness": 2,
+                "filter_chain": {
+                    "highpass": {"enabled": False, "cutoff_hz": 90.0},
+                    "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
+                    "spectral_gate": {
+                        "enabled": False,
+                        "sensitivity": 1.5,
+                        "reduction_db": -18.0,
+                        "noise_update": 0.1,
+                        "noise_decay": 0.95,
+                    },
+                },
+            }
+
+            resp = await client.post("/api/config/audio", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            updated_filters = updated["audio"]["filter_chain"].get("filters")
+            assert isinstance(updated_filters, list)
+            assert len(updated_filters) == 2
+            assert updated_filters[0]["frequency"] == pytest.approx(120.0)
+            assert updated_filters[1]["frequency"] == pytest.approx(240.0)
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert isinstance(persisted["audio"]["filter_chain"], dict)
+            persisted_filters = persisted["audio"]["filter_chain"].get("filters")
+            assert isinstance(persisted_filters, list)
+            assert len(persisted_filters) == 2
+            assert persisted_filters[0]["frequency"] == pytest.approx(120.0)
+            assert persisted_filters[1]["frequency"] == pytest.approx(240.0)
+
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_audio_settings_skip_restart_when_inactive(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

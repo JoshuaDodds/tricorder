@@ -32,6 +32,8 @@ from collections import deque
 import audioop
 import webrtcvad
 
+from copy import deepcopy
+
 from lib.config import (
     ConfigPersistenceError,
     get_cfg,
@@ -221,7 +223,17 @@ def main() -> int:
                 if not filters:
                     print("[room_tuner] No notch filters recommended.", flush=True)
                 else:
-                    payload = {"filter_chain": filters}
+                    chain_cfg = {}
+                    existing_chain = cfg.get("audio", {}).get("filter_chain")
+                    if isinstance(existing_chain, dict):
+                        chain_cfg = deepcopy(existing_chain)
+                    elif isinstance(existing_chain, (list, tuple)):
+                        chain_cfg = {"filters": list(existing_chain)}
+                    if filters:
+                        chain_cfg["filters"] = [deepcopy(entry) for entry in filters]
+                    else:
+                        chain_cfg.pop("filters", None)
+                    payload = {"filter_chain": chain_cfg}
                     print("[room_tuner] Recommended audio.filter_chain:", flush=True)
                     print(json.dumps(payload, indent=2), flush=True)
                     if args.auto_filter == "update":
