@@ -240,6 +240,50 @@ async def test_recycle_bin_purge_removes_requested_entries(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_recycle_bin_purge_handles_missing_metadata(monkeypatch, tmp_path, aiohttp_client):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = recordings_dir / "sample.opus"
+    audio_path.write_bytes(b"audio")
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    delete_response = await client.post(
+        "/api/recordings/delete",
+        json={"items": ["sample.opus"]},
+    )
+    assert delete_response.status == 200
+
+    recycle_root = recordings_dir / web_streamer.RECYCLE_BIN_DIRNAME
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1
+    entry_dir = entries[0]
+    metadata_path = entry_dir / web_streamer.RECYCLE_METADATA_FILENAME
+    if metadata_path.exists():
+        metadata_path.unlink()
+
+    purge_response = await client.post(
+        "/api/recycle-bin/purge",
+        json={"delete_all": True},
+    )
+    assert purge_response.status == 200
+    purge_payload = await purge_response.json()
+    assert purge_payload["errors"] == []
+    assert purge_payload["purged"] == [entry_dir.name]
+    assert recycle_root.exists() is False or not any(recycle_root.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_recycle_bin_purge_supports_age_filters(monkeypatch, tmp_path, aiohttp_client):
     recordings_dir = tmp_path / "recordings"
     tmp_dir = tmp_path / "tmp"
