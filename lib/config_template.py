@@ -1,3 +1,12 @@
+#!/usr/bin/env python3
+"""Comment template for regenerating config.yaml inline docs.
+
+This blob mirrors the canonical `config.yaml` shipped with Tricorder and is
+used to rehydrate inline documentation for installs that previously lost the
+comments via legacy dashboard saves. Update this file whenever `config.yaml`
+changes to keep guidance synchronized.
+"""
+CONFIG_TEMPLATE_YAML = """
 # Tricorder configuration
 # Guidelines:
 # - This file is the single source of truth for tunables.
@@ -285,16 +294,6 @@ streaming:
   # buffer before they are forwarded to WebRTC peers. Increase this to tolerate
   # short stalls at the cost of RAM usage (seconds of audio history).
   webrtc_history_seconds: 8.0
-  # Optional list of STUN/TURN ICE servers exposed to WebRTC clients. Provide
-  # either strings ("stun:stun.example.com:3478") or objects with urls,
-  # username, and credential fields. Leave unset to use public STUN defaults
-  # suitable for Firefox and Chromium; set to [] to disable external ICE
-  # servers entirely.
-  # webrtc_ice_servers:
-  #   - "stun:stun.cloudflare.com:3478"
-  #   - urls: ["turn:turn.example.com:3478"]
-  #     username: "tricorder"
-  #     credential: "s3cret"
 
 dashboard:
   # Override the base URL used by the dashboard when making API and HLS requests.
@@ -317,3 +316,5 @@ dashboard:
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.
   web_service: "web-streamer.service"
+
+"""

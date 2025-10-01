@@ -15,7 +15,7 @@ import queue
 import subprocess
 import logging
 import shutil
-from typing import Optional, List
+from typing import Optional, Sequence, List
 
 
 class HLSTee:
@@ -29,7 +29,8 @@ class HLSTee:
         history_seconds: int = 60,
         bitrate: str = "64k",
         log_level: int = logging.INFO,
-        extra_ffmpeg_args: Optional[List[str]] = None,
+        legacy_extra_ffmpeg_args: Optional[Sequence[str]] = None,
+        filter_chain_enabled: bool = False,
     ):
         assert bits_per_sample == 16, "S16_LE expected"
         self.out_dir = out_dir
@@ -39,10 +40,26 @@ class HLSTee:
         self.seg_time = float(segment_time)
         self.hist = int(history_seconds)
         self.bitrate = bitrate
-        self.extra = extra_ffmpeg_args or []
-
         self._log = logging.getLogger("hls_mux")
         self._log.setLevel(log_level)
+
+        self._legacy_extra: List[str] = []
+        if legacy_extra_ffmpeg_args:
+            self._legacy_extra = [
+                str(arg)
+                for arg in legacy_extra_ffmpeg_args
+                if isinstance(arg, (str, bytes))
+            ]
+            if self._legacy_extra:
+                self._log.warning(
+                    "extra_ffmpeg_args is deprecated for HLSTee and will be ignored."
+                )
+                if filter_chain_enabled and self._legacy_filter_args_present():
+                    self._log.warning(
+                        "audio.filter_chain is enabled; remove legacy ffmpeg filter arguments: %s",
+                        ", ".join(self._legacy_extra),
+                    )
+
 
         self._q: "queue.Queue[bytes]" = queue.Queue(maxsize=64)
         self._t: Optional[threading.Thread] = None
@@ -173,6 +190,20 @@ class HLSTee:
                 pass
 
     def _spawn_ffmpeg(self) -> subprocess.Popen:
+        cmd = self._build_ffmpeg_command()
+
+        self._log.info("Launching ffmpeg: %s", " ".join(cmd))
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            start_new_session=True,
+        )
+        return proc
+
+    def _build_ffmpeg_command(self) -> List[str]:
         target_duration = max(1.0, self.seg_time)
         list_size = max(1, int(self.hist / target_duration))
 
@@ -196,19 +227,28 @@ class HLSTee:
             "-hls_segment_filename", os.path.join(self.out_dir, "seg%05d.ts"),
             os.path.join(self.out_dir, "live.m3u8"),
         ]
-        if self.extra:
-            cmd.extend(self.extra)
+        return cmd
 
-        self._log.info("Launching ffmpeg: %s", " ".join(cmd))
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-            start_new_session=True,
-        )
-        return proc
+    def _legacy_filter_args_present(self) -> bool:
+        if not self._legacy_extra:
+            return False
+        filter_flags = {
+            "-af",
+            "-filter",
+            "-filter:a",
+            "-filter_complex",
+            "-lavfi",
+            "-filter_complex_script",
+        }
+        for token in self._legacy_extra:
+            lowered = str(token).lower()
+            if lowered in filter_flags:
+                return True
+            if lowered.startswith("-filter"):
+                return True
+            if "filter=" in lowered:
+                return True
+        return False
 
     def _run(self):
         self._proc = self._spawn_ffmpeg()

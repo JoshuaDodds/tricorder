@@ -40,8 +40,27 @@ if [[ "${1:-}" == "--remove" ]]; then
   systemctl reset-failed
 
   if [[ -d "$BASE" && "$BASE" == "/apps/tricorder" ]]; then
-    rm -rf "$BASE"
-    echo "[Tricorder] Removed $BASE"
+    preserve_dir="$BASE/recordings"
+    if [[ -d "$preserve_dir" ]]; then
+      echo "[Tricorder] Preserving recordings at $preserve_dir"
+    fi
+
+    shopt -s dotglob
+    for entry in "$BASE"/* "$BASE"/.*; do
+      name=$(basename "$entry")
+      if [[ "$name" == "." || "$name" == ".." || "$name" == "recordings" ]]; then
+        continue
+      fi
+      rm -rf "$entry"
+    done
+    shopt -u dotglob
+
+    if [[ -d "$preserve_dir" ]]; then
+      echo "[Tricorder] All application files removed, recordings left in place"
+    else
+      rm -rf "$BASE"
+      echo "[Tricorder] Removed application files under $BASE"
+    fi
   else
     echo "[Tricorder] Skip install location removal: \"$BASE\" does not exist."
   fi

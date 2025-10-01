@@ -20,17 +20,31 @@ Usage:
 Press Ctrl+C to stop.
 """
 import argparse
+import json
 import os
 import signal
+import statistics
 import subprocess
 import sys
 import time
-import statistics
 from collections import deque
+
 import audioop
 import webrtcvad
-from lib.config import get_cfg
+
+from copy import deepcopy
+
+from lib.config import (
+    ConfigPersistenceError,
+    get_cfg,
+    update_audio_settings,
+)
 from lib.fault_handler import reset_usb   # 🔧 added
+from lib.noise_analyzer import (
+    analyze_idle_noise,
+    recommend_notch_filters,
+    summarize_peaks,
+)
 
 cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
@@ -65,6 +79,39 @@ def spawn_arecord(audio_dev: str):
     )
 
 
+def _drain_fd(fd: int | None) -> None:
+    if fd is None:
+        return
+    while True:
+        try:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+        except BlockingIOError:
+            break
+        except Exception:
+            break
+
+
+def capture_idle_audio(proc, seconds: float, stderr_fd: int | None) -> bytes:
+    if seconds <= 0:
+        return b""
+    target_bytes = int(seconds * SAMPLE_RATE * SAMPLE_WIDTH)
+    captured = bytearray()
+    deadline = time.monotonic() + max(seconds * 1.5, 1.0)
+    while len(captured) < target_bytes:
+        remaining = target_bytes - len(captured)
+        chunk = proc.stdout.read(min(4096, remaining))
+        if chunk:
+            captured.extend(chunk)
+        else:
+            time.sleep(0.05)
+        _drain_fd(stderr_fd)
+        if time.monotonic() >= deadline:
+            break
+    return bytes(captured)
+
+
 def percentile_p95(values):
     if not values:
         return 0.0
@@ -93,9 +140,17 @@ def main() -> int:
     parser.add_argument("--noise-window", type=int, default=60, help="Seconds of unvoiced frames to keep for noise-floor estimation")
     parser.add_argument("--duration", type=int, default=0, help="Optional run duration seconds (0 = indefinite)")
     parser.add_argument("--csv", default="", help="Optional CSV file to write per-interval stats")
+    parser.add_argument("--analyze-noise", action="store_true", help="Capture idle audio and summarize hum components before monitoring")
+    parser.add_argument("--analyze-duration", type=float, default=10.0, help="Seconds of idle audio to capture when analyzing noise")
+    parser.add_argument("--analyze-top", type=int, default=3, help="Number of dominant hum peaks to report")
+    parser.add_argument("--auto-filter", choices=["print", "update"], nargs="?", const="print", help="Recommend or persist audio.filter_chain notch filters (implies --analyze-noise)")
+    parser.add_argument("--dry-run", action="store_true", help="With --auto-filter update, show changes without writing config")
     args = parser.parse_args()
 
     print_banner(args)
+
+    if args.auto_filter and not args.analyze_noise:
+        args.analyze_noise = True
 
     # Prepare VAD
     vad = webrtcvad.Vad(args.aggr)
@@ -140,6 +195,63 @@ def main() -> int:
             pass
 
     buf = bytearray()
+
+    if args.analyze_noise:
+        capture_seconds = max(args.analyze_duration, FRAME_MS / 1000.0)
+        print(f"[room_tuner] Capturing {capture_seconds:.1f}s of idle audio for hum analysis...", flush=True)
+        analysis_pcm = capture_idle_audio(proc, capture_seconds, stderr_fd)
+        if analysis_pcm:
+            buf.extend(analysis_pcm)
+            peaks = analyze_idle_noise(
+                analysis_pcm,
+                SAMPLE_RATE,
+                top_n=max(1, args.analyze_top),
+                min_freq_hz=30.0,
+                max_freq_hz=SAMPLE_RATE / 2.0,
+            )
+            summary = summarize_peaks(peaks)
+            actual_sec = len(analysis_pcm) / (SAMPLE_RATE * SAMPLE_WIDTH)
+            print(
+                f"[room_tuner] Idle analysis ({actual_sec:.2f}s captured): {summary}",
+                flush=True,
+            )
+            if args.auto_filter:
+                filters = recommend_notch_filters(
+                    peaks,
+                    max_filters=max(1, args.analyze_top),
+                )
+                if not filters:
+                    print("[room_tuner] No notch filters recommended.", flush=True)
+                else:
+                    chain_cfg = {}
+                    existing_chain = cfg.get("audio", {}).get("filter_chain")
+                    if isinstance(existing_chain, dict):
+                        chain_cfg = deepcopy(existing_chain)
+                    elif isinstance(existing_chain, (list, tuple)):
+                        chain_cfg = {"filters": list(existing_chain)}
+                    if filters:
+                        chain_cfg["filters"] = [deepcopy(entry) for entry in filters]
+                    else:
+                        chain_cfg.pop("filters", None)
+                    payload = {"filter_chain": chain_cfg}
+                    print("[room_tuner] Recommended audio.filter_chain:", flush=True)
+                    print(json.dumps(payload, indent=2), flush=True)
+                    if args.auto_filter == "update":
+                        if args.dry_run:
+                            print("[room_tuner] Dry-run: configuration not modified.", flush=True)
+                        else:
+                            try:
+                                update_audio_settings(payload)
+                                print("[room_tuner] Updated configuration with recommended filters.", flush=True)
+                            except ConfigPersistenceError as exc:
+                                print(
+                                    f"[room_tuner] Failed to update configuration: {exc}",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+        else:
+            print("[room_tuner] Unable to capture idle audio for analysis.", flush=True)
+
     last_report = time.monotonic()
     start_time = time.monotonic()
 
@@ -175,16 +287,7 @@ def main() -> int:
         buf.extend(chunk)
 
         # Drain arecord stderr (ignore content)
-        if stderr_fd is not None:
-            try:
-                while True:
-                    err = os.read(stderr_fd, 4096)
-                    if not err:
-                        break
-            except BlockingIOError:
-                pass
-            except Exception:
-                pass
+        _drain_fd(stderr_fd)
 
         # Process frames
         while len(buf) >= FRAME_BYTES:

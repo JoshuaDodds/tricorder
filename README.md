@@ -36,16 +36,25 @@ and a literal description of this project’s **three core recording functions**
 
 ```mermaid
 graph TD
-    A[Microphone / Audio Device] -->|raw PCM| B[live_stream_daemon.py];
-    B -->|frames| C["TimelineRecorder (segmenter.py)"];
+    HW[USB microphone / ALSA device] -->|PCM stream| AR["arecord (hardware capture)"];
+    AR -->|raw frames| FP["Audio filter pipeline\n(FilterPipeline + AudioFilterChain)"];
+    FP -->|filtered frames| LS[live_stream_daemon.py];
+
+    LS -->|frames| C["TimelineRecorder (segmenter.py)"];
     C -->|tmp WAV| D[encode_and_store.sh];
     D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"];
 
-    B -->|frames| H["HLSTee (hls_mux.py)"];
-    H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"];
-    I -->|static files| J["web_streamer.py + webui"];
-    J -->|HTTP: dashboard + APIs| K[Browsers / Clients];
-    J -->|encoder control| H;
+    subgraph "Live streaming outputs"
+        LS -->|frames| H["HLSTee (hls_mux.py)"];
+        H -->|segments + playlist| I["HLS tmp dir (/apps/tricorder/tmp/hls)"];
+        I -->|static files| J["web_streamer.py + webui"];
+        J -->|HTTP: dashboard + APIs| K[Browsers / Clients];
+        J -->|encoder control| CTRL["HLS controller (hls_controller.py)"];
+        CTRL -->|start / stop| H;
+
+        LS -->|frames| WBR["WebRTCBufferWriter (webrtc_buffer.py)"];
+        WBR -->|frame history| J;
+    end
 
     subgraph "Dropbox ingest"
         F["Incoming file (/apps/tricorder/dropbox)"] --> G[process_dropped_file.py];
@@ -53,7 +62,7 @@ graph TD
     end
 
     subgraph "Background services"
-        SM_voice_recorder[voice-recorder.service] --> B;
+        SM_voice_recorder[voice-recorder.service] --> LS;
         SM_web_streamer[web-streamer.service] --> J;
         SM_dropbox[dropbox.path + dropbox.service] --> G;
         SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E;
@@ -62,7 +71,16 @@ graph TD
     end
 ```
 
-Waveform sidecars are produced via `lib.waveform_cache` during the encode step so the dashboard can render previews instantly. When speech transcription is enabled, `lib.transcription` stores a `.transcript.json` sidecar next to each audio file. The same encoder pipeline is reused for live capture and for files dropped into the ingest directory.
+Frames originate on the USB microphone (or other ALSA device) and are pulled across the USB bus by an `arecord` subprocess that `live_stream_daemon.py` supervises. Each PCM frame flows through the following stages:
+
+1. **Capture guardrails** – `live_stream_daemon.py` restarts `arecord` on failure and preserves frame ordering so downstream queues never see duplicates.
+2. **Filter offload** – `FilterPipeline` ships frames to a helper process that runs the configured `AudioFilterChain`. This keeps DSP work off the capture loop while still surfacing filter failures back to the supervisor.
+3. **Fan-out hub** – the daemon forwards filtered frames to two destinations:
+   - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, and coordination with `bin/encode_and_store.sh`.
+   - `HLSTee` / `WebRTCBufferWriter` so live listeners can attach without disturbing capture cadence.
+4. **Encoding + storage** – the encoder script writes Opus, waveform JSON, and optional transcript sidecars into `/apps/tricorder/recordings`.
+
+`lib.hls_controller` brokers HLS encoder lifecycles on behalf of the dashboard, while the WebRTC branch keeps a bounded history buffer that the browser drains when establishing a peer connection. Dropbox ingest feeds the same timeline recorder, guaranteeing that external files experience identical filtering, encoding, waveform generation, and transcription steps.
 
 ---
 
@@ -83,6 +101,14 @@ Waveform sidecars are produced via `lib.waveform_cache` during the encode step s
 | `main.py` | Development launcher that stops the systemd recorder, runs the live daemon in the foreground, and serves the dashboard on port 8080. |
 
 `updater.env-example` documents the environment file expected by the auto-update service (`/etc/tricorder/update.env`). Update this file whenever new updater tunables are introduced.
+
+---
+
+## Branching model
+
+Active recorder fixes graduate through the `staging-bugs-and-adjustments` branch before landing in release branches. When opening
+maintenance PRs (like the configuration comment preservation work) target `staging-bugs-and-adjustments` so reviewers see diffs
+against the latest staging state rather than the mainline release snapshot.
 
 ---
 
@@ -111,6 +137,15 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
+
+### Audio filter chain tuning
+
+Open the ☰ menu → **Recorder configuration** → **Filters** to adjust the capture-time filter chain. The controls map directly to `audio.filter_chain` in `config.yaml`; the UI saves changes back to the YAML file while preserving inline comments. Suggested workflow:
+
+- **High-pass filter** – Sweep the cutoff between 80–120&nbsp;Hz to remove HVAC/handling rumble. Stop once speech starts losing warmth; this keeps the VAD from chasing sub-bass energy.
+- **Notch filter** – Target persistent hums or whistles (50/60&nbsp;Hz and harmonics). Keep Q in the 20–40 range for surgical cuts and only enable the stages you need.
+- **Spectral noise gate** – This is the dashboard’s “noise gating” control. Start with sensitivity between 1.2–1.8 and reduction between −12 to −24&nbsp;dB; lower sensitivity numbers clamp harder. Use the **Noise update** slider (0.05–0.2) to decide how quickly the gate learns new noise and **Noise decay** (0.9–0.98) to smooth releases.
+- **Calibration helpers** – Enable the quick actions when you want the dashboard to capture a fresh noise profile or launch `room_tuner.py` for gain recalibration.
 
 Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`). Transcript JSON files live next to each recording; the dashboard automatically includes transcript excerpts in the listings and search covers both filenames and transcript text.
 
@@ -157,6 +192,9 @@ The default HLS pipeline still relies on `lib.hls_mux.HLSTee` to buffer recent a
 
 HLS artifacts live under `<tmp_dir>/hls` (defaults to `/apps/tricorder/tmp/hls`). `ffmpeg` runs with `-hls_flags delete_segments` so disk usage stays bounded.
 
+The HLS encoder no longer honours legacy `streaming.extra_ffmpeg_args` values. Live previews inherit the same `audio.filter_chain` configuration used for captured events.
+Remove any redundant `-af` flags from existing configs and manage filters through the dashboard instead.
+
 ### WebRTC (optional)
 
 Setting `streaming.mode` to `webrtc` enables a lower-latency path tailored for modern browsers. The live daemon feeds raw PCM frames into `lib.webrtc_buffer.WebRTCBufferWriter`, which persists a circular buffer (`webrtc_buffer.raw`) alongside state metadata inside `<tmp_dir>/webrtc`. The dashboard exchanges SDP offers with `lib.webrtc_stream.WebRTCManager` via:
@@ -165,6 +203,8 @@ Setting `streaming.mode` to `webrtc` enables a lower-latency path tailored for m
 - `/webrtc/offer` – accepts browser SDP offers and returns negotiated answers.
 - `/webrtc/stop` – tears down the peer connection for the provided session.
 - `/webrtc/stats` – reports listener counts, dependency status, and encoder activity.
+
+When WebRTC mode is enabled the dashboard advertises a default pair of public STUN servers so Firefox can negotiate host candidates reliably. Override `streaming.webrtc_ice_servers` in `config.yaml` to point at organisation-controlled STUN/TURN infrastructure or set it to an empty list to disable external ICE discovery entirely. Each entry may be a string URL or an object with `urls`, `username`, and `credential` fields for TURN endpoints.
 
 WebRTC support depends on [`aiortc`](https://github.com/aiortc/aiortc) and [`av`](https://github.com/PyAV-Org/PyAV); both packages ship in `requirements.txt`. When those dependencies are unavailable, `create_answer()` returns `None` and `/webrtc/stats` surfaces a helpful reason so dashboards can surface the failure. The dashboard automatically switches to WebRTC playback when the mode is enabled and falls back to HLS otherwise.
 
@@ -247,11 +287,12 @@ tricorder/
 Copy `updater.env-example` to `/etc/tricorder/update.env` (or another path referenced by the systemd unit) and set:
 
 - `TRICORDER_UPDATE_REMOTE` – Git URL to pull updates from.
-- `TRICORDER_UPDATE_BRANCH` – Branch to track (default `main`).
+- `TRICORDER_UPDATE_BRANCH` – Branch to track (default `main`). The updater always fetches this branch and resets the checkout to `origin/<branch>` before reinstalling.
 - `TRICORDER_UPDATE_DIR` – Working directory for the updater checkout (default `/apps/tricorder/repo`).
 - `TRICORDER_INSTALL_BASE` / `TRICORDER_INSTALL_SCRIPT` – Override install location or script if needed.
 - `TRICORDER_UPDATE_SERVICES` – Space-separated units to restart after an update.
 - `DEV=1` – Disable the updater and mark the install as dev mode so the systemd unit stays inactive even after a reboot.
+- `TRICORDER_DEV_MODE=1` or creating `<install_base>/.dev-mode` have the same effect as `DEV=1`. When any dev-mode flag is present the auto-update script exits immediately without cloning, resetting, or reinstalling so a developer's working tree is never touched.
 
 The timer is configured for short intervals in tests; adjust to a longer cadence in production.
 
@@ -276,23 +317,42 @@ Environment variables override YAML values. Common overrides include:
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
 - `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.
 - `EVENT_TAG_HUMAN`, `EVENT_TAG_OTHER`, `EVENT_TAG_BOTH` — override event labels without editing YAML.
+- `TRICORDER_CONFIG_TEMPLATE` — optional absolute path to a commented template used to rehydrate inline guidance if the active
+  YAML lost its comments.
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
-- `audio` – device, sample rate, frame size, gain, VAD aggressiveness.
+- `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, custom event tags.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
 - `notifications` – optional webhook/email alerts when events finish recording.
 - `streaming` – live stream transport configuration (HLS/WebRTC).
 
+The dashboard writes updates back to `config.yaml` using `ruamel.yaml` so inline documentation stays intact; the dependency ships in `requirements.txt` for both runtime and UI edits.
+
+### Idle hum mitigation
+
+`audio.filter_chain` accepts a list of notch filters executed before the segmenter sees PCM data. Each entry uses the form:
+
+```yaml
+audio:
+  filter_chain:
+    - type: "notch"
+      frequency: 60.0
+      q: 25.0
+      gain_db: -18.0
+```
+
+`room_tuner.py --analyze-noise --auto-filter print` captures a short idle sample, identifies dominant hum frequencies via FFT, and prints a ready-to-paste configuration snippet. Pass `--auto-filter update` to persist the recommendation (combine with `--dry-run` to review without writing).
+
 ---
 
 ## Tuning and utilities
 
-- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing.
+- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing. Use `--analyze-noise` to capture idle hum fingerprints and `--auto-filter` to print or persist `audio.filter_chain` notch filters.
 - `clear_logs.sh` rotates `journalctl` and wipes recordings/tmpfs directories; useful before running end-to-end tests.
 
 ### Dashboard service controls

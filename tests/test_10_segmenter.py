@@ -1,4 +1,10 @@
 # tests/test_10_segmenter.py
+import builtins
+import json
+import re
+
+import pytest
+
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 import lib.segmenter as segmenter
 
@@ -79,13 +85,18 @@ def test_adaptive_threshold_updates(monkeypatch):
 
     initial = ctrl.threshold_linear
     values = [800, 900, 1000, 1100, 1200]
+    observations = []
     for val in values:
         ctrl.observe(val, voiced=False)
+        observations.append(ctrl.pop_observation())
         fake_time[0] += 0.05
 
     assert ctrl.threshold_linear > initial
     assert ctrl.last_p95 is not None
     assert ctrl.last_candidate is not None
+    applied = [obs for obs in observations if obs]
+    assert applied, "expected at least one adaptive observation"
+    assert any(obs.updated for obs in applied)
 
 
 def test_adaptive_threshold_hysteresis(monkeypatch):
@@ -112,11 +123,17 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
 
     baseline = ctrl.threshold_linear
     ctrl.observe(520, voiced=False)
+    first_obs = ctrl.pop_observation()
     fake_time[0] += 0.05
     ctrl.observe(540, voiced=False)
+    second_obs = ctrl.pop_observation()
 
     # Change < 50% => no update
     assert ctrl.threshold_linear == baseline
+    if first_obs:
+        assert not first_obs.updated
+    if second_obs:
+        assert not second_obs.updated
 
 
 def test_adaptive_threshold_recovery(monkeypatch):
@@ -144,13 +161,16 @@ def test_adaptive_threshold_recovery(monkeypatch):
 
     for _ in range(10):
         ctrl.observe(1200, voiced=False)
+        ctrl.pop_observation()
         fake_time[0] += 0.05
 
     raised = ctrl.threshold_linear
     assert raised > 300
 
+    lowering_observations = []
     for _ in range(10):
         ctrl.observe(200, voiced=False)
+        lowering_observations.append(ctrl.pop_observation())
         fake_time[0] += 0.05
 
     lowered = ctrl.threshold_linear
@@ -162,7 +182,78 @@ def test_adaptive_threshold_recovery(monkeypatch):
     )
     expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
     assert lowered == expected_linear
+    assert any(obs and obs.updated for obs in lowering_observations)
 
+
+def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "enabled", True)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "update_interval_sec", 0.05)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "window_sec", 0.1)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "hysteresis_tolerance", 0.0)
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_path))
+    monkeypatch.setattr(segmenter, "is_voice", lambda *_: False)
+
+    logs: list[tuple[object, bool]] = []
+
+    def fake_print(message, flush=False):
+        logs.append((message, flush))
+
+    monkeypatch.setattr(builtins, "print", fake_print)
+
+    status_calls: list[dict] = []
+    original_update = segmenter.TimelineRecorder._update_capture_status
+
+    def tracking_update(self, capturing, *, event=None, last_event=None, reason=None, extra=None):
+        status_calls.append({
+            "extra": extra,
+            "threshold": self._adaptive.threshold_linear,
+        })
+        return original_update(self, capturing, event=event, last_event=last_event, reason=reason, extra=extra)
+
+    monkeypatch.setattr(segmenter.TimelineRecorder, "_update_capture_status", tracking_update)
+
+    rec = TimelineRecorder()
+    status_calls.clear()
+
+    frame = make_frame(400)
+    for idx in range(6):
+        rec.ingest(frame, idx)
+        fake_time[0] += 0.05
+
+    rec.audio_q.put(None)
+    rec.writer.join(timeout=1)
+
+    pattern = re.compile(
+        r"\[segmenter\] adaptive RMS threshold updated: prev=(\d+) new=(\d+) "
+        r"\(p95=([0-9.]+), margin=([0-9.]+), release_pctl=([0-9.]+), release=([0-9.]+)\)"
+    )
+    observation_logs = [
+        entry[0]
+        for entry in logs
+        if isinstance(entry[0], str)
+        and entry[0].startswith("[segmenter] adaptive RMS threshold updated:")
+    ]
+    assert observation_logs, "expected adaptive RMS threshold update logs"
+    matches = [pattern.match(line) for line in observation_logs]
+    assert all(matches), "adaptive RMS log entries should match expected format"
+    threshold_calls = [call for call in status_calls if call["extra"] is None]
+    assert threshold_calls, "expected capture status updates for threshold observations"
+    unique_thresholds: list[int] = []
+    for call in threshold_calls:
+        threshold = int(call["threshold"])
+        if not unique_thresholds or unique_thresholds[-1] != threshold:
+            unique_thresholds.append(threshold)
+    assert len(unique_thresholds) == len(observation_logs)
 
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)
@@ -193,3 +284,69 @@ def test_apply_gain_scales_and_clips(monkeypatch):
     neg_sample = (-3).to_bytes(2, 'little', signed=True)
     scaled_neg = segmenter.TimelineRecorder._apply_gain(neg_sample)
     assert read_sample(scaled_neg) == -2
+
+
+def test_filter_chain_metrics_emit_structured_logs(monkeypatch, tmp_path):
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_path))
+    monkeypatch.setattr(segmenter, "FILTER_CHAIN_AVG_BUDGET_MS", 0.5)
+    monkeypatch.setattr(segmenter, "FILTER_CHAIN_PEAK_BUDGET_MS", 1.0)
+    monkeypatch.setattr(segmenter, "FILTER_CHAIN_LOG_THROTTLE_SEC", 0.0)
+    monkeypatch.setattr(segmenter, "DEBUG_VERBOSE", False)
+
+    fake_perf = [0.0]
+
+    def perf_counter():
+        current = fake_perf[0]
+        fake_perf[0] += 0.005
+        return current
+
+    fake_monotonic = [0.0]
+
+    def monotonic():
+        return fake_monotonic[0]
+
+    logs: list[str] = []
+
+    def fake_print(*args, **kwargs):  # pragma: no cover - trivial passthrough
+        if not args:
+            logs.append("")
+        elif len(args) == 1:
+            logs.append(str(args[0]))
+        else:
+            logs.append(" ".join(str(arg) for arg in args))
+
+    captured_extras: list[dict | None] = []
+
+    def fake_update(self, capturing, *, event=None, last_event=None, reason=None, extra=None):
+        captured_extras.append(extra)
+        self._status_cache = {"capturing": capturing}
+
+    monkeypatch.setattr(segmenter.time, "perf_counter", perf_counter)
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr("builtins.print", fake_print)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "_update_capture_status", fake_update, raising=False)
+
+    recorder = TimelineRecorder()
+
+    fake_monotonic[0] = 10.0
+    recorder.ingest(make_frame(2000), 0)
+    fake_monotonic[0] = 11.0
+    recorder.ingest(make_frame(2000), 1)
+
+    assert recorder._filter_avg_ms >= 5.0
+    assert recorder._filter_peak_ms >= recorder._filter_avg_ms
+
+    structured_logs = [entry for entry in logs if entry.startswith("{")]
+    assert structured_logs, "filter chain overages should emit structured logs"
+    payload = json.loads(structured_logs[-1])
+    assert payload["event"] == "filter_chain_budget_exceeded"
+    assert payload["avg_ms"] >= 5.0
+    assert payload["avg_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_AVG_BUDGET_MS)
+    assert payload["peak_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_PEAK_BUDGET_MS)
+
+    extras_with_metrics = [entry for entry in captured_extras if entry and "filter_chain_avg_ms" in entry]
+    assert extras_with_metrics, "capture status updates should include filter metrics"
+    latest = extras_with_metrics[-1]
+    assert latest["filter_chain_avg_ms"] >= 5.0
+    assert latest["filter_chain_avg_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_AVG_BUDGET_MS)
+    assert latest["filter_chain_peak_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_PEAK_BUDGET_MS)

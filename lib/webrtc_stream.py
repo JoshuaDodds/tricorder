@@ -9,12 +9,19 @@ from fractions import Fraction
 from typing import Dict, Optional, TYPE_CHECKING
 
 try:
-    from aiortc import RTCPeerConnection as _RTCPeerConnection, RTCSessionDescription as _RTCSessionDescription
+    from aiortc import (
+        RTCConfiguration as _RTCConfiguration,
+        RTCPeerConnection as _RTCPeerConnection,
+        RTCIceServer as _RTCIceServer,
+        RTCSessionDescription as _RTCSessionDescription,
+    )
     from aiortc.mediastreams import MediaStreamTrack as _MediaStreamTrack
     import av as _av
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised in environments without aiortc
+except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - exercised in environments without aiortc
     _AIORTC_IMPORT_ERROR: Exception | None = exc
+    _RTCConfiguration = None
     _RTCPeerConnection = None
+    _RTCIceServer = None
     _RTCSessionDescription = None
     _MediaStreamTrack = None
     _av = None
@@ -24,10 +31,12 @@ else:  # pragma: no cover - import paths tested in integration environments
 from .webrtc_buffer import WebRTCBufferConsumer
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
-    from aiortc import RTCPeerConnection, RTCSessionDescription
+    from aiortc import RTCConfiguration, RTCPeerConnection, RTCIceServer, RTCSessionDescription
 else:
     RTCPeerConnection = _RTCPeerConnection  # type: ignore[assignment]
     RTCSessionDescription = _RTCSessionDescription  # type: ignore[assignment]
+    RTCConfiguration = _RTCConfiguration  # type: ignore[assignment]
+    RTCIceServer = _RTCIceServer  # type: ignore[assignment]
 
 
 class _UnavailableSessionDescription:
@@ -114,15 +123,18 @@ if _AIORTC_IMPORT_ERROR is None:
             frame_ms: int,
             frame_bytes: int,
             history_seconds: float,
+            ice_servers: Optional[list[dict[str, object]]] = None,
         ) -> None:
             self._buffer_dir = buffer_dir
             self._sample_rate = int(sample_rate)
             self._frame_ms = int(frame_ms)
             self._frame_bytes = int(frame_bytes)
             self._buffer_size = max(int(history_seconds * (1000.0 / self._frame_ms)), 2) * self._frame_bytes
+            self._log = logging.getLogger("webrtc_manager")
+            self._ice_servers = list(ice_servers or [])
+            self._configuration = self._build_configuration()
             self._sessions: Dict[str, WebRTCSession] = {}
             self._lock = asyncio.Lock()
-            self._log = logging.getLogger("webrtc_manager")
 
         def mark_started(self, session_id: Optional[str]) -> None:
             _ = session_id
@@ -177,7 +189,7 @@ if _AIORTC_IMPORT_ERROR is None:
                 frame_bytes=self._frame_bytes,
             )
 
-            pc = RTCPeerConnection()
+            pc = RTCPeerConnection(configuration=self._configuration)
             pc.addTrack(track)
 
             done = asyncio.get_running_loop().create_future()
@@ -217,6 +229,28 @@ if _AIORTC_IMPORT_ERROR is None:
 
             return pc.localDescription
 
+        def _build_configuration(self) -> Optional[RTCConfiguration]:
+            if not self._ice_servers:
+                return None
+
+            ice_servers: list[RTCIceServer] = []
+            for entry in self._ice_servers:
+                if isinstance(entry, RTCIceServer):
+                    ice_servers.append(entry)
+                    continue
+                if not isinstance(entry, dict):
+                    self._log.warning("Ignoring invalid ICE server entry: %r", entry)
+                    continue
+                try:
+                    ice_servers.append(RTCIceServer(**entry))
+                except (TypeError, ValueError) as exc:
+                    self._log.warning("Failed to parse ICE server config %r: %s", entry, exc)
+
+            if not ice_servers:
+                return None
+
+            return RTCConfiguration(iceServers=ice_servers)
+
 else:
     class WebRTCManager:
         def __init__(
@@ -227,6 +261,7 @@ else:
             frame_ms: int,
             frame_bytes: int,
             history_seconds: float,
+            ice_servers: Optional[list[dict[str, object]]] = None,
         ) -> None:
             self._buffer_dir = buffer_dir
             self._sample_rate = int(sample_rate)

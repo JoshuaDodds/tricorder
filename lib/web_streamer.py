@@ -29,6 +29,7 @@ Endpoints:
 import argparse
 import asyncio
 import contextlib
+import copy
 import functools
 import json
 import logging
@@ -45,13 +46,118 @@ import wave
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
 MAX_RECORDINGS_LIMIT = 1000
+RECORDINGS_TIME_RANGE_SECONDS = {
+    "1h": 60 * 60,
+    "2h": 2 * 60 * 60,
+    "4h": 4 * 60 * 60,
+    "8h": 8 * 60 * 60,
+    "12h": 12 * 60 * 60,
+    "1d": 24 * 60 * 60,
+}
 
 ARCHIVAL_BACKENDS = {"network_share", "rsync"}
+
+CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
+
+DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
+    {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
+]
+
+
+def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
+    """Normalize ICE server definitions into the WebRTC configuration format."""
+
+    def _clone_defaults() -> list[dict[str, object]]:
+        return [
+            {
+                key: (
+                    list(value)
+                    if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+                    else value
+                )
+                for key, value in entry.items()
+            }
+            for entry in DEFAULT_WEBRTC_ICE_SERVERS
+        ]
+
+    def _normalize_urls(value: object) -> list[str]:
+        urls: list[str] = []
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate:
+                urls.append(candidate)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for item in value:
+                if isinstance(item, str):
+                    candidate = item.strip()
+                    if candidate:
+                        urls.append(candidate)
+        return urls
+
+    if raw is None:
+        return _clone_defaults()
+
+    entries: list[dict[str, object]] = []
+
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        for part in parts:
+            urls = _normalize_urls(part)
+            if urls:
+                entries.append({"urls": urls})
+        return entries if entries else _clone_defaults()
+
+    if isinstance(raw, Mapping):
+        urls = _normalize_urls(raw.get("urls"))
+        if not urls:
+            return _clone_defaults()
+        server: dict[str, object] = {"urls": urls}
+        username = raw.get("username")
+        if isinstance(username, str):
+            username = username.strip()
+            if username:
+                server["username"] = username
+        credential = raw.get("credential")
+        if isinstance(credential, str):
+            credential = credential.strip()
+            if credential:
+                server["credential"] = credential
+        return [server]
+
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        items = list(raw)
+        if not items:
+            return []
+        for item in items:
+            if isinstance(item, str):
+                urls = _normalize_urls(item)
+                if urls:
+                    entries.append({"urls": urls})
+                continue
+            if isinstance(item, dict):
+                urls = _normalize_urls(item.get("urls"))
+                if not urls:
+                    continue
+                server: dict[str, object] = {"urls": urls}
+                username = item.get("username")
+                if isinstance(username, str):
+                    username = username.strip()
+                    if username:
+                        server["username"] = username
+                credential = item.get("credential")
+                if isinstance(credential, str):
+                    credential = credential.strip()
+                    if credential:
+                        server["credential"] = credential
+                entries.append(server)
+        return entries if entries else _clone_defaults()
+
+    return _clone_defaults()
 
 
 def _archival_defaults() -> dict[str, Any]:
@@ -269,6 +375,33 @@ _AUDIO_SAMPLE_RATES = {16000, 32000, 48000}
 _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
 _TRANSCRIPTION_ENGINES = {"vosk"}
+AUDIO_FILTER_STAGE_SPECS: dict[str, dict[str, tuple[float | None, float | None]]] = {
+    "highpass": {
+        "cutoff_hz": (20.0, 2000.0),
+    },
+    "notch": {
+        "freq_hz": (20.0, 20000.0),
+        "quality": (0.1, 100.0),
+    },
+    "spectral_gate": {
+        "sensitivity": (0.1, 4.0),
+        "reduction_db": (-60.0, 0.0),
+        "noise_update": (0.0, 1.0),
+        "noise_decay": (0.0, 1.0),
+    },
+}
+
+AUDIO_FILTER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "highpass": {"enabled": False, "cutoff_hz": 90.0},
+    "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
+    "spectral_gate": {
+        "enabled": False,
+        "sensitivity": 1.5,
+        "reduction_db": -18.0,
+        "noise_update": 0.1,
+        "noise_decay": 0.95,
+    },
+}
 
 
 def _audio_defaults() -> dict[str, Any]:
@@ -278,7 +411,22 @@ def _audio_defaults() -> dict[str, Any]:
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
+        "calibration": {
+            "auto_noise_profile": False,
+            "auto_gain": False,
+        },
     }
+
+
+def _copy_filter_stage_sequence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    copied: list[dict[str, Any]] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            copied.append({key: copy.deepcopy(val) for key, val in entry.items()})
+    return copied
 
 
 def _segmenter_defaults() -> dict[str, Any]:
@@ -372,6 +520,72 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         vad = raw.get("vad_aggressiveness")
         if isinstance(vad, (int, float)) and not isinstance(vad, bool):
             result["vad_aggressiveness"] = int(vad)
+
+        filters = raw.get("filter_chain")
+        if isinstance(filters, dict):
+            stages = result.get("filter_chain")
+            if not isinstance(stages, dict):
+                stages = {}
+            else:
+                stages = copy.deepcopy(stages)
+            for key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
+                target = stages.get(key)
+                if not isinstance(target, dict):
+                    defaults = AUDIO_FILTER_DEFAULTS.get(key)
+                    target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
+                    stages[key] = target
+                payload = filters.get(key)
+                if not isinstance(payload, dict):
+                    continue
+                if "enabled" in payload:
+                    target["enabled"] = _bool_from_any(payload.get("enabled"))
+                for field_name, (min_value, max_value) in field_specs.items():
+                    if field_name not in payload:
+                        continue
+                    value = payload.get(field_name)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        numeric = float(value)
+                    else:
+                        try:
+                            numeric = float(value)
+                        except (TypeError, ValueError):
+                            continue
+                    if min_value is not None and numeric < min_value:
+                        numeric = float(min_value)
+                    if max_value is not None and numeric > max_value:
+                        numeric = float(max_value)
+                    target[field_name] = numeric
+            extra_filters = filters.get("filters")
+            if isinstance(extra_filters, Sequence) and not isinstance(extra_filters, (str, bytes)):
+                copied = _copy_filter_stage_sequence(extra_filters)
+                if copied:
+                    stages["filters"] = copied
+                else:
+                    stages.pop("filters", None)
+            result["filter_chain"] = stages
+        elif isinstance(filters, Sequence) and not isinstance(filters, (str, bytes)):
+            stages = result.get("filter_chain")
+            if not isinstance(stages, dict):
+                stages = {}
+            else:
+                stages = copy.deepcopy(stages)
+            copied = _copy_filter_stage_sequence(filters)
+            if copied:
+                stages["filters"] = copied
+            else:
+                stages.pop("filters", None)
+            result["filter_chain"] = stages
+
+        calibration = raw.get("calibration")
+        if isinstance(calibration, dict):
+            target = result.get("calibration")
+            if not isinstance(target, dict):
+                target = {}
+                result["calibration"] = target
+            if "auto_noise_profile" in calibration:
+                target["auto_noise_profile"] = _bool_from_any(calibration.get("auto_noise_profile"))
+            if "auto_gain" in calibration:
+                target["auto_gain"] = _bool_from_any(calibration.get("auto_gain"))
     return result
 
 
@@ -690,6 +904,25 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(payload, dict):
         return normalized, ["Request body must be a JSON object"]
 
+    existing_filters: list[dict[str, Any]] = []
+    existing_stage_configs: dict[str, dict[str, Any]] = {}
+    try:
+        cfg_snapshot = get_cfg()
+        current_audio = cfg_snapshot.get("audio", {}) if isinstance(cfg_snapshot, dict) else {}
+        current_filters = current_audio.get("filter_chain") if isinstance(current_audio, dict) else None
+        if isinstance(current_filters, dict):
+            existing_filters = _copy_filter_stage_sequence(current_filters.get("filters"))
+            for stage_key in AUDIO_FILTER_STAGE_SPECS:
+                stage_cfg = current_filters.get(stage_key)
+                if isinstance(stage_cfg, dict):
+                    existing_stage_configs[stage_key] = {
+                        key: copy.deepcopy(val) for key, val in stage_cfg.items()
+                    }
+        elif isinstance(current_filters, Sequence) and not isinstance(current_filters, (str, bytes)):
+            existing_filters = _copy_filter_stage_sequence(current_filters)
+    except Exception:
+        existing_filters = []
+
     device = payload.get("device")
     if isinstance(device, str) and device.strip():
         normalized["device"] = device.strip()
@@ -727,6 +960,86 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     )
     if vad is not None:
         normalized["vad_aggressiveness"] = vad
+
+    filters_payload = payload.get("filter_chain")
+    stages = normalized.get("filter_chain")
+    if isinstance(stages, dict) and existing_stage_configs:
+        for stage_key, stage_cfg in existing_stage_configs.items():
+            defaults = stages.get(stage_key)
+            if isinstance(defaults, dict):
+                merged = {key: copy.deepcopy(val) for key, val in defaults.items()}
+                merged.update(stage_cfg)
+                stages[stage_key] = merged
+            else:
+                stages[stage_key] = {
+                    key: copy.deepcopy(val) for key, val in stage_cfg.items()
+                }
+    if isinstance(filters_payload, dict) or filters_payload is None:
+        if filters_payload is None:
+            filters_payload = {}
+        stages = normalized.get("filter_chain")
+        if not isinstance(stages, dict):
+            stages = {}
+            normalized["filter_chain"] = stages
+        for stage_key, field_specs in AUDIO_FILTER_STAGE_SPECS.items():
+            stage_payload = filters_payload.get(stage_key)
+            if stage_payload is None:
+                continue
+            if not isinstance(stage_payload, dict):
+                errors.append(f"filter_chain.{stage_key} must be an object")
+                continue
+            target = stages.get(stage_key)
+            if not isinstance(target, dict):
+                defaults = AUDIO_FILTER_DEFAULTS.get(stage_key)
+                target = copy.deepcopy(defaults) if isinstance(defaults, dict) else {}
+                stages[stage_key] = target
+            if "enabled" in stage_payload:
+                target["enabled"] = _bool_from_any(stage_payload.get("enabled"))
+            for field_name, (min_value, max_value) in field_specs.items():
+                if field_name not in stage_payload:
+                    continue
+                candidate = _coerce_float(
+                    stage_payload.get(field_name),
+                    f"filter_chain.{stage_key}.{field_name}",
+                    errors,
+                    min_value=min_value,
+                    max_value=max_value,
+                )
+                if candidate is not None:
+                    target[field_name] = candidate
+        filters_list = filters_payload.get("filters") if isinstance(filters_payload, dict) else None
+        if isinstance(filters_list, Sequence) and not isinstance(filters_list, (str, bytes)):
+            stages["filters"] = _copy_filter_stage_sequence(filters_list)
+        elif "filters" in filters_payload:
+            # filters key present but not a proper sequence
+            errors.append("filter_chain.filters must be an array of objects")
+        elif existing_filters:
+            stages["filters"] = _copy_filter_stage_sequence(existing_filters)
+    elif isinstance(filters_payload, Sequence) and not isinstance(filters_payload, (str, bytes)):
+        stages = normalized.get("filter_chain")
+        if not isinstance(stages, dict):
+            stages = {}
+            normalized["filter_chain"] = stages
+        stages["filters"] = _copy_filter_stage_sequence(filters_payload)
+    else:
+        errors.append("filter_chain must be an object or array")
+
+    calibration_payload = payload.get("calibration")
+    if calibration_payload is None:
+        calibration_payload = {}
+    if isinstance(calibration_payload, dict):
+        target = normalized.get("calibration")
+        if not isinstance(target, dict):
+            target = {}
+            normalized["calibration"] = target
+        if "auto_noise_profile" in calibration_payload:
+            target["auto_noise_profile"] = _bool_from_any(
+                calibration_payload.get("auto_noise_profile")
+            )
+        if "auto_gain" in calibration_payload:
+            target["auto_gain"] = _bool_from_any(calibration_payload.get("auto_gain"))
+    else:
+        errors.append("calibration must be an object")
 
     return normalized, errors
 
@@ -1582,6 +1895,20 @@ def _enqueue_service_actions(
     loop.create_task(_runner())
 
 
+def _kick_auto_restart_units(
+    auto_restart_units: Iterable[str], *, skip: Iterable[str] = (), delay: float = 1.0
+) -> None:
+    skip_set = {str(item or "").strip() for item in skip}
+    if not auto_restart_units:
+        return
+
+    for candidate in auto_restart_units:
+        unit = str(candidate or "").strip()
+        if not unit or unit in skip_set:
+            continue
+        _enqueue_service_actions(unit, ["start"], delay=delay)
+
+
 def build_app() -> web.Application:
     log = logging.getLogger("web_streamer")
     cfg = get_cfg()
@@ -1625,6 +1952,11 @@ def build_app() -> web.Application:
     streaming_cfg = cfg.get("streaming", {})
     stream_mode_raw = str(streaming_cfg.get("mode", "hls")).strip().lower()
     stream_mode = stream_mode_raw if stream_mode_raw in {"hls", "webrtc"} else "hls"
+    webrtc_ice_servers: list[dict[str, object]] = []
+    if stream_mode == "webrtc":
+        webrtc_ice_servers = _normalize_webrtc_ice_servers(
+            streaming_cfg.get("webrtc_ice_servers")
+        )
     app[STREAM_MODE_KEY] = stream_mode
 
     hls_dir: str | None = None
@@ -1651,6 +1983,7 @@ def build_app() -> web.Application:
             frame_ms=frame_ms,
             frame_bytes=frame_bytes,
             history_seconds=history_seconds,
+            ice_servers=webrtc_ice_servers,
         )
     app[WEBRTC_MANAGER_KEY] = webrtc_manager
     recordings_root = Path(cfg["paths"]["recordings_dir"])
@@ -2341,6 +2674,7 @@ def build_app() -> web.Application:
             page_title="Tricorder Dashboard",
             api_base=dashboard_api_base,
             stream_mode=stream_mode,
+            webrtc_ice_servers=webrtc_ice_servers,
         )
         return web.Response(text=html, content_type="text/html")
 
@@ -2448,6 +2782,22 @@ def build_app() -> web.Application:
             elif normalized in {"0", "false", "no", "off", "stopped"}:
                 status["service_running"] = False
 
+        adaptive_threshold = raw.get("adaptive_rms_threshold")
+        if isinstance(adaptive_threshold, (int, float)) and math.isfinite(adaptive_threshold):
+            status["adaptive_rms_threshold"] = int(adaptive_threshold)
+
+        adaptive_enabled_raw = raw.get("adaptive_rms_enabled")
+        if isinstance(adaptive_enabled_raw, bool):
+            status["adaptive_rms_enabled"] = adaptive_enabled_raw
+        elif isinstance(adaptive_enabled_raw, (int, float)):
+            status["adaptive_rms_enabled"] = bool(adaptive_enabled_raw)
+        elif isinstance(adaptive_enabled_raw, str):
+            normalized = adaptive_enabled_raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                status["adaptive_rms_enabled"] = True
+            elif normalized in {"0", "false", "no", "off", "disabled"}:
+                status["adaptive_rms_enabled"] = False
+
         duration_seconds = raw.get("event_duration_seconds")
         if isinstance(duration_seconds, (int, float)) and math.isfinite(duration_seconds):
             status["event_duration_seconds"] = max(0.0, float(duration_seconds))
@@ -2455,6 +2805,22 @@ def build_app() -> web.Application:
         event_size_bytes = raw.get("event_size_bytes")
         if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
             status["event_size_bytes"] = max(0, int(event_size_bytes))
+
+        avg_ms = raw.get("filter_chain_avg_ms")
+        if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):
+            status["filter_chain_avg_ms"] = float(avg_ms)
+
+        peak_ms = raw.get("filter_chain_peak_ms")
+        if isinstance(peak_ms, (int, float)) and math.isfinite(peak_ms):
+            status["filter_chain_peak_ms"] = float(peak_ms)
+
+        avg_budget = raw.get("filter_chain_avg_budget_ms")
+        if isinstance(avg_budget, (int, float)) and math.isfinite(avg_budget):
+            status["filter_chain_avg_budget_ms"] = float(avg_budget)
+
+        peak_budget = raw.get("filter_chain_peak_budget_ms")
+        if isinstance(peak_budget, (int, float)) and math.isfinite(peak_budget):
+            status["filter_chain_peak_budget_ms"] = float(peak_budget)
 
         encoding_raw = raw.get("encoding")
         if isinstance(encoding_raw, dict):
@@ -2516,12 +2882,45 @@ def build_app() -> web.Application:
             if encoding.get("pending") or encoding.get("active"):
                 status["encoding"] = encoding
 
+        now = time.time()
+        updated_at_value = status.get("updated_at")
+        stale = True
+        if isinstance(updated_at_value, (int, float)) and math.isfinite(updated_at_value):
+            age = now - updated_at_value
+            if math.isfinite(age) and 0 <= age <= CAPTURE_STATUS_STALE_AFTER_SECONDS:
+                stale = False
+        else:
+            status["updated_at"] = None
+
+        service_running = bool(status.get("service_running", False))
+
+        if stale or not service_running:
+            status["capturing"] = False
+            status.pop("event", None)
+            status.pop("event_duration_seconds", None)
+            status.pop("event_size_bytes", None)
+            status.pop("encoding", None)
+            status["service_running"] = False
+            if not status.get("last_stop_reason"):
+                status["last_stop_reason"] = (
+                    "status stale" if stale else "service offline"
+                )
+        else:
+            status["service_running"] = True
+
         return status
 
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
         query = request.rel_url.query
 
         search = query.get("search", "").strip().lower()
+
+        raw_time_range = query.get("time_range", "").strip().lower()
+        time_range_value = ""
+        cutoff_epoch: float | None = None
+        if raw_time_range in RECORDINGS_TIME_RANGE_SECONDS:
+            time_range_value = raw_time_range
+            cutoff_epoch = time.time() - RECORDINGS_TIME_RANGE_SECONDS[raw_time_range]
 
         def _collect(key: str) -> set[str]:
             collected: set[str] = set()
@@ -2580,6 +2979,17 @@ def build_app() -> web.Application:
                 continue
             if ext_filter and ext.lower() not in ext_filter:
                 continue
+            if cutoff_epoch is not None:
+                record_epoch: float | None = None
+                start_epoch = item.get("start_epoch")
+                if isinstance(start_epoch, (int, float)) and math.isfinite(start_epoch):
+                    record_epoch = float(start_epoch)
+                else:
+                    modified_value = item.get("modified")
+                    if isinstance(modified_value, (int, float)) and math.isfinite(modified_value):
+                        record_epoch = float(modified_value)
+                if record_epoch is not None and record_epoch < cutoff_epoch:
+                    continue
 
             filtered.append(item)
             try:
@@ -2651,6 +3061,7 @@ def build_app() -> web.Application:
             "total_size_bytes": total_size,
             "offset": offset,
             "limit": limit,
+            "time_range": time_range_value,
         }
 
     async def recordings_api(request: web.Request) -> web.Response:
@@ -3294,13 +3705,149 @@ def build_app() -> web.Application:
             canonical_fn=_canonical_dashboard_settings,
         )
 
+    cpu_last_sample: tuple[int, int] | None = None
+    cpu_last_percent: float | None = None
+    cpu_core_count = max(os.cpu_count() or 1, 1)
+
+    def _read_cpu_sample() -> tuple[int, int] | None:
+        try:
+            with open("/proc/stat", "r", encoding="utf-8") as handle:
+                line = handle.readline()
+        except OSError:
+            return None
+
+        parts = line.split()
+        if not parts or parts[0] != "cpu":
+            return None
+
+        try:
+            values = [int(part) for part in parts[1:8]]
+        except ValueError:
+            return None
+
+        if not values:
+            return None
+
+        idle = values[3] if len(values) >= 4 else 0
+        iowait = values[4] if len(values) >= 5 else 0
+        total = sum(values)
+        return total, idle + iowait
+
+    def _read_memory_stats() -> dict[str, float | int | None] | None:
+        total_kib: int | None = None
+        available_kib: int | None = None
+        free_kib: int | None = None
+
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            total_kib = int(parts[1])
+                    elif line.startswith("MemAvailable:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            available_kib = int(parts[1])
+                    elif line.startswith("MemFree:") and free_kib is None:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            free_kib = int(parts[1])
+
+                    if total_kib is not None and available_kib is not None:
+                        break
+        except (OSError, ValueError):
+            return None
+
+        if total_kib is None or total_kib <= 0:
+            return None
+
+        if available_kib is None:
+            available_kib = free_kib
+
+        total_bytes = total_kib * 1024
+        available_bytes = available_kib * 1024 if available_kib is not None else None
+        used_bytes = None
+        percent = None
+
+        if available_bytes is not None:
+            used_bytes = max(total_bytes - available_bytes, 0)
+            if total_bytes > 0:
+                percent = (used_bytes / total_bytes) * 100.0
+
+        return {
+            "total_bytes": total_bytes,
+            "available_bytes": available_bytes,
+            "used_bytes": used_bytes,
+            "percent": percent,
+        }
+
     async def system_health(_: web.Request) -> web.Response:
+        nonlocal cpu_last_sample, cpu_last_percent
+
         state = sd_card_health.load_state()
-        payload = {
+        payload: dict[str, Any] = {
             "generated_at": time.time(),
             "sd_card": sd_card_health.state_summary(state),
         }
-        return web.json_response(payload)
+
+        cpu_percent: float | None = None
+        cpu_load_1m: float | None = None
+        cpu_sample = _read_cpu_sample()
+
+        if cpu_sample is not None:
+            total, idle_all = cpu_sample
+            if cpu_last_sample is not None:
+                last_total, last_idle = cpu_last_sample
+                total_delta = total - last_total
+                idle_delta = idle_all - last_idle
+                busy_delta = total_delta - idle_delta
+                if total_delta > 0:
+                    cpu_percent = max(0.0, min(100.0, (busy_delta / total_delta) * 100.0))
+
+            cpu_last_sample = cpu_sample
+            if cpu_percent is not None:
+                cpu_last_percent = cpu_percent
+
+        try:
+            load_1m, _load_5m, _load_15m = os.getloadavg()
+            cpu_load_1m = float(load_1m)
+        except (AttributeError, OSError):
+            cpu_load_1m = None
+
+        if cpu_percent is None:
+            if cpu_last_percent is not None:
+                cpu_percent = cpu_last_percent
+            elif cpu_load_1m is not None and cpu_core_count > 0:
+                cpu_percent = max(0.0, min(100.0, (cpu_load_1m / cpu_core_count) * 100.0))
+
+        memory_stats = _read_memory_stats()
+        memory_percent = None
+        memory_total = None
+        memory_available = None
+        memory_used = None
+
+        if memory_stats is not None:
+            memory_percent = memory_stats.get("percent")
+            memory_total = memory_stats.get("total_bytes")
+            memory_available = memory_stats.get("available_bytes")
+            memory_used = memory_stats.get("used_bytes")
+
+        payload["resources"] = {
+            "cpu": {
+                "percent": cpu_percent,
+                "load_1m": cpu_load_1m,
+                "cores": cpu_core_count,
+            },
+            "memory": {
+                "percent": memory_percent,
+                "total_bytes": memory_total,
+                "available_bytes": memory_available,
+                "used_bytes": memory_used,
+            },
+        }
+
+        return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
     async def services_list(request: web.Request) -> web.Response:
         entries = request.app.get(SERVICE_ENTRIES_KEY, [])
@@ -3392,6 +3939,9 @@ def build_app() -> web.Application:
                 response["message"] = "Reload unsupported; restarted instead."
             elif message:
                 response["message"] = message
+
+        if executed_action in {"stop", "restart"}:
+            _kick_auto_restart_units(auto_restart, skip={unit})
 
         status = await _collect_service_state(entry_map[unit], auto_restart)
         response["status"] = status
