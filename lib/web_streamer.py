@@ -34,6 +34,7 @@ import asyncio
 import contextlib
 import copy
 import functools
+import io
 import json
 import logging
 import math
@@ -74,6 +75,8 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
+STREAMING_POLL_INTERVAL_SECONDS = 0.25
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
@@ -1469,6 +1472,16 @@ def _probe_duration(path: Path, stat: os.stat_result) -> float | None:
     return _probe_duration_cached(str(path), int(mtime_ns), size_bytes)
 
 
+def _path_is_partial(path: Path) -> bool:
+    """Return True when the file carries the `.partial` sentinel suffix."""
+
+    try:
+        suffixes = path.suffixes
+    except AttributeError:
+        return False
+    return any(suffix.lower() == ".partial" for suffix in suffixes)
+
+
 def _scan_recordings_worker(
     recordings_root: Path, allowed_ext: tuple[str, ...]
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
@@ -2835,6 +2848,28 @@ def build_app() -> web.Application:
 
     capture_status_path = os.path.join(cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json")
 
+    def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
+        if not isinstance(raw, str) or not raw.strip():
+            return None, None
+        candidate = Path(raw.strip())
+        try:
+            resolved = candidate.resolve(strict=False)
+        except (OSError, RuntimeError):
+            resolved = candidate
+
+        rel_candidate: Path | None = None
+        base = recordings_root_resolved or recordings_root
+        try:
+            rel_candidate = resolved.relative_to(base)
+        except ValueError:
+            try:
+                rel_candidate = candidate.relative_to(base)
+            except ValueError:
+                rel_candidate = None
+
+        rel_path = rel_candidate.as_posix() if rel_candidate is not None else None
+        return str(resolved), rel_path
+
     def _read_capture_status() -> dict[str, object]:
         try:
             with open(capture_status_path, "r", encoding="utf-8") as handle:
@@ -2873,7 +2908,11 @@ def build_app() -> web.Application:
                 event["trigger_rms"] = float(trigger_rms)
             partial_path = event_payload.get("partial_recording_path")
             if isinstance(partial_path, str) and partial_path:
-                event["partial_recording_path"] = partial_path
+                normalized_path, rel_path = _normalize_partial_path(partial_path)
+                if normalized_path:
+                    event["partial_recording_path"] = normalized_path
+                if rel_path:
+                    event["partial_recording_rel_path"] = rel_path
             in_progress = event_payload.get("in_progress")
             if isinstance(in_progress, bool):
                 event["in_progress"] = in_progress
@@ -2968,7 +3007,11 @@ def build_app() -> web.Application:
 
         partial_recording_path = raw.get("partial_recording_path")
         if isinstance(partial_recording_path, str) and partial_recording_path:
-            status["partial_recording_path"] = partial_recording_path
+            normalized_path, rel_path = _normalize_partial_path(partial_recording_path)
+            if normalized_path:
+                status["partial_recording_path"] = normalized_path
+            if rel_path:
+                status["partial_recording_rel_path"] = rel_path
 
         streaming_format = raw.get("streaming_container_format")
         if isinstance(streaming_format, str) and streaming_format:
@@ -3301,6 +3344,10 @@ def build_app() -> web.Application:
 
             if not resolved.is_file():
                 errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            if _path_is_partial(resolved):
+                errors.append({"item": rel, "error": "recording in progress"})
                 continue
 
             if recycle_root_resolved is not None and resolved.is_relative_to(recycle_root_resolved):
@@ -3797,6 +3844,9 @@ def build_app() -> web.Application:
         if not source_resolved.is_file():
             raise web.HTTPNotFound(reason="recording not found")
 
+        if _path_is_partial(source_resolved):
+            raise web.HTTPConflict(reason="recording in progress")
+
         new_name = raw_name.strip()
         if new_name in {".", ".."}:
             raise web.HTTPBadRequest(reason="name is invalid")
@@ -4077,6 +4127,63 @@ def build_app() -> web.Application:
 
         return web.json_response(payload)
 
+    async def _stream_partial_file(
+        request: web.Request, resolved: Path
+    ) -> web.StreamResponse:
+        loop = asyncio.get_running_loop()
+        deadline = time.monotonic() + STREAMING_OPEN_TIMEOUT_SECONDS
+        handle: io.BufferedReader | None = None
+
+        while handle is None:
+            try:
+                handle = resolved.open("rb", buffering=0)
+            except FileNotFoundError as exc:
+                if time.monotonic() >= deadline:
+                    raise web.HTTPNotFound() from exc
+                await asyncio.sleep(0.1)
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise web.HTTPServiceUnavailable(text=str(exc)) from exc
+                await asyncio.sleep(0.1)
+
+        suffixes = resolved.suffixes
+        container = suffixes[-1].lower() if suffixes else ""
+        if container == ".webm":
+            content_type = "audio/webm"
+        else:
+            content_type = "audio/ogg"
+
+        response = web.StreamResponse(status=200)
+        response.headers["Content-Type"] = content_type
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="{resolved.name}"'
+        )
+        await response.prepare(request)
+
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, handle.read, 32768)
+                if chunk:
+                    try:
+                        await response.write(chunk)
+                    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                        break
+                    continue
+
+                if not resolved.exists():
+                    break
+                await asyncio.sleep(STREAMING_POLL_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                handle.close()
+            with contextlib.suppress(Exception):
+                await response.write_eof()
+
+        return response
+
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
         if not rel:
@@ -4095,6 +4202,9 @@ def build_app() -> web.Application:
 
         if not resolved.is_file():
             raise web.HTTPNotFound()
+
+        if _path_is_partial(resolved):
+            return await _stream_partial_file(request, resolved)
 
         response = web.FileResponse(resolved)
         disposition = "attachment" if request.rel_url.query.get("download") == "1" else "inline"

@@ -272,6 +272,94 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
     asyncio.run(runner())
 
 
+def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
+    async def runner():
+        now = 1_700_060_000.0
+        monkeypatch.setattr(web_streamer.time, "time", lambda: now)
+        status_path = Path(os.environ["TMP_DIR"]) / "segmenter_status.json"
+
+        day_dir = dashboard_env / "20240105"
+        day_dir.mkdir()
+        partial_path = day_dir / "alpha.partial.opus"
+        partial_path.write_bytes(b"header")
+
+        payload = {
+            "capturing": True,
+            "service_running": True,
+            "updated_at": now,
+            "event_size_bytes": 5120,
+            "event_duration_seconds": 4.0,
+            "partial_recording_path": str(partial_path),
+            "streaming_container_format": "opus",
+            "event": {
+                "base_name": "alpha",
+                "in_progress": True,
+                "started_epoch": now - 2,
+                "started_at": "12-00-00",
+                "partial_recording_path": str(partial_path),
+                "streaming_container_format": "opus",
+            },
+        }
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings")
+            assert resp.status == 200
+            data = await resp.json()
+            capture_status = data.get("capture_status", {})
+            rel_path = capture_status.get("partial_recording_rel_path")
+            assert rel_path == "20240105/alpha.partial.opus"
+            event = capture_status.get("event", {})
+            assert event.get("partial_recording_rel_path") == rel_path
+            assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_streams_partial_until_finalized(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240106"
+        day_dir.mkdir()
+        partial_path = day_dir / "beta.partial.opus"
+        final_path = day_dir / "beta.opus"
+        partial_path.write_bytes(b"HEAD")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        async def append_and_finalize():
+            await asyncio.sleep(0.05)
+            with partial_path.open("ab") as handle:
+                handle.write(b"BODY1")
+                handle.flush()
+            await asyncio.sleep(0.05)
+            with partial_path.open("ab") as handle:
+                handle.write(b"BODY2")
+                handle.flush()
+            await asyncio.sleep(0.05)
+            os.replace(partial_path, final_path)
+
+        try:
+            rel = partial_path.relative_to(dashboard_env).as_posix()
+            resp = await client.get(f"/recordings/{rel}")
+            append_task = asyncio.create_task(append_and_finalize())
+            body = await resp.read()
+            await append_task
+            assert body == b"HEADBODY1BODY2"
+            assert resp.headers.get("Content-Type") == "audio/ogg"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_archival_settings_round_trip(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
