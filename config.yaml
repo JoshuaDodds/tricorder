@@ -159,6 +159,14 @@ segmenter:
   # Typical: 65536–262144 (64–256 KB).
   flush_threshold_bytes: 131072
 
+  # Enable experimental streaming Opus encoding that writes a .partial.opus file while
+  # recording is still in progress. The existing post-event encoder remains the fallback
+  # and still handles waveform/transcription generation. Requires libopus via ffmpeg.
+  streaming_encode: false
+
+  # Container format for streaming output. Supported values: "opus" (default) or "webm".
+  streaming_encode_container: "opus"
+
   # Max queued frames before backpressure/drop (safety). With 20ms @ 48k mono: 512 ≈ 10.24s of audio.
   # Keep modest to avoid memory spikes. Typical: 256–1024.
   max_queue_frames: 512
