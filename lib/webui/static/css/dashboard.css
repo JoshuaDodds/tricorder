@@ -619,43 +619,6 @@ body[data-theme="light"] .app-menu-toggle {
   }
 }
 
-.refresh-indicator {
-  display: none;
-  align-items: center;
-  gap: 0.45rem;
-  min-height: 2rem;
-  pointer-events: none;
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
-  white-space: nowrap;
-  flex: 0 0 auto;
-}
-
-.refresh-indicator[data-visible="true"] {
-  display: inline-flex;
-  opacity: 1;
-  visibility: visible;
-}
-
-.refresh-indicator .refresh-spinner {
-  width: 1rem;
-  height: 1rem;
-  border-radius: 50%;
-  border: 2px solid var(--ghost-border);
-  border-top-color: var(--primary);
-  animation: refresh-spin 0.8s linear infinite;
-}
-
-.refresh-indicator .refresh-text {
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  font-weight: 600;
-  font-size: 0.75rem;
-}
-
 .connection-status {
   display: none;
   align-items: center;
@@ -2801,8 +2764,3 @@ body[data-scroll-locked="true"] {
   }
 }
 
-@keyframes refresh-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
