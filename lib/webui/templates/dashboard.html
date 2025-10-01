@@ -14,6 +14,7 @@
   <body
     data-tricorder-api-base="{{ api_base | default('', true) }}"
     data-tricorder-stream-mode="{{ stream_mode | default('hls', true) }}"
+    data-tricorder-webrtc-ice-servers='{{ webrtc_ice_servers | default([], true) | tojson }}'
   >
     <div class="app-shell">
       <div
@@ -184,12 +185,40 @@
             </div>
             <h1 class="app-title">
               <span class="sr-only">Tricorder dashboard home</span>
-              <img
-                src="{{ static_url('img/dashboard-logo.svg') }}"
+              <svg
                 class="app-title-logo"
-                alt=""
-                role="presentation"
-              />
+                viewBox="0 0 56 56"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <defs>
+                  <linearGradient
+                    id="dashboard-logo-gradient"
+                    x1="11"
+                    y1="4"
+                    x2="44"
+                    y2="52"
+                    gradientUnits="userSpaceOnUse"
+                  >
+                    <stop stop-color="#f97316" />
+                    <stop offset="1" stop-color="#fbbf24" />
+                  </linearGradient>
+                </defs>
+                <rect x="4" y="4" width="48" height="48" rx="14" fill="url(#dashboard-logo-gradient)" />
+                <text
+                  x="28"
+                  y="38"
+                  text-anchor="middle"
+                  font-family="'Inter', 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif"
+                  font-size="30"
+                  font-weight="700"
+                  fill="#ffffff"
+                >3</text>
+              </svg>
+              <span class="app-title-text">
+                <span class="app-title-text-primary">Corder</span>
+                <span class="app-title-text-secondary">DASHBOARD</span>
+              </span>
             </h1>
           </div>
         </div>
@@ -205,17 +234,6 @@
               Toggle theme
             </button>
             <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
-            <div
-              id="refresh-indicator"
-              class="refresh-indicator"
-              role="status"
-              aria-live="polite"
-              aria-hidden="true"
-              data-visible="false"
-            >
-              <span class="refresh-spinner" aria-hidden="true"></span>
-              <span class="refresh-text">Refreshing…</span>
-            </div>
           </div>
           <div class="header-status-group">
             <div class="status-labels">
@@ -272,22 +290,28 @@
         </div>
       </header>
       <section class="status-bar">
-        <div class="stat stat-recordings">
-          <span class="label">Recordings</span>
-          <span class="value" id="recording-count">0</span>
-        </div>
-        <div class="stat stat-selected">
-          <span class="label">Selected</span>
-          <span class="value" id="selected-count">0</span>
-        </div>
-        <div class="stat stat-selection-combined">
-          <div class="stat-combined-row">
+        <div class="stat stat-counts">
+          <div class="stat-count-row">
             <span class="label">Recordings</span>
-            <span class="value" id="recording-count-mobile">0</span>
+            <span class="value" id="recording-count">0</span>
           </div>
-          <div class="stat-combined-row">
+          <div class="stat-count-row">
             <span class="label">Selected</span>
-            <span class="value" id="selected-count-mobile">0</span>
+            <span class="value" id="selected-count">0</span>
+          </div>
+        </div>
+        <div class="stat stat-resource stat-cpu">
+          <span class="label">CPU</span>
+          <div class="stat-resource-values">
+            <span class="value" id="cpu-usage-value">--</span>
+            <span class="stat-resource-detail" id="cpu-load-average">--</span>
+          </div>
+        </div>
+        <div class="stat stat-resource stat-memory">
+          <span class="label">Memory</span>
+          <div class="stat-resource-values">
+            <span class="value" id="memory-usage-value">--</span>
+            <span class="stat-resource-detail" id="memory-usage-detail">--</span>
           </div>
         </div>
         <div class="stat storage-stat stat-storage">
@@ -340,14 +364,16 @@
               <span>Waveform</span>
               <span class="waveform-status" id="waveform-status"></span>
             </div>
-            <div class="waveform-container" id="waveform-container" hidden>
-              <canvas id="waveform-canvas"></canvas>
+            <div class="waveform-clock-row" data-active="false">
               <div
                 id="waveform-clock"
                 class="waveform-clock"
                 aria-hidden="true"
                 data-active="false"
               >--:--:--</div>
+            </div>
+            <div class="waveform-container" id="waveform-container" hidden>
+              <canvas id="waveform-canvas"></canvas>
               <div
                 id="waveform-trigger-marker"
                 class="waveform-marker marker-trigger"
@@ -366,9 +392,26 @@
               </div>
               <div id="waveform-cursor" class="waveform-cursor" aria-hidden="true"></div>
             </div>
+            <div class="waveform-rms-row" id="waveform-rms-row" data-active="false">
+              <div
+                id="waveform-rms-value"
+                class="waveform-rms"
+                aria-hidden="true"
+                data-active="false"
+              >
+                RMS --
+              </div>
+            </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
           </div>
-          <div class="player-meta" id="player-meta">Select a recording to preview.</div>
+          <div class="player-meta" id="player-meta">
+            <div class="player-meta-text" id="player-meta-text">Select a recording to preview.</div>
+            <div class="player-meta-actions action-buttons" id="player-meta-actions" hidden>
+              <a id="player-download" class="ghost-button small" download>Download</a>
+              <button id="player-rename" class="ghost-button small" type="button">Rename</button>
+              <button id="player-delete" class="danger-button small" type="button">Delete</button>
+            </div>
+          </div>
           <div
             id="clipper-container"
             class="clipper-container"
@@ -505,6 +548,18 @@
                   <span>Day</span>
                   <select id="filter-day">
                     <option value="">All days</option>
+                  </select>
+                </label>
+                <label class="input-group">
+                  <span>Time range <small>(h = hour, d = day)</small></span>
+                  <select id="filter-time-range">
+                    <option value="">All time</option>
+                    <option value="1h">Past 1 hour (1h)</option>
+                    <option value="2h">Past 2 hours (2h)</option>
+                    <option value="4h">Past 4 hours (4h)</option>
+                    <option value="8h">Past 8 hours (8h)</option>
+                    <option value="12h">Past 12 hours (12h)</option>
+                    <option value="1d">Past 1 day (1d)</option>
                   </select>
                 </label>
                 <label class="input-group">
@@ -834,7 +889,8 @@
               </div>
               <h4 class="settings-subheading">Filter chain</h4>
               <p class="settings-subheading-description">
-                Enable lightweight filters to tame rumble, hiss, or bed noise before the segmenter sees the audio.
+                Enable lightweight filters to tame rumble, hiss, or bed noise before the segmenter sees the audio. Start with the
+                high-pass filter, then layer in narrow notches for hums, and finally add noise gating once the noise floor is steady.
               </p>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
@@ -853,7 +909,10 @@
                   />
                   <span id="audio-filter-highpass-cutoff-value" class="filter-value" aria-live="off">90&nbsp;Hz</span>
                 </div>
-                <p class="field-description">Remove low-frequency rumble from HVAC systems, footsteps, or desk bumps.</p>
+                <p class="field-description">
+                  Roll off sub-bass rumble from HVAC, footsteps, or desk bumps. Sweep between 80–120&nbsp;Hz; stop just before the
+                  voices you care about start to thin out.
+                </p>
               </div>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
@@ -884,12 +943,15 @@
                   />
                   <span id="audio-filter-notch-quality-value" class="filter-value" aria-live="off">Q&nbsp;30</span>
                 </div>
-                <p class="field-description">Carve out persistent hums (50/60&nbsp;Hz) or whistles without impacting the rest of the spectrum.</p>
+                <p class="field-description">
+                  Carve out persistent hums (50/60&nbsp;Hz) or whistles without touching everything else. Aim the frequency at the
+                  offending tone and keep Q in the 20–40 range for precise cuts.
+                </p>
               </div>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
                   <input id="audio-filter-spectral-enabled" type="checkbox" />
-                  <label for="audio-filter-spectral-enabled">Spectral gate</label>
+                  <label for="audio-filter-spectral-enabled">Spectral noise gate</label>
                 </div>
                 <div class="filter-slider">
                   <label class="filter-slider-label" for="audio-filter-spectral-sensitivity">Sensitivity</label>
@@ -939,7 +1001,10 @@
                   />
                   <span id="audio-filter-spectral-decay-value" class="filter-value" aria-live="off">0.95</span>
                 </div>
-                <p class="field-description">Adaptive gate tuned for constant ambient noise. Lower sensitivity reacts faster; adjust reduction to taste.</p>
+                <p class="field-description">
+                  Adaptive noise gate for steady ambient beds. Use 1.2–1.8 sensitivity for HVAC rumble, pull reduction into the
+                  −12 to −24&nbsp;dB window, then fine-tune update/decay to trade chatter for smooth releases.
+                </p>
               </div>
               <h4 class="settings-subheading">Calibration helpers</h4>
               <p class="settings-subheading-description">

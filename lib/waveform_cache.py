@@ -221,11 +221,13 @@ def generate_waveform(
                 "duration_seconds": 0.0,
                 "peak_scale": PEAK_SCALE,
                 "peaks": [],
+                "rms_values": [],
             }
             _write_payload(dest_path, payload)
             return payload
 
         peaks = array("h", [0] * (bucket_count * 2))
+        rms_values = array("H", [0] * bucket_count)
         frames_per_bucket = total_frames / float(bucket_count)
         chunk_frames = max(1, min(65536, int(math.ceil(frames_per_bucket * 8))))
 
@@ -233,6 +235,8 @@ def generate_waveform(
         bucket_index = 0
         bucket_min = 32767
         bucket_max = -32768
+        bucket_square_sum = 0.0
+        bucket_sample_count = 0
         next_threshold = int(math.ceil(frames_per_bucket))
 
         while frames_consumed < total_frames and bucket_index < bucket_count:
@@ -262,6 +266,9 @@ def generate_waveform(
                 if value > bucket_max:
                     bucket_max = value
 
+                bucket_square_sum += float(value) * float(value)
+                bucket_sample_count += 1
+
                 frames_consumed += 1
                 if frames_consumed >= total_frames or frames_consumed >= next_threshold:
                     if bucket_min > bucket_max:
@@ -269,11 +276,18 @@ def generate_waveform(
                         bucket_max = 0
                     peaks[bucket_index * 2] = _clamp_int16(bucket_min)
                     peaks[bucket_index * 2 + 1] = _clamp_int16(bucket_max)
+                    if bucket_sample_count > 0:
+                        rms = int(round(math.sqrt(bucket_square_sum / bucket_sample_count)))
+                    else:
+                        rms = 0
+                    rms_values[bucket_index] = max(0, min(rms, PEAK_SCALE))
                     bucket_index += 1
                     if bucket_index >= bucket_count:
                         break
                     bucket_min = 32767
                     bucket_max = -32768
+                    bucket_square_sum = 0.0
+                    bucket_sample_count = 0
                     next_threshold = int(math.ceil((bucket_index + 1) * frames_per_bucket))
 
             if bucket_index >= bucket_count:
@@ -282,6 +296,7 @@ def generate_waveform(
         while bucket_index < bucket_count:
             peaks[bucket_index * 2] = 0
             peaks[bucket_index * 2 + 1] = 0
+            rms_values[bucket_index] = 0
             bucket_index += 1
 
         duration = total_frames / float(sample_rate)
@@ -293,6 +308,7 @@ def generate_waveform(
             "duration_seconds": duration,
             "peak_scale": PEAK_SCALE,
             "peaks": peaks.tolist(),
+            "rms_values": rms_values.tolist(),
         }
 
     _write_payload(dest_path, payload)

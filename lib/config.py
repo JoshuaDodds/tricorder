@@ -17,12 +17,37 @@ import copy
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, MutableMapping, Sequence
+
+try:
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+except Exception:
+    YAML = None  # type: ignore[assignment]
+    CommentedMap = None  # type: ignore[assignment]
+    CommentedSeq = None  # type: ignore[assignment]
+
+try:
+    from .config_template import CONFIG_TEMPLATE_YAML
+except Exception:
+    CONFIG_TEMPLATE_YAML = None  # type: ignore[assignment]
 
 try:
     import yaml
 except Exception:
     yaml = None  # pyyaml should be installed; if not, only defaults will be used.
+
+if YAML:
+    _ROUND_TRIP_YAML = YAML(typ="rt")
+    _ROUND_TRIP_YAML.indent(mapping=2, sequence=4, offset=2)
+    _ROUND_TRIP_YAML.default_flow_style = False
+    _ROUND_TRIP_YAML.allow_unicode = True
+    try:
+        _ROUND_TRIP_YAML.preserve_quotes = True  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+else:  # pragma: no cover - exercised when ruamel.yaml is not available.
+    _ROUND_TRIP_YAML = None
 
 EVENT_TAG_DEFAULTS: Dict[str, str] = {
     "human": "Human",
@@ -138,6 +163,7 @@ _warned_yaml_missing = False
 _search_paths: list[Path] = []
 _active_config_path: Path | None = None
 _primary_config_path: Path | None = None
+_template_cache: MutableMapping[str, Any] | None = None
 
 
 class ConfigPersistenceError(Exception):
@@ -466,6 +492,314 @@ def search_paths() -> list[Path]:
     return list(_search_paths)
 
 
+def _empty_mapping() -> MutableMapping[str, Any]:
+    if CommentedMap is not None:
+        return CommentedMap()
+    return {}
+
+
+def _file_has_comments(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            return True
+        idx = line.find("#")
+        if idx > 0 and line[idx - 1].isspace():
+            return True
+    return False
+
+
+CommentHints = tuple[list[str], str | None]
+
+
+def _find_comment_marker(segment: str) -> int | None:
+    in_single = False
+    in_double = False
+    index = 0
+    while index < len(segment):
+        char = segment[index]
+        if char == "#" and not in_single and not in_double:
+            return index
+        if in_double:
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                in_double = False
+        elif in_single:
+            if char == "'":
+                if index + 1 < len(segment) and segment[index + 1] == "'":
+                    index += 2
+                    continue
+                in_single = False
+        else:
+            if char == '"':
+                in_double = True
+            elif char == "'":
+                in_single = True
+        index += 1
+    return None
+
+
+def _extract_comment_hints(text: str) -> Dict[str, CommentHints]:
+    hints: Dict[str, CommentHints] = {}
+    if not text.strip():
+        return hints
+
+    stack: list[tuple[int, str]] = []
+    pending_comments: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            pending_comments.append(stripped)
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+        if stripped.startswith("- "):
+            pending_comments = []
+            continue
+
+        key, sep, remainder = stripped.partition(":")
+        if not sep:
+            pending_comments = []
+            continue
+
+        key = key.strip()
+        remainder = remainder.lstrip()
+        path = ".".join(entry[1] for entry in stack + [(indent, key)])
+
+        inline_comment: str | None = None
+        comment_index = _find_comment_marker(remainder)
+        if comment_index is not None:
+            comment_text = remainder[comment_index + 1 :].strip()
+            if comment_text:
+                inline_comment = f"# {comment_text}"
+
+        prefix_comments = list(pending_comments)
+        if prefix_comments or inline_comment:
+            hints[path] = (prefix_comments, inline_comment)
+
+        pending_comments = []
+
+        if remainder == "":
+            stack.append((indent, key))
+
+    return hints
+
+
+def _apply_comment_hints(text: str, comment_hints: Mapping[str, CommentHints]) -> str:
+    if not text or not comment_hints:
+        return text
+
+    lines = text.splitlines()
+    stack: list[tuple[int, str]] = []
+    rendered: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            rendered.append(line)
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+        if stripped.startswith("#"):
+            rendered.append(line)
+            continue
+
+        if stripped.startswith("- "):
+            rendered.append(line)
+            continue
+
+        key, sep, remainder = stripped.partition(":")
+        if not sep:
+            rendered.append(line)
+            continue
+
+        key = key.strip()
+        path = ".".join(entry[1] for entry in stack + [(indent, key)])
+
+        hint = comment_hints.get(path)
+        if hint:
+            prefix_comments, inline_comment = hint
+            if prefix_comments:
+                indent_spaces = " " * indent
+                for comment_line in prefix_comments:
+                    rendered.append(f"{indent_spaces}{comment_line}")
+            if inline_comment:
+                prefix, sep, remainder_full = line.partition(":")
+                if sep:
+                    comment_index = _find_comment_marker(remainder_full)
+                    if comment_index is not None:
+                        remainder_full = remainder_full[:comment_index]
+                    remainder_full = remainder_full.rstrip()
+                    base = f"{prefix}{sep}{remainder_full}".rstrip()
+                    line = f"{base}  {inline_comment}"
+
+        rendered.append(line)
+
+        if not (content := remainder.strip()) or content.startswith("|") or content.startswith(">"):
+            stack.append((indent, key))
+
+    ending = "\n" if text.endswith("\n") else ""
+    return "\n".join(rendered) + ending
+
+
+def _load_comment_template() -> MutableMapping[str, Any] | None:
+    global _template_cache
+    if _ROUND_TRIP_YAML is None:
+        return None
+    if _template_cache is None:
+        candidates: list[Path] = []
+        template_env = os.getenv("TRICORDER_CONFIG_TEMPLATE")
+        if template_env:
+            try:
+                candidates.append(Path(template_env).expanduser())
+            except Exception:
+                candidates.append(Path(template_env))
+        candidates.extend(
+            [
+                Path("/etc/tricorder/config.template.yaml"),
+                Path("/apps/tricorder/config.template.yaml"),
+            ]
+        )
+        project_root = Path(__file__).resolve().parents[1]
+        candidates.extend(
+            [
+                project_root / "config.template.yaml",
+                project_root / "docs" / "config-template.yaml",
+            ]
+        )
+
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    with candidate.open("r", encoding="utf-8") as handle:
+                        loaded = _ROUND_TRIP_YAML.load(handle)  # type: ignore[arg-type]
+                    if isinstance(loaded, MutableMapping):
+                        _template_cache = _convert_to_round_trip(loaded)
+                        break
+            except Exception:
+                continue
+
+        if _template_cache is None and CONFIG_TEMPLATE_YAML:
+            try:
+                loaded = _ROUND_TRIP_YAML.load(CONFIG_TEMPLATE_YAML)
+                if isinstance(loaded, MutableMapping):
+                    _template_cache = _convert_to_round_trip(loaded)
+            except Exception:
+                _template_cache = None
+
+    if _template_cache is None:
+        return None
+    return _convert_to_round_trip(_template_cache)
+
+
+def _template_with_values(values: Mapping[str, Any]) -> MutableMapping[str, Any] | None:
+    template = _load_comment_template()
+    if template is None:
+        return None
+    if isinstance(values, Mapping):
+        _replace_mapping(template, values, prune=False)
+    return template
+
+
+def _convert_to_round_trip(value: Any) -> Any:
+    if CommentedMap is not None:
+        if isinstance(value, CommentedMap) or isinstance(value, CommentedSeq):
+            return value
+        if isinstance(value, Mapping) and not isinstance(value, (str, bytes)):
+            converted = CommentedMap()
+            for key, sub_value in value.items():
+                converted[key] = _convert_to_round_trip(sub_value)
+            return converted
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            converted_seq = CommentedSeq()
+            for item in value:
+                converted_seq.append(_convert_to_round_trip(item))
+            return converted_seq
+    return copy.deepcopy(value)
+
+
+def _ensure_mapping(container: MutableMapping[str, Any], key: str) -> MutableMapping[str, Any]:
+    existing = container.get(key)
+    if isinstance(existing, MutableMapping):
+        return existing
+    if isinstance(existing, Mapping):
+        converted = _convert_to_round_trip(existing)
+        if isinstance(converted, MutableMapping):
+            container[key] = converted
+            return converted
+    new_map = _convert_to_round_trip({})
+    assert isinstance(new_map, MutableMapping)
+    container[key] = new_map
+    return new_map
+
+
+def _replace_mapping(
+    target: MutableMapping[str, Any],
+    updates: Mapping[str, Any],
+    *,
+    prune: bool,
+) -> None:
+    if prune:
+        for existing_key in list(target.keys()):
+            if existing_key not in updates:
+                try:
+                    del target[existing_key]
+                except KeyError:
+                    continue
+    for key, value in updates.items():
+        if isinstance(value, Mapping) and not isinstance(value, (str, bytes)):
+            nested: MutableMapping[str, Any]
+            existing = target.get(key)
+            if isinstance(existing, MutableMapping):
+                nested = existing
+            else:
+                converted = _convert_to_round_trip(value)
+                if isinstance(converted, MutableMapping):
+                    target[key] = converted
+                    nested = converted
+                    continue
+                nested = _empty_mapping()
+                target[key] = nested
+            _replace_mapping(nested, value, prune=prune)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            target[key] = _convert_to_round_trip(value)
+        else:
+            target[key] = copy.deepcopy(value)
+
+
+def _load_yaml_for_update(path: Path) -> MutableMapping[str, Any]:
+    if _ROUND_TRIP_YAML is not None:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    data = _ROUND_TRIP_YAML.load(handle)  # type: ignore[arg-type]
+            except Exception as exc:
+                raise ConfigPersistenceError(f"Unable to read configuration: {exc}") from exc
+            if isinstance(data, MutableMapping):
+                return data
+        return _empty_mapping()
+    return {}
+
+
 def _load_raw_yaml(path: Path) -> Dict[str, Any]:
     if not yaml:
         raise ConfigPersistenceError("PyYAML is required to update configuration files")
@@ -481,8 +815,8 @@ def _load_raw_yaml(path: Path) -> Dict[str, Any]:
     return {}
 
 
-def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
-    if not yaml:
+def _dump_yaml(path: Path, payload: MutableMapping[str, Any] | Dict[str, Any]) -> None:
+    if _ROUND_TRIP_YAML is None and not yaml:
         raise ConfigPersistenceError("PyYAML is required to update configuration files")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -490,13 +824,16 @@ def _dump_yaml(path: Path, payload: Dict[str, Any]) -> None:
         raise ConfigPersistenceError(f"Unable to create configuration directory: {exc}") from exc
     try:
         with path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(
-                payload,
-                handle,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-            )
+            if _ROUND_TRIP_YAML is not None:
+                _ROUND_TRIP_YAML.dump(payload, handle)  # type: ignore[arg-type]
+            else:
+                yaml.safe_dump(  # type: ignore[union-attr]
+                    payload,
+                    handle,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                )
     except Exception as exc:
         raise ConfigPersistenceError(f"Unable to write configuration: {exc}") from exc
 
@@ -509,20 +846,83 @@ def _persist_settings_section(
 
     primary_path = primary_config_path()
     current = _load_raw_yaml(primary_path)
-    updated = copy.deepcopy(current)
+
+    comment_hints: Dict[str, CommentHints] = {}
+    if _ROUND_TRIP_YAML is None:
+        existing_text = ""
+        try:
+            existing_text = primary_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"Warning: unable to read configuration for comment hints: {exc}",
+                flush=True,
+            )
+            existing_text = ""
+        existing_comments = _extract_comment_hints(existing_text)
+        template_comments: Dict[str, CommentHints] = {}
+        if CONFIG_TEMPLATE_YAML:
+            template_comments = _extract_comment_hints(CONFIG_TEMPLATE_YAML)
+        comment_hints = {
+            key: (list(prefix), inline)
+            for key, (prefix, inline) in template_comments.items()
+        }
+        for key, (prefix, inline) in existing_comments.items():
+            base_prefix, base_inline = comment_hints.get(key, ([], None))
+            merged_prefix = prefix if prefix else base_prefix
+            merged_inline = inline if inline is not None else base_inline
+            comment_hints[key] = (list(merged_prefix), merged_inline)
+
+    updated: MutableMapping[str, Any] | Any
+
+    if _ROUND_TRIP_YAML is not None:
+        template_candidate: MutableMapping[str, Any] | None = None
+        if not _file_has_comments(primary_path):
+            template_candidate = _template_with_values(current)
+        if template_candidate is not None:
+            updated = template_candidate
+        else:
+            updated = _load_yaml_for_update(primary_path)
+            if isinstance(updated, dict) and not isinstance(updated, MutableMapping):
+                updated = _convert_to_round_trip(updated)
+    else:
+        updated = _convert_to_round_trip(current)
+        if not isinstance(updated, MutableMapping):
+            updated = _convert_to_round_trip({})
+
+    if not isinstance(updated, MutableMapping):
+        raise ConfigPersistenceError("Configuration root must be a mapping")
+
+    target = _ensure_mapping(updated, section)
+    if not isinstance(target, MutableMapping):
+        raise ConfigPersistenceError(f"Configuration section {section!r} is not a mapping")
 
     if merge:
-        base: Dict[str, Any] = {}
-        existing = updated.get(section)
-        if isinstance(existing, dict):
-            base = copy.deepcopy(existing)
-        for key, value in settings.items():
-            base[key] = copy.deepcopy(value)
-        updated[section] = base
+        _replace_mapping(target, settings, prune=False)
     else:
-        updated[section] = copy.deepcopy(settings)
+        _replace_mapping(target, settings, prune=True)
 
     _dump_yaml(primary_path, updated)
+
+    if comment_hints:
+        try:
+            rendered = primary_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"Warning: unable to read configuration for comment hint application: {exc}",
+                flush=True,
+            )
+            rendered = ""
+        if rendered:
+            rewritten = _apply_comment_hints(rendered, comment_hints)
+            if rewritten != rendered:
+                try:
+                    primary_path.write_text(rewritten, encoding="utf-8")
+                except OSError as exc:
+                    print(
+                        f"Warning: unable to write configuration with comment hints: {exc}",
+                        flush=True,
+                    )
+
     return reload_cfg().get(section, {})
 
 

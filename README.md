@@ -104,6 +104,14 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 
 ---
 
+## Branching model
+
+Active recorder fixes graduate through the `staging-bugs-and-adjustments` branch before landing in release branches. When opening
+maintenance PRs (like the configuration comment preservation work) target `staging-bugs-and-adjustments` so reviewers see diffs
+against the latest staging state rather than the mainline release snapshot.
+
+---
+
 ## Automatic archival uploads
 
 Freshly encoded recordings can be mirrored off-device for long-term storage using the new archival plug-ins. Configure the `archival` section in `config.yaml` to enable one of the backends (or open the dashboard’s ☰ menu → **Archival settings** to edit the same options in the UI — changes stay in sync with `config.yaml`):
@@ -129,6 +137,15 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
 - JSON APIs (`/api/recordings`, `/api/config`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
+
+### Audio filter chain tuning
+
+Open the ☰ menu → **Recorder configuration** → **Filters** to adjust the capture-time filter chain. The controls map directly to `audio.filter_chain` in `config.yaml`; the UI saves changes back to the YAML file while preserving inline comments. Suggested workflow:
+
+- **High-pass filter** – Sweep the cutoff between 80–120&nbsp;Hz to remove HVAC/handling rumble. Stop once speech starts losing warmth; this keeps the VAD from chasing sub-bass energy.
+- **Notch filter** – Target persistent hums or whistles (50/60&nbsp;Hz and harmonics). Keep Q in the 20–40 range for surgical cuts and only enable the stages you need.
+- **Spectral noise gate** – This is the dashboard’s “noise gating” control. Start with sensitivity between 1.2–1.8 and reduction between −12 to −24&nbsp;dB; lower sensitivity numbers clamp harder. Use the **Noise update** slider (0.05–0.2) to decide how quickly the gate learns new noise and **Noise decay** (0.9–0.98) to smooth releases.
+- **Calibration helpers** – Enable the quick actions when you want the dashboard to capture a fresh noise profile or launch `room_tuner.py` for gain recalibration.
 
 Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`). Transcript JSON files live next to each recording; the dashboard automatically includes transcript excerpts in the listings and search covers both filenames and transcript text.
 
@@ -186,6 +203,8 @@ Setting `streaming.mode` to `webrtc` enables a lower-latency path tailored for m
 - `/webrtc/offer` – accepts browser SDP offers and returns negotiated answers.
 - `/webrtc/stop` – tears down the peer connection for the provided session.
 - `/webrtc/stats` – reports listener counts, dependency status, and encoder activity.
+
+When WebRTC mode is enabled the dashboard advertises a default pair of public STUN servers so Firefox can negotiate host candidates reliably. Override `streaming.webrtc_ice_servers` in `config.yaml` to point at organisation-controlled STUN/TURN infrastructure or set it to an empty list to disable external ICE discovery entirely. Each entry may be a string URL or an object with `urls`, `username`, and `credential` fields for TURN endpoints.
 
 WebRTC support depends on [`aiortc`](https://github.com/aiortc/aiortc) and [`av`](https://github.com/PyAV-Org/PyAV); both packages ship in `requirements.txt`. When those dependencies are unavailable, `create_answer()` returns `None` and `/webrtc/stats` surfaces a helpful reason so dashboards can surface the failure. The dashboard automatically switches to WebRTC playback when the mode is enabled and falls back to HLS otherwise.
 
@@ -298,6 +317,8 @@ Environment variables override YAML values. Common overrides include:
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
 - `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.
 - `EVENT_TAG_HUMAN`, `EVENT_TAG_OTHER`, `EVENT_TAG_BOTH` — override event labels without editing YAML.
+- `TRICORDER_CONFIG_TEMPLATE` — optional absolute path to a commented template used to rehydrate inline guidance if the active
+  YAML lost its comments.
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
@@ -309,6 +330,8 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `logging` – developer-mode verbosity toggle.
 - `notifications` – optional webhook/email alerts when events finish recording.
 - `streaming` – live stream transport configuration (HLS/WebRTC).
+
+The dashboard writes updates back to `config.yaml` using `ruamel.yaml` so inline documentation stays intact; the dependency ships in `requirements.txt` for both runtime and UI edits.
 
 ### Idle hum mitigation
 

@@ -1024,8 +1024,13 @@ class TimelineRecorder:
         self._adaptive.observe(rms_val, bool(voiced))
         observation = self._adaptive.pop_observation()
         if observation:
+            threshold_changed = (
+                observation.updated
+                and observation.threshold_linear != observation.previous_threshold_linear
+            )
             self._log_adaptive_rms_observation(observation)
-            self._emit_threshold_update()
+            if threshold_changed:
+                self._emit_threshold_update()
 
         self._maybe_update_live_metrics(rms_val)
 
