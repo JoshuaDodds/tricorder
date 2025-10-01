@@ -178,6 +178,9 @@ adaptive_rms:
   # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
   min_thresh: 0.01
 
+  # Maximum normalized RMS threshold (0.0–1.0). Caps how high the adaptive gate can climb.
+  max_thresh: 1.0
+
   # Multiplier applied to the background P95 value when computing the candidate threshold.
   margin: 1.2
 

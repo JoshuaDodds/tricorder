@@ -526,6 +526,11 @@ class AdaptiveRmsController:
         section = cfg_section or {}
         self.enabled = bool(section.get("enabled", False))
         self.min_thresh_norm = min(1.0, max(0.0, float(section.get("min_thresh", 0.01))))
+        try:
+            raw_max = float(section.get("max_thresh", 1.0))
+        except (TypeError, ValueError):
+            raw_max = 1.0
+        self.max_thresh_norm = min(1.0, max(self.min_thresh_norm, raw_max))
         self.margin = max(0.0, float(section.get("margin", 1.2)))
         self.update_interval = max(0.1, float(section.get("update_interval_sec", 5.0)))
         self.hysteresis_tolerance = max(0.0, float(section.get("hysteresis_tolerance", 0.1)))
@@ -539,6 +544,7 @@ class AdaptiveRmsController:
         self._last_release: float | None = None
         self._last_observation: AdaptiveRmsObservation | None = None
         initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
+        initial_norm = min(self.max_thresh_norm, initial_norm)
         if self.enabled:
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
@@ -592,10 +598,13 @@ class AdaptiveRmsController:
         ordered = sorted(self._buffer)
         idx = max(0, int(math.ceil(0.95 * len(ordered)) - 1))
         p95 = ordered[idx]
-        candidate_raise = min(1.0, max(self.min_thresh_norm, p95 * self.margin))
+        candidate_raise = min(self.max_thresh_norm, max(self.min_thresh_norm, p95 * self.margin))
         rel_idx = max(0, int(math.ceil(self.release_percentile * len(ordered)) - 1))
         release_val = ordered[rel_idx]
-        candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
+        candidate_release = min(
+            self.max_thresh_norm,
+            max(self.min_thresh_norm, release_val * self.margin),
+        )
         if (
             # Require both gates to move upward before raising the threshold.
             # This avoids ping-ponging when the long-tail release sample still

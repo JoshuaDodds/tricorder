@@ -176,13 +176,57 @@ def test_adaptive_threshold_recovery(monkeypatch):
     lowered = ctrl.threshold_linear
     assert lowered < raised
 
-    expected_norm = max(
-        ctrl.min_thresh_norm,
-        (200 / segmenter.AdaptiveRmsController._NORM) * ctrl.margin,
+    expected_norm = min(
+        ctrl.max_thresh_norm,
+        max(
+            ctrl.min_thresh_norm,
+            (200 / segmenter.AdaptiveRmsController._NORM) * ctrl.margin,
+        ),
     )
     expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
     assert lowered == expected_linear
     assert any(obs and obs.updated for obs in lowering_observations)
+
+
+def test_adaptive_threshold_ceiling(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=300,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.001,
+            "max_thresh": 0.02,
+            "margin": 1.2,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.2,
+            "hysteresis_tolerance": 0.0,
+            "release_percentile": 0.5,
+        },
+        debug=False,
+    )
+
+    ceiling_linear = int(round(ctrl.max_thresh_norm * segmenter.AdaptiveRmsController._NORM))
+
+    for _ in range(12):
+        ctrl.observe(2500, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear == ceiling_linear
+
+    for _ in range(12):
+        ctrl.observe(200, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear < ceiling_linear
 
 
 def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):

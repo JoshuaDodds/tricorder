@@ -1243,6 +1243,11 @@
                 <p class="field-description">Floor for the normalized RMS threshold (0–1 scale).</p>
               </div>
               <div class="settings-field">
+                <label for="adaptive-max-thresh">Maximum threshold</label>
+                <input id="adaptive-max-thresh" type="number" min="0" max="1" step="0.001" />
+                <p class="field-description">Ceiling that prevents the adaptive gate from climbing indefinitely.</p>
+              </div>
+              <div class="settings-field">
                 <label for="adaptive-margin">Noise margin</label>
                 <input id="adaptive-margin" type="number" min="0.5" max="10" step="0.05" />
                 <p class="field-description">Multiplier applied to the observed background noise floor.</p>

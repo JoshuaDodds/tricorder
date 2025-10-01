@@ -456,6 +456,7 @@ def _adaptive_rms_defaults() -> dict[str, Any]:
     return {
         "enabled": False,
         "min_thresh": 0.01,
+        "max_thresh": 1.0,
         "margin": 1.2,
         "update_interval_sec": 5.0,
         "window_sec": 10.0,
@@ -631,6 +632,7 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
         for key in (
             "min_thresh",
+            "max_thresh",
             "margin",
             "update_interval_sec",
             "window_sec",
@@ -640,6 +642,8 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 result[key] = float(value)
+        if result["max_thresh"] < result["min_thresh"]:
+            result["max_thresh"] = result["min_thresh"]
     return result
 
 
@@ -1096,6 +1100,12 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     if min_thresh is not None:
         normalized["min_thresh"] = min_thresh
 
+    max_thresh = _coerce_float(
+        payload.get("max_thresh"), "max_thresh", errors, min_value=0.0, max_value=1.0
+    )
+    if max_thresh is not None:
+        normalized["max_thresh"] = max_thresh
+
     margin = _coerce_float(payload.get("margin"), "margin", errors, min_value=0.5, max_value=10.0)
     if margin is not None:
         normalized["margin"] = margin
@@ -1135,6 +1145,9 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     )
     if percentile is not None:
         normalized["release_percentile"] = percentile
+
+    if normalized["max_thresh"] < normalized["min_thresh"]:
+        errors.append("max_thresh must be greater than or equal to min_thresh")
 
     return normalized, errors
 
