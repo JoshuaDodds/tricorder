@@ -456,6 +456,8 @@ def _adaptive_rms_defaults() -> dict[str, Any]:
     return {
         "enabled": False,
         "min_thresh": 0.01,
+        "max_rms": None,
+        "max_thresh": 1.0,
         "margin": 1.2,
         "update_interval_sec": 5.0,
         "window_sec": 10.0,
@@ -629,8 +631,17 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         if isinstance(enabled, bool):
             result["enabled"] = enabled
 
+        max_rms = raw.get("max_rms")
+        if isinstance(max_rms, (int, float)) and not isinstance(max_rms, bool):
+            if math.isfinite(float(max_rms)):
+                candidate = int(round(float(max_rms)))
+                result["max_rms"] = candidate if candidate > 0 else None
+        elif max_rms is None:
+            result["max_rms"] = None
+
         for key in (
             "min_thresh",
+            "max_thresh",
             "margin",
             "update_interval_sec",
             "window_sec",
@@ -640,6 +651,8 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 result[key] = float(value)
+        if result["max_thresh"] < result["min_thresh"]:
+            result["max_thresh"] = result["min_thresh"]
     return result
 
 
@@ -1096,6 +1109,28 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     if min_thresh is not None:
         normalized["min_thresh"] = min_thresh
 
+    raw_max_rms = payload.get("max_rms")
+    if raw_max_rms is None:
+        normalized["max_rms"] = None
+    elif isinstance(raw_max_rms, str) and not raw_max_rms.strip():
+        normalized["max_rms"] = None
+    else:
+        max_rms_value = _coerce_int(
+            raw_max_rms,
+            "max_rms",
+            errors,
+            min_value=0,
+            max_value=32767,
+        )
+        if max_rms_value is not None:
+            normalized["max_rms"] = max_rms_value or None
+
+    max_thresh = _coerce_float(
+        payload.get("max_thresh"), "max_thresh", errors, min_value=0.0, max_value=1.0
+    )
+    if max_thresh is not None:
+        normalized["max_thresh"] = max_thresh
+
     margin = _coerce_float(payload.get("margin"), "margin", errors, min_value=0.5, max_value=10.0)
     if margin is not None:
         normalized["margin"] = margin
@@ -1135,6 +1170,9 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     )
     if percentile is not None:
         normalized["release_percentile"] = percentile
+
+    if normalized["max_thresh"] < normalized["min_thresh"]:
+        errors.append("max_thresh must be greater than or equal to min_thresh")
 
     return normalized, errors
 

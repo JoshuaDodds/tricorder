@@ -187,6 +187,14 @@ adaptive_rms:
   # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
   min_thresh: 0.01
 
+  # Optional hard ceiling in linear RMS units (same scale as segmenter.rms_threshold).
+  # Example: 250 keeps the adaptive gate from exceeding an RMS of 250. Leave null to disable.
+  max_rms: null
+
+  # Maximum normalized RMS threshold (0.0–1.0). Serves as a secondary guard rail for
+  # advanced tuning; most installs can keep this at 1.0 and rely on max_rms for the ceiling.
+  max_thresh: 1.0
+
   # Multiplier applied to the background P95 value when computing the candidate threshold.
   margin: 1.2
 
