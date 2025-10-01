@@ -150,6 +150,12 @@ Open the ☰ menu → **Recorder configuration** → **Filters** to adjust the c
 
 Waveform JSON is loaded on demand and cached client-side. Missing or stale sidecars are regenerated via `lib.waveform_cache` (see `tests/test_waveform_cache.py`). Transcript JSON files live next to each recording; the dashboard automatically includes transcript excerpts in the listings and search covers both filenames and transcript text.
 
+#### Filter chain coverage and segmenter denoise toggles
+
+The live recorder loads `audio.filter_chain` once on startup and runs the configured stages inside `lib.live_stream_daemon` before every frame is handed to the HLS encoder, the WebRTC ring buffer, or the `TimelineRecorder`. In practice that means any enabled high-pass, notch, or spectral gate settings shape the signal you hear on both live streaming backends *and* the audio that ultimately reaches the encoder. When all stages are disabled the worker bypasses the chain to avoid unnecessary CPU work.
+
+`segmenter.use_rnnoise` and `segmenter.use_noisereduce` operate on a different path: they only denoise the analysis frames that drive RMS/VAD decisions. Those toggles are ignored unless `segmenter.denoise_before_vad` is set to `true`, and even then they do not modify the captured audio. Expect audible changes only when the filter chain is engaged; enable the segmenter denoise options when you specifically need help with activity detection in a noisy room.
+
 ---
 
 ## Speech-to-text transcripts

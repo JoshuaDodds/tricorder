@@ -160,6 +160,15 @@ USE_RNNOISE = bool(cfg["segmenter"]["use_rnnoise"])
 USE_NOISEREDUCE = bool(cfg["segmenter"]["use_noisereduce"])
 DENOISE_BEFORE_VAD = bool(cfg["segmenter"]["denoise_before_vad"])
 
+if (USE_RNNOISE or USE_NOISEREDUCE) and not DENOISE_BEFORE_VAD:
+    print(
+        "[segmenter] denoise filters requested but denoise_before_vad is false; "
+        "disabling RNNoise/noisereduce toggles",
+        flush=True,
+    )
+    USE_RNNOISE = False
+    USE_NOISEREDUCE = False
+
 # Filter chain instrumentation tunables
 FILTER_CHAIN_METRICS_WINDOW = int(
     cfg["segmenter"].get("filter_chain_metrics_window", 50)
