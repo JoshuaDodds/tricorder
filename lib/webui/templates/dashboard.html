@@ -315,7 +315,7 @@
           </div>
         </div>
         <div class="stat storage-stat stat-storage">
-          <span class="label">Storage</span>
+          <span class="label">Storage use</span>
           <span class="value" id="storage-usage-text">--</span>
           <div class="storage-progress">
             <div class="storage-progress-bar" id="storage-progress-bar"></div>
@@ -351,7 +351,7 @@
         </div>
       </section>
       <section class="main-grid">
-        <div id="player-card" class="card player-card" hidden data-active="false">
+        <div id="player-card" class="card player-card" hidden data-active="false" data-context="recordings">
           <div class="card-header">
             <div class="card-heading">
               <h2>Preview</h2>
@@ -769,30 +769,6 @@
             <div id="recycle-bin-empty" class="recycle-bin-empty" hidden>
               No recordings in the recycle bin.
             </div>
-          </div>
-          <div class="recycle-bin-preview" aria-live="polite">
-            <h3 id="recycle-bin-preview-title">Select a recording to preview</h3>
-            <p id="recycle-bin-preview-path" class="recycle-bin-preview-path"></p>
-            <dl class="recycle-bin-preview-meta">
-              <div>
-                <dt>Deleted</dt>
-                <dd id="recycle-bin-preview-time">--</dd>
-              </div>
-              <div>
-                <dt>Size</dt>
-                <dd id="recycle-bin-preview-size">--</dd>
-              </div>
-              <div>
-                <dt>Duration</dt>
-                <dd id="recycle-bin-preview-duration">--</dd>
-              </div>
-            </dl>
-            <audio
-              id="recycle-bin-audio"
-              class="recycle-bin-audio"
-              controls
-              preload="metadata"
-            ></audio>
           </div>
         </div>
       </div>
