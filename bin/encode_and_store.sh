@@ -45,7 +45,26 @@ fi
 # - Use application=audio (general content), 20ms frames, VBR on, 48 kbps.
 # - One thread to reduce CPU spikes on the Zero 2 W.
 if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
-  echo "[encode] Streaming encoder provided $existing_opus; skipping ffmpeg" | systemd-cat -t tricorder
+  if [[ "${#FILTERS[@]}" -gt 0 ]]; then
+    echo "[encode] Streaming encoder provided $existing_opus; applying filters" | systemd-cat -t tricorder
+    temp_outdir="$(dirname "$existing_opus")"
+    temp_basename=".$(basename "$existing_opus").filtered.$$"
+    temp_outfile="${temp_outdir}/${temp_basename}"
+    if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
+      -i "$existing_opus" \
+      "${FILTERS[@]}" \
+      -ac 1 -ar 48000 -sample_fmt s16 \
+      -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
+      "$temp_outfile"; then
+        echo "[encode] ffmpeg failed for $existing_opus" | systemd-cat -t tricorder
+        rm -f "$temp_outfile"
+        "$VENV/bin/python" -m lib.fault_handler encode_failure "$existing_opus" "$base"
+        exit 1
+    fi
+    mv -f "$temp_outfile" "$existing_opus"
+  else
+    echo "[encode] Streaming encoder provided $existing_opus; no filters requested" | systemd-cat -t tricorder
+  fi
 else
   if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
     -i "$in_wav" \
