@@ -936,6 +936,7 @@ class TimelineRecorder:
         self.event_counter: int | None = None
         self.trigger_rms: int | None = None
         self.queue_drops = 0
+        self.streaming_feed_drops = 0
 
         self.frames_written = 0
         self.sum_rms = 0
@@ -1404,6 +1405,7 @@ class TimelineRecorder:
                         self._q_send(bytes(f))
                         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(f)):
                             self.queue_drops += 1
+                            self.streaming_feed_drops += 1
                         self.frames_written += 1
                         self.sum_rms += rms(f)
                 self.prebuf.clear()
@@ -1440,6 +1442,7 @@ class TimelineRecorder:
         self._q_send(bytes(buf))
         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
             self.queue_drops += 1
+            self.streaming_feed_drops += 1
         self.frames_written += 1
         self.sum_rms += rms(proc_for_analysis)
         self.saw_voiced = voiced or self.saw_voiced
@@ -1511,6 +1514,11 @@ class TimelineRecorder:
         )
 
         job_id: int | None = None
+        streaming_drop_count = 0
+        streaming_feed_drop_count = self.streaming_feed_drops
+        if streaming_result:
+            streaming_drop_count = streaming_result.dropped_chunks
+
         if tmp_wav_path and base:
             day = time.strftime("%Y%m%d")
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
@@ -1522,7 +1530,17 @@ class TimelineRecorder:
             target_day_dir = day_dir or os.path.join(REC_DIR, day)
             os.makedirs(target_day_dir, exist_ok=True)
             final_opus_path = os.path.join(target_day_dir, f"{final_base}{STREAMING_EXTENSION}")
-            if streaming_result and streaming_result.success and partial_stream_path and os.path.exists(partial_stream_path):
+            streaming_had_drops = (
+                (streaming_result and streaming_result.dropped_chunks > 0)
+                or streaming_feed_drop_count > 0
+            )
+            if (
+                streaming_result
+                and streaming_result.success
+                and not streaming_had_drops
+                and partial_stream_path
+                and os.path.exists(partial_stream_path)
+            ):
                 try:
                     os.replace(partial_stream_path, final_opus_path)
                     streaming_succeeded = True
@@ -1537,6 +1555,18 @@ class TimelineRecorder:
                         flush=True,
                     )
                     streaming_succeeded = False
+            elif streaming_result and streaming_had_drops:
+                drop_details = []
+                if streaming_drop_count:
+                    drop_details.append(f"encoder_drops={streaming_drop_count}")
+                if streaming_feed_drop_count and streaming_feed_drop_count != streaming_drop_count:
+                    drop_details.append(f"feed_drops={streaming_feed_drop_count}")
+                detail_msg = f" ({', '.join(drop_details)})" if drop_details else ""
+                print(
+                    "[segmenter] WARN: streaming encoder dropped frames; falling back to full encode"
+                    f"{detail_msg}",
+                    flush=True,
+                )
             elif streaming_result and not streaming_result.success:
                 if streaming_result.stderr:
                     print(
@@ -1653,6 +1683,7 @@ class TimelineRecorder:
         self.base_name = None
         self.tmp_wav_path = None
         self.queue_drops = 0
+        self.streaming_feed_drops = 0
         self.event_timestamp = None
         self.event_counter = None
         self.trigger_rms = None
