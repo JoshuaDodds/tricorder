@@ -1592,7 +1592,7 @@ button.small {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: clamp(1.5rem, 4vw, 3rem);
+  padding: clamp(1rem, 2vw, 2.5rem);
   background: var(--overlay-backdrop);
   backdrop-filter: blur(12px);
   z-index: 1000;
@@ -2004,8 +2004,10 @@ body[data-scroll-locked="true"] {
 }
 
 .recycle-bin-dialog {
-  width: min(1040px, 96vw);
-  max-height: min(92vh, 960px);
+  width: min(98vw, 2000px);
+  max-width: 98vw;
+  height: calc(100vh - clamp(1rem, 2vw, 2.5rem) * 2);
+  max-height: calc(100vh - clamp(1rem, 2vw, 2.5rem) * 2);
   display: flex;
   flex-direction: column;
   padding: clamp(1.25rem, 1.5vw + 1rem, 1.75rem);
@@ -2030,21 +2032,27 @@ body[data-scroll-locked="true"] {
   margin-top: 1rem;
   overflow: hidden;
   flex-wrap: wrap;
+  align-items: stretch;
+  min-height: 0;
 }
 
 .recycle-bin-list {
-  flex: 1 1 55%;
-  min-width: 320px;
+  flex: 1 1 60%;
+  min-width: 340px;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  min-height: 0;
 }
 
 .recycle-bin-table-wrapper {
   border: 1px solid var(--table-border);
   border-radius: 1rem;
   background: var(--surface-soft);
-  overflow: hidden;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
 }
 
 .recycle-bin-table {
@@ -2113,8 +2121,8 @@ body[data-scroll-locked="true"] {
 }
 
 .recycle-bin-preview {
-  flex: 1 1 35%;
-  min-width: 260px;
+  flex: 1 1 40%;
+  min-width: 320px;
   background: var(--surface-soft);
   border: 1px solid var(--table-border);
   border-radius: 1rem;
@@ -2122,6 +2130,8 @@ body[data-scroll-locked="true"] {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  min-height: 0;
+  overflow: auto;
 }
 
 .recycle-bin-preview h3 {
@@ -2383,6 +2393,10 @@ body[data-scroll-locked="true"] {
 .table-responsive {
   overflow: auto;
   padding: 0 1.5rem 1.5rem;
+}
+
+.table-responsive.recycle-bin-table-wrapper {
+  padding: 0;
 }
 
 .table-footer {
