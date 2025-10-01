@@ -2031,10 +2031,13 @@ body[data-scroll-locked="true"] {
   flex: 1 1 auto;
   gap: 1.5rem;
   margin-top: 1rem;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   flex-wrap: wrap;
   align-items: stretch;
   min-height: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .recycle-bin-list {
@@ -2054,6 +2057,9 @@ body[data-scroll-locked="true"] {
   flex: 1 1 auto;
   min-height: 0;
   padding: 0;
+  max-height: 100%;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .recycle-bin-table {
