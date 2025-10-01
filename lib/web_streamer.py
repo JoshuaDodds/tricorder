@@ -3593,6 +3593,7 @@ def build_app() -> web.Application:
             raise web.HTTPBadRequest(reason="No purge criteria provided")
 
         entries_by_id: dict[str, dict[str, object]] = {}
+        orphan_entries: dict[str, dict[str, object]] = {}
         if recycle_root.exists():
             try:
                 candidates = list(recycle_root.iterdir())
@@ -3600,25 +3601,51 @@ def build_app() -> web.Application:
                 candidates = []
             for entry_dir in candidates:
                 data = _read_recycle_entry(entry_dir)
-                if not data:
+                if data:
+                    entry_id = str(data.get("id", ""))
+                    if entry_id:
+                        entries_by_id[entry_id] = data
                     continue
-                entry_id = str(data.get("id", ""))
-                if entry_id:
-                    entries_by_id[entry_id] = data
+
+                entry_name = entry_dir.name
+                if not entry_name:
+                    continue
+
+                metadata_path = entry_dir / RECYCLE_METADATA_FILENAME
+                deleted_epoch: float | None = None
+                try:
+                    deleted_epoch = entry_dir.stat().st_mtime
+                except OSError:
+                    deleted_epoch = None
+
+                orphan_entries[entry_name] = {
+                    "id": entry_name,
+                    "dir": entry_dir,
+                    "metadata_path": metadata_path if metadata_path.exists() else None,
+                    "deleted_at_epoch": deleted_epoch,
+                }
 
         targets: dict[str, dict[str, object]] = {}
 
         if delete_all:
             targets.update(entries_by_id)
+            for entry_id, entry_data in orphan_entries.items():
+                targets.setdefault(entry_id, entry_data)
 
         if age_cutoff is not None:
             for entry_id, entry_data in entries_by_id.items():
                 deleted_epoch = entry_data.get("deleted_at_epoch")
                 if isinstance(deleted_epoch, (int, float)) and deleted_epoch <= age_cutoff:
                     targets.setdefault(entry_id, entry_data)
+            for entry_id, entry_data in orphan_entries.items():
+                deleted_epoch = entry_data.get("deleted_at_epoch")
+                if isinstance(deleted_epoch, (int, float)) and deleted_epoch <= age_cutoff:
+                    targets.setdefault(entry_id, entry_data)
 
         for entry_id in sorted(requested_ids):
             entry_data = entries_by_id.get(entry_id)
+            if not entry_data:
+                entry_data = orphan_entries.get(entry_id)
             if not entry_data:
                 errors.append({"item": entry_id, "error": "entry not found"})
                 continue
