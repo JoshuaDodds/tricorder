@@ -17,9 +17,11 @@ try:
     )
     from aiortc.mediastreams import MediaStreamTrack as _MediaStreamTrack
     import av as _av
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised in environments without aiortc
+except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - exercised in environments without aiortc
     _AIORTC_IMPORT_ERROR: Exception | None = exc
+    _RTCConfiguration = None
     _RTCPeerConnection = None
+    _RTCIceServer = None
     _RTCSessionDescription = None
     _MediaStreamTrack = None
     _av = None

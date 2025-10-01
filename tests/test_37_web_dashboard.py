@@ -182,6 +182,96 @@ def test_recordings_search_matches_transcripts(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypatch):
+    async def runner():
+        now = 1_700_040_000.0
+        monkeypatch.setattr(web_streamer.time, "time", lambda: now)
+        status_path = Path(os.environ["TMP_DIR"]) / "segmenter_status.json"
+        stale_age = web_streamer.CAPTURE_STATUS_STALE_AFTER_SECONDS + 5.0
+        status_payload = {
+            "capturing": True,
+            "service_running": True,
+            "updated_at": now - stale_age,
+            "event": {"base_name": "alpha"},
+            "encoding": {
+                "pending": [{"base_name": "queued", "source": "ingest"}],
+                "active": {
+                    "base_name": "active",
+                    "source": "live",
+                    "duration_seconds": 12.0,
+                },
+            },
+        }
+        status_path.write_text(json.dumps(status_payload), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings")
+            assert resp.status == 200
+            payload = await resp.json()
+            capture_status = payload.get("capture_status", {})
+            assert capture_status.get("capturing") is False
+            assert capture_status.get("service_running") is False
+            assert capture_status.get("event") is None
+            assert "encoding" not in capture_status
+            assert capture_status.get("last_stop_reason") == "status stale"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkeypatch):
+    async def runner():
+        now = 1_700_050_000.0
+        monkeypatch.setattr(web_streamer.time, "time", lambda: now)
+        status_path = Path(os.environ["TMP_DIR"]) / "segmenter_status.json"
+
+        offline_payload = {
+            "capturing": True,
+            "service_running": False,
+            "updated_at": now,
+            "event": {"base_name": "beta"},
+            "encoding": {"pending": [{"base_name": "queued"}]},
+        }
+        status_path.write_text(json.dumps(offline_payload), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings")
+            assert resp.status == 200
+            payload = await resp.json()
+            first_status = payload.get("capture_status", {})
+            assert first_status.get("capturing") is False
+            assert first_status.get("service_running") is False
+            assert first_status.get("event") is None
+            assert "encoding" not in first_status
+            assert first_status.get("last_stop_reason") == "service offline"
+
+            offline_payload["last_stop_reason"] = "shutdown"
+            status_path.write_text(json.dumps(offline_payload), encoding="utf-8")
+
+            resp_again = await client.get("/api/recordings")
+            assert resp_again.status == 200
+            payload_again = await resp_again.json()
+            second_status = payload_again.get("capture_status", {})
+            assert second_status.get("capturing") is False
+            assert second_status.get("service_running") is False
+            assert second_status.get("event") is None
+            assert "encoding" not in second_status
+            assert second_status.get("last_stop_reason") == "shutdown"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_archival_settings_round_trip(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
