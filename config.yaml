@@ -178,6 +178,14 @@ adaptive_rms:
   # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
   min_thresh: 0.01
 
+  # Optional hard ceiling in linear RMS units (same scale as segmenter.rms_threshold).
+  # Example: 250 keeps the adaptive gate from exceeding an RMS of 250. Leave null to disable.
+  max_rms: null
+
+  # Maximum normalized RMS threshold (0.0–1.0). Serves as a secondary guard rail for
+  # advanced tuning; most installs can keep this at 1.0 and rely on max_rms for the ceiling.
+  max_thresh: 1.0
+
   # Multiplier applied to the background P95 value when computing the candidate threshold.
   margin: 1.2
 
@@ -287,14 +295,16 @@ streaming:
   webrtc_history_seconds: 8.0
   # Optional list of STUN/TURN ICE servers exposed to WebRTC clients. Provide
   # either strings ("stun:stun.example.com:3478") or objects with urls,
-  # username, and credential fields. Leave unset to use public STUN defaults
-  # suitable for Firefox and Chromium; set to [] to disable external ICE
-  # servers entirely.
-  # webrtc_ice_servers:
-  #   - "stun:stun.cloudflare.com:3478"
-  #   - urls: ["turn:turn.example.com:3478"]
-  #     username: "tricorder"
-  #     credential: "s3cret"
+  # username, and credential fields. Defaults include Cloudflare and Google
+  # STUN endpoints so Firefox/Chromium can negotiate candidates reliably.
+  # Set this to [] to disable external ICE servers entirely.
+  webrtc_ice_servers:
+    - urls:
+        - "stun:stun.cloudflare.com:3478"
+        - "stun:stun.l.google.com:19302"
+    # - urls: ["turn:turn.example.com:3478"]
+    #   username: "tricorder"
+    #   credential: "s3cret"
 
 dashboard:
   # Override the base URL used by the dashboard when making API and HLS requests.
@@ -313,6 +323,15 @@ dashboard:
     - unit: "web-streamer.service"
       label: "Web UI"
       description: "Serves the dashboard and live stream."
+    - unit: "dropbox.service"
+      label: "Dropbox ingest"
+      description: "Monitors dropbox_dir for externally provided audio files."
+    - unit: "tricorder-auto-update.service"
+      label: "Auto updater"
+      description: "Applies updates staged by the project updater."
+    - unit: "tmpfs-guard.service"
+      label: "Tmpfs guard"
+      description: "Ensures tmpfs usage stays within configured limits."
 
   # Unit that should be restarted automatically when stopped or reloaded through
   # the dashboard to keep the management interface reachable.

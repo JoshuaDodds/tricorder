@@ -8,14 +8,17 @@ Behavior:
 - Last live-stream client leaving schedules encoder stop after a cooldown
   (default 10s).
 - Dashboard lists locally stored recordings with playback, download, and
-  deletion controls.
+  recycle bin controls.
 
 Endpoints:
   GET /                    -> Dashboard HTML
   GET /dashboard           -> Same as /
   GET /api/recordings      -> JSON listing of recordings with filters
-  POST /api/recordings/delete -> Delete one or more recordings
+  POST /api/recordings/delete -> Move one or more recordings to the recycle bin
   GET /recordings/<path>   -> Serve/download a stored recording
+  GET /api/recycle-bin     -> List recycle bin entries
+  POST /api/recycle-bin/restore -> Restore deleted recordings
+  GET /recycle-bin/<id>    -> Preview a recycled recording
   GET /api/config          -> JSON configuration snapshot
   GET /hls                 -> Legacy HLS HTML page with live stats
   GET /hls/live.m3u8       -> Ensures encoder started; returns playlist (or bootstrap)
@@ -67,6 +70,10 @@ CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
 DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
 ]
+
+RECYCLE_BIN_DIRNAME = ".recycle_bin"
+RECYCLE_METADATA_FILENAME = "metadata.json"
+RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
@@ -449,6 +456,8 @@ def _adaptive_rms_defaults() -> dict[str, Any]:
     return {
         "enabled": False,
         "min_thresh": 0.01,
+        "max_rms": None,
+        "max_thresh": 1.0,
         "margin": 1.2,
         "update_interval_sec": 5.0,
         "window_sec": 10.0,
@@ -622,8 +631,17 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         if isinstance(enabled, bool):
             result["enabled"] = enabled
 
+        max_rms = raw.get("max_rms")
+        if isinstance(max_rms, (int, float)) and not isinstance(max_rms, bool):
+            if math.isfinite(float(max_rms)):
+                candidate = int(round(float(max_rms)))
+                result["max_rms"] = candidate if candidate > 0 else None
+        elif max_rms is None:
+            result["max_rms"] = None
+
         for key in (
             "min_thresh",
+            "max_thresh",
             "margin",
             "update_interval_sec",
             "window_sec",
@@ -633,6 +651,8 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 result[key] = float(value)
+        if result["max_thresh"] < result["min_thresh"]:
+            result["max_thresh"] = result["min_thresh"]
     return result
 
 
@@ -1089,6 +1109,28 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     if min_thresh is not None:
         normalized["min_thresh"] = min_thresh
 
+    raw_max_rms = payload.get("max_rms")
+    if raw_max_rms is None:
+        normalized["max_rms"] = None
+    elif isinstance(raw_max_rms, str) and not raw_max_rms.strip():
+        normalized["max_rms"] = None
+    else:
+        max_rms_value = _coerce_int(
+            raw_max_rms,
+            "max_rms",
+            errors,
+            min_value=0,
+            max_value=32767,
+        )
+        if max_rms_value is not None:
+            normalized["max_rms"] = max_rms_value or None
+
+    max_thresh = _coerce_float(
+        payload.get("max_thresh"), "max_thresh", errors, min_value=0.0, max_value=1.0
+    )
+    if max_thresh is not None:
+        normalized["max_thresh"] = max_thresh
+
     margin = _coerce_float(payload.get("margin"), "margin", errors, min_value=0.5, max_value=10.0)
     if margin is not None:
         normalized["margin"] = margin
@@ -1128,6 +1170,9 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     )
     if percentile is not None:
         normalized["release_percentile"] = percentile
+
+    if normalized["max_thresh"] < normalized["min_thresh"]:
+        errors.append("max_thresh must be greater than or equal to min_thresh")
 
     return normalized, errors
 
@@ -1435,6 +1480,8 @@ def _scan_recordings_worker(
         return entries, [], [], 0
 
     for path in recordings_root.rglob("*"):
+        if RECYCLE_BIN_DIRNAME in path.parts:
+            continue
         if not path.is_file():
             continue
         suffix = path.suffix.lower()
@@ -1572,6 +1619,97 @@ def _scan_recordings_worker(
     return entries, days_sorted, exts_sorted, total_bytes
 
 
+def _is_safe_relative_path(value: str) -> bool:
+    if not value:
+        return False
+    if value.startswith(("/", "\\")):
+        return False
+    try:
+        parts = Path(value).parts
+    except Exception:
+        return False
+    return ".." not in parts
+
+
+def _generate_recycle_entry_id(now: datetime | None = None) -> str:
+    timestamp = datetime.now(timezone.utc) if now is None else now
+    suffix = secrets.token_hex(4)
+    return f"{timestamp.strftime('%Y%m%dT%H%M%S')}-{suffix}"
+
+
+def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
+    if not entry_dir.is_dir():
+        return None
+    metadata_path = entry_dir / RECYCLE_METADATA_FILENAME
+    try:
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+
+    entry_id = metadata.get("id")
+    if not isinstance(entry_id, str) or not entry_id or not RECYCLE_ID_PATTERN.match(entry_id):
+        return None
+
+    stored_name = metadata.get("stored_name")
+    if not isinstance(stored_name, str) or not stored_name:
+        return None
+
+    audio_path = entry_dir / stored_name
+    if not audio_path.is_file():
+        return None
+
+    original_path = metadata.get("original_path")
+    if isinstance(original_path, str) and original_path:
+        original_rel = original_path
+    else:
+        original_rel = stored_name
+
+    deleted_iso = metadata.get("deleted_at")
+    if not isinstance(deleted_iso, str):
+        deleted_iso = ""
+
+    deleted_epoch_raw = metadata.get("deleted_at_epoch")
+    deleted_epoch: float | None
+    if isinstance(deleted_epoch_raw, (int, float)):
+        deleted_epoch = float(deleted_epoch_raw)
+    else:
+        deleted_epoch = None
+
+    try:
+        size_bytes = int(metadata.get("size_bytes", audio_path.stat().st_size))
+    except OSError:
+        size_bytes = int(metadata.get("size_bytes") or 0)
+
+    duration_raw = metadata.get("duration_seconds")
+    duration = float(duration_raw) if isinstance(duration_raw, (int, float)) else None
+
+    waveform_name = metadata.get("waveform_name")
+    if not isinstance(waveform_name, str):
+        waveform_name = ""
+
+    transcript_name = metadata.get("transcript_name")
+    if not isinstance(transcript_name, str):
+        transcript_name = ""
+
+    return {
+        "id": entry_id,
+        "dir": entry_dir,
+        "metadata_path": metadata_path,
+        "metadata": metadata,
+        "audio_path": audio_path,
+        "stored_name": stored_name,
+        "waveform_name": waveform_name,
+        "transcript_name": transcript_name,
+        "original_path": original_rel,
+        "deleted_at": deleted_iso,
+        "deleted_at_epoch": deleted_epoch,
+        "size_bytes": size_bytes,
+        "duration": duration,
+    }
+
 def _service_label_from_unit(unit: str) -> str:
     base = unit.split(".", 1)[0]
     tokens = [segment for segment in base.replace("_", "-").split("-") if segment]
@@ -1646,6 +1784,7 @@ def _normalize_dashboard_services(cfg: dict[str, Any]) -> tuple[list[dict[str, s
 
 SHUTDOWN_EVENT_KEY: AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 RECORDINGS_ROOT_KEY: AppKey[Path] = web.AppKey("recordings_root", Path)
+RECYCLE_BIN_ROOT_KEY: AppKey[Path] = web.AppKey("recycle_bin_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
 SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_services", list)
 AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
@@ -1992,6 +2131,9 @@ def build_app() -> web.Application:
     except Exception as exc:  # pragma: no cover - permissions issues should not crash server
         log.warning("Unable to ensure recordings directory exists: %s", exc)
     app[RECORDINGS_ROOT_KEY] = recordings_root
+
+    recycle_bin_root = recordings_root / RECYCLE_BIN_DIRNAME
+    app[RECYCLE_BIN_ROOT_KEY] = recycle_bin_root
 
     allowed_ext_cfg: Iterable[str] = cfg.get("ingest", {}).get("allowed_ext", [".opus"])
     allowed_ext = tuple(
@@ -3094,6 +3236,20 @@ def build_app() -> web.Application:
         deleted: list[str] = []
         errors: list[dict[str, str]] = []
         root_resolved = recordings_root_resolved
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        recycle_root_resolved: Path | None = None
+        try:
+            recycle_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("Unable to ensure recycle bin directory exists: %s", exc)
+            recycle_root_ready = False
+        else:
+            recycle_root_ready = True
+            try:
+                recycle_root_resolved = recycle_root.resolve()
+            except OSError as exc:
+                log.warning("Unable to resolve recycle bin directory: %s", exc)
+                recycle_root_ready = False
 
         for raw in items:
             if not isinstance(raw, str) or not raw.strip():
@@ -3121,25 +3277,117 @@ def build_app() -> web.Application:
                 errors.append({"item": rel, "error": "not a file"})
                 continue
 
+            if recycle_root_resolved is not None and resolved.is_relative_to(recycle_root_resolved):
+                errors.append({"item": rel, "error": "already in recycle bin"})
+                continue
+
+            if not recycle_root_ready:
+                errors.append({"item": rel, "error": "recycle bin unavailable"})
+                continue
+
+            rel_posix = rel.replace(os.sep, "/")
+
             try:
-                resolved.unlink()
-                deleted.append(rel.replace(os.sep, "/"))
-                waveform_sidecar = resolved.with_suffix(resolved.suffix + ".waveform.json")
+                stat_result = resolved.stat()
+            except OSError as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            waveform_sidecar = resolved.with_suffix(resolved.suffix + ".waveform.json")
+            transcript_sidecar = resolved.with_suffix(resolved.suffix + ".transcript.json")
+            waveform_meta: dict[str, object] | None = None
+            if waveform_sidecar.is_file():
                 try:
-                    waveform_sidecar.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    pass
-                transcript_sidecar = resolved.with_suffix(resolved.suffix + ".transcript.json")
+                    with waveform_sidecar.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                    if isinstance(payload, dict):
+                        waveform_meta = payload
+                except (OSError, json.JSONDecodeError):
+                    waveform_meta = None
+
+            now = datetime.now(timezone.utc)
+            entry_dir: Path | None = None
+            entry_id = ""
+            attempts = 0
+            while attempts < 6:
+                attempts += 1
+                candidate_id = _generate_recycle_entry_id(now if attempts == 1 else None)
+                candidate_dir = recycle_root / candidate_id
                 try:
-                    transcript_sidecar.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    pass
+                    candidate_dir.mkdir(parents=True, exist_ok=False)
+                except FileExistsError:
+                    continue
+                except OSError as exc:
+                    errors.append({"item": rel, "error": f"unable to prepare recycle bin: {exc}"})
+                    candidate_dir = None
+                    break
+                entry_dir = candidate_dir
+                entry_id = candidate_id
+                break
+
+            if entry_dir is None or not entry_id:
+                continue
+
+            moved_pairs: list[tuple[Path, Path]] = []
+            metadata_path = entry_dir / RECYCLE_METADATA_FILENAME
+            audio_destination = entry_dir / resolved.name
+            waveform_name = ""
+            transcript_name = ""
+            duration_value: float | None = None
+            if waveform_meta is not None:
+                raw_duration = waveform_meta.get("duration_seconds")
+                if isinstance(raw_duration, (int, float)):
+                    duration_value = float(raw_duration)
+
+            try:
+                shutil.move(str(resolved), str(audio_destination))
+                moved_pairs.append((audio_destination, resolved))
+
+                if waveform_sidecar.is_file():
+                    waveform_name = waveform_sidecar.name
+                    waveform_destination = entry_dir / waveform_name
+                    shutil.move(str(waveform_sidecar), str(waveform_destination))
+                    moved_pairs.append((waveform_destination, waveform_sidecar))
+                if transcript_sidecar.is_file():
+                    transcript_name = transcript_sidecar.name
+                    transcript_destination = entry_dir / transcript_name
+                    shutil.move(str(transcript_sidecar), str(transcript_destination))
+                    moved_pairs.append((transcript_destination, transcript_sidecar))
+
+                metadata = {
+                    "id": entry_id,
+                    "stored_name": resolved.name,
+                    "original_name": resolved.name,
+                    "original_path": rel_posix,
+                    "deleted_at": now.isoformat(),
+                    "deleted_at_epoch": now.timestamp(),
+                    "size_bytes": int(getattr(stat_result, "st_size", 0)),
+                    "duration_seconds": duration_value,
+                    "waveform_name": waveform_name,
+                    "transcript_name": transcript_name,
+                }
+                with metadata_path.open("w", encoding="utf-8") as handle:
+                    json.dump(metadata, handle)
+
+                deleted.append(rel_posix)
             except Exception as exc:
                 errors.append({"item": rel, "error": str(exc)})
+                for dest, original in reversed(moved_pairs):
+                    try:
+                        if dest.exists():
+                            original.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(dest), str(original))
+                    except Exception:
+                        pass
+                try:
+                    if metadata_path.exists():
+                        metadata_path.unlink()
+                except Exception:
+                    pass
+                try:
+                    shutil.rmtree(entry_dir, ignore_errors=True)
+                except Exception:
+                    pass
                 continue
 
             parent = resolved.parent
@@ -3158,6 +3406,339 @@ def build_app() -> web.Application:
                 break
 
         return web.json_response({"deleted": deleted, "errors": errors})
+
+    async def recycle_bin_list(request: web.Request) -> web.Response:
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        entries: list[dict[str, object]] = []
+        if recycle_root.exists():
+            try:
+                candidates = list(recycle_root.iterdir())
+            except OSError:
+                candidates = []
+            for entry_dir in candidates:
+                data = _read_recycle_entry(entry_dir)
+                if not data:
+                    continue
+
+                entry_id = str(data.get("id", ""))
+                original_rel = str(data.get("original_path", ""))
+                stored_name = str(data.get("stored_name", ""))
+                name = Path(stored_name).stem if stored_name else stored_name
+                extension = Path(stored_name).suffix.lstrip(".") if stored_name else ""
+
+                restorable = False
+                if original_rel and _is_safe_relative_path(original_rel):
+                    candidate = recordings_root / original_rel
+                    try:
+                        resolved_target = candidate.resolve(strict=False)
+                    except FileNotFoundError:
+                        resolved_target = candidate
+                    try:
+                        resolved_target.relative_to(recordings_root_resolved)
+                    except ValueError:
+                        restorable = False
+                    else:
+                        restorable = not candidate.exists()
+
+                deleted_epoch = data.get("deleted_at_epoch")
+                if isinstance(deleted_epoch, (int, float)):
+                    deleted_epoch_value = float(deleted_epoch)
+                else:
+                    deleted_epoch_value = None
+
+                entries.append(
+                    {
+                        "id": entry_id,
+                        "name": name,
+                        "extension": extension,
+                        "original_path": original_rel,
+                        "deleted_at": str(data.get("deleted_at", "")),
+                        "deleted_at_epoch": deleted_epoch_value,
+                        "size_bytes": int(data.get("size_bytes", 0) or 0),
+                        "duration_seconds": (
+                            float(data.get("duration"))
+                            if isinstance(data.get("duration"), (int, float))
+                            else None
+                        ),
+                        "restorable": restorable,
+                    }
+                )
+
+        entries.sort(
+            key=lambda item: (
+                float(item["deleted_at_epoch"]) if item.get("deleted_at_epoch") else 0.0
+            ),
+            reverse=True,
+        )
+        return web.json_response({"items": entries, "total": len(entries)})
+
+    async def recycle_bin_restore(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise web.HTTPBadRequest(reason="'items' must be a list")
+
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        restored: list[str] = []
+        errors: list[dict[str, str]] = []
+
+        if not recycle_root.exists():
+            recycle_root_exists = False
+        else:
+            recycle_root_exists = True
+
+        for raw in items:
+            if not isinstance(raw, str) or not raw.strip():
+                errors.append({"item": str(raw), "error": "invalid entry id"})
+                continue
+
+            entry_id = raw.strip()
+            if not RECYCLE_ID_PATTERN.match(entry_id):
+                errors.append({"item": entry_id, "error": "invalid entry id"})
+                continue
+
+            if not recycle_root_exists:
+                errors.append({"item": entry_id, "error": "recycle bin is empty"})
+                continue
+
+            entry_dir = recycle_root / entry_id
+            data = _read_recycle_entry(entry_dir)
+            if not data:
+                errors.append({"item": entry_id, "error": "entry not found"})
+                continue
+
+            original_rel = str(data.get("original_path", ""))
+            if not original_rel or not _is_safe_relative_path(original_rel):
+                errors.append({"item": entry_id, "error": "entry path is invalid"})
+                continue
+
+            target_path = recordings_root / original_rel
+            try:
+                resolved_target = target_path.resolve(strict=False)
+            except FileNotFoundError:
+                resolved_target = target_path
+
+            try:
+                resolved_target.relative_to(recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": entry_id, "error": "target outside recordings directory"})
+                continue
+
+            if target_path.exists():
+                errors.append({"item": entry_id, "error": "a file already exists at target"})
+                continue
+
+            audio_path = data.get("audio_path")
+            if not isinstance(audio_path, Path) or not audio_path.exists():
+                errors.append({"item": entry_id, "error": "audio file missing"})
+                continue
+
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                errors.append({"item": entry_id, "error": f"unable to prepare destination: {exc}"})
+                continue
+
+            try:
+                shutil.move(str(audio_path), str(target_path))
+            except Exception as exc:
+                errors.append({"item": entry_id, "error": f"unable to restore audio: {exc}"})
+                continue
+
+            sidecar_errors: list[str] = []
+            waveform_name = data.get("waveform_name")
+            if isinstance(waveform_name, str) and waveform_name:
+                source = data["dir"] / waveform_name
+                destination = target_path.with_suffix(target_path.suffix + ".waveform.json")
+                if source.exists():
+                    try:
+                        shutil.move(str(source), str(destination))
+                    except Exception as exc:
+                        sidecar_errors.append(f"waveform: {exc}")
+
+            transcript_name = data.get("transcript_name")
+            if isinstance(transcript_name, str) and transcript_name:
+                source = data["dir"] / transcript_name
+                destination = target_path.with_suffix(target_path.suffix + ".transcript.json")
+                if source.exists():
+                    try:
+                        shutil.move(str(source), str(destination))
+                    except Exception as exc:
+                        sidecar_errors.append(f"transcript: {exc}")
+
+            try:
+                metadata_path = data.get("metadata_path")
+                if isinstance(metadata_path, Path) and metadata_path.exists():
+                    metadata_path.unlink()
+            except Exception:
+                pass
+
+            try:
+                shutil.rmtree(data["dir"], ignore_errors=True)
+            except Exception:
+                pass
+
+            restored.append(original_rel)
+            for message in sidecar_errors:
+                errors.append({"item": entry_id, "error": message})
+
+        return web.json_response({"restored": restored, "errors": errors})
+
+    async def recycle_bin_purge(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        errors: list[dict[str, str]] = []
+        items_value = data.get("items")
+        requested_ids: set[str] = set()
+
+        if items_value is not None:
+            if not isinstance(items_value, list):
+                raise web.HTTPBadRequest(reason="'items' must be a list")
+            for raw in items_value:
+                if not isinstance(raw, str) or not raw.strip():
+                    errors.append({"item": str(raw), "error": "invalid entry id"})
+                    continue
+                entry_id = raw.strip()
+                if not RECYCLE_ID_PATTERN.match(entry_id):
+                    errors.append({"item": entry_id, "error": "invalid entry id"})
+                    continue
+                requested_ids.add(entry_id)
+
+        delete_all = bool(data.get("delete_all"))
+
+        older_than_seconds_raw = data.get("older_than_seconds")
+        age_cutoff: float | None = None
+        if older_than_seconds_raw is not None:
+            try:
+                older_than_seconds = float(older_than_seconds_raw)
+            except (TypeError, ValueError):
+                errors.append({"item": "older_than_seconds", "error": "invalid age"})
+            else:
+                if older_than_seconds < 0:
+                    errors.append({"item": "older_than_seconds", "error": "age must be non-negative"})
+                else:
+                    age_cutoff = time.time() - older_than_seconds
+
+        if items_value is None and not delete_all and age_cutoff is None:
+            raise web.HTTPBadRequest(reason="No purge criteria provided")
+
+        entries_by_id: dict[str, dict[str, object]] = {}
+        orphan_entries: dict[str, dict[str, object]] = {}
+        if recycle_root.exists():
+            try:
+                candidates = list(recycle_root.iterdir())
+            except OSError:
+                candidates = []
+            for entry_dir in candidates:
+                data = _read_recycle_entry(entry_dir)
+                if data:
+                    entry_id = str(data.get("id", ""))
+                    if entry_id:
+                        entries_by_id[entry_id] = data
+                    continue
+
+                entry_name = entry_dir.name
+                if not entry_name:
+                    continue
+
+                metadata_path = entry_dir / RECYCLE_METADATA_FILENAME
+                deleted_epoch: float | None = None
+                try:
+                    deleted_epoch = entry_dir.stat().st_mtime
+                except OSError:
+                    deleted_epoch = None
+
+                orphan_entries[entry_name] = {
+                    "id": entry_name,
+                    "dir": entry_dir,
+                    "metadata_path": metadata_path if metadata_path.exists() else None,
+                    "deleted_at_epoch": deleted_epoch,
+                }
+
+        targets: dict[str, dict[str, object]] = {}
+
+        if delete_all:
+            targets.update(entries_by_id)
+            for entry_id, entry_data in orphan_entries.items():
+                targets.setdefault(entry_id, entry_data)
+
+        if age_cutoff is not None:
+            for entry_id, entry_data in entries_by_id.items():
+                deleted_epoch = entry_data.get("deleted_at_epoch")
+                if isinstance(deleted_epoch, (int, float)) and deleted_epoch <= age_cutoff:
+                    targets.setdefault(entry_id, entry_data)
+            for entry_id, entry_data in orphan_entries.items():
+                deleted_epoch = entry_data.get("deleted_at_epoch")
+                if isinstance(deleted_epoch, (int, float)) and deleted_epoch <= age_cutoff:
+                    targets.setdefault(entry_id, entry_data)
+
+        for entry_id in sorted(requested_ids):
+            entry_data = entries_by_id.get(entry_id)
+            if not entry_data:
+                entry_data = orphan_entries.get(entry_id)
+            if not entry_data:
+                errors.append({"item": entry_id, "error": "entry not found"})
+                continue
+            targets.setdefault(entry_id, entry_data)
+
+        purged: list[str] = []
+        for entry_id in sorted(targets):
+            entry_data = targets[entry_id]
+            entry_dir = entry_data.get("dir")
+            if not isinstance(entry_dir, Path):
+                errors.append({"item": entry_id, "error": "entry directory unavailable"})
+                continue
+            try:
+                shutil.rmtree(entry_dir)
+            except FileNotFoundError:
+                purged.append(entry_id)
+            except Exception as exc:
+                errors.append({"item": entry_id, "error": f"unable to purge entry: {exc}"})
+                continue
+            else:
+                purged.append(entry_id)
+
+        if recycle_root.exists():
+            try:
+                next(recycle_root.iterdir())
+            except StopIteration:
+                try:
+                    recycle_root.rmdir()
+                except OSError:
+                    pass
+            except OSError:
+                pass
+
+        return web.json_response({"purged": purged, "errors": errors})
+
+    async def recycle_bin_file(request: web.Request) -> web.StreamResponse:
+        entry_id = request.match_info.get("entry_id", "").strip()
+        if not entry_id or not RECYCLE_ID_PATTERN.match(entry_id):
+            raise web.HTTPNotFound()
+
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        entry_dir = recycle_root / entry_id
+        data = _read_recycle_entry(entry_dir)
+        if not data:
+            raise web.HTTPNotFound()
+
+        audio_path = data.get("audio_path")
+        if not isinstance(audio_path, Path) or not audio_path.is_file():
+            raise web.HTTPNotFound()
+
+        response = web.FileResponse(audio_path)
+        disposition = "attachment" if request.rel_url.query.get("download") == "1" else "inline"
+        response.headers["Content-Disposition"] = f'{disposition}; filename="{audio_path.name}"'
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
     async def recordings_rename(request: web.Request) -> web.Response:
         try:
@@ -4058,6 +4639,10 @@ def build_app() -> web.Application:
     app.router.add_post("/api/recordings/clip", recordings_clip)
     app.router.add_post("/api/recordings/clip/undo", recordings_clip_undo)
     app.router.add_get("/recordings/{path:.*}", recordings_file)
+    app.router.add_get("/api/recycle-bin", recycle_bin_list)
+    app.router.add_post("/api/recycle-bin/restore", recycle_bin_restore)
+    app.router.add_post("/api/recycle-bin/purge", recycle_bin_purge)
+    app.router.add_get("/recycle-bin/{entry_id}", recycle_bin_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/config/archival", config_archival_get)
     app.router.add_post("/api/config/archival", config_archival_update)
