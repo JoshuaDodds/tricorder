@@ -1599,6 +1599,7 @@ button.small {
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.2s ease, visibility 0.2s ease;
+  overflow-y: auto;
 }
 
 .recycle-bin-modal[hidden] {
