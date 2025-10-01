@@ -1723,6 +1723,31 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "duration": duration,
     }
 
+
+def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
+    total = 0
+    if not recycle_root.exists():
+        return 0
+    try:
+        candidates = list(recycle_root.iterdir())
+    except OSError:
+        return 0
+    for entry_dir in candidates:
+        data = _read_recycle_entry(entry_dir)
+        if not data:
+            continue
+        size_bytes = data.get("size_bytes")
+        if isinstance(size_bytes, (int, float)):
+            total += int(size_bytes)
+            continue
+        audio_path = data.get("audio_path")
+        if isinstance(audio_path, Path):
+            try:
+                total += int(audio_path.stat().st_size)
+            except OSError:
+                continue
+    return max(total, 0)
+
 def _service_label_from_unit(unit: str) -> str:
     base = unit.split(".", 1)[0]
     tokens = [segment for segment in base.replace("_", "-").split("-") if segment]
@@ -3289,6 +3314,8 @@ def build_app() -> web.Application:
             payload["storage_total_bytes"] = int(usage.total)
             payload["storage_used_bytes"] = int(usage.used)
             payload["storage_free_bytes"] = int(usage.free)
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        payload["recycle_bin_total_bytes"] = _calculate_recycle_bin_usage(recycle_root)
         payload["capture_status"] = _read_capture_status()
         return web.json_response(payload)
 
@@ -3519,6 +3546,14 @@ def build_app() -> web.Application:
                 else:
                     deleted_epoch_value = None
 
+                size_value = data.get("size_bytes", 0)
+                try:
+                    size_int = int(size_value)
+                except (TypeError, ValueError):
+                    size_int = 0
+                else:
+                    if size_int < 0:
+                        size_int = 0
                 entries.append(
                     {
                         "id": entry_id,
@@ -3527,13 +3562,14 @@ def build_app() -> web.Application:
                         "original_path": original_rel,
                         "deleted_at": str(data.get("deleted_at", "")),
                         "deleted_at_epoch": deleted_epoch_value,
-                        "size_bytes": int(data.get("size_bytes", 0) or 0),
+                        "size_bytes": size_int,
                         "duration_seconds": (
                             float(data.get("duration"))
                             if isinstance(data.get("duration"), (int, float))
                             else None
                         ),
                         "restorable": restorable,
+                        "waveform_available": bool(data.get("waveform_name")),
                     }
                 )
 
@@ -3810,6 +3846,35 @@ def build_app() -> web.Application:
         response = web.FileResponse(audio_path)
         disposition = "attachment" if request.rel_url.query.get("download") == "1" else "inline"
         response.headers["Content-Disposition"] = f'{disposition}; filename="{audio_path.name}"'
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    async def recycle_bin_waveform(request: web.Request) -> web.Response:
+        entry_id = request.match_info.get("entry_id", "").strip()
+        if not entry_id or not RECYCLE_ID_PATTERN.match(entry_id):
+            raise web.HTTPNotFound()
+
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        entry_dir = recycle_root / entry_id
+        data = _read_recycle_entry(entry_dir)
+        if not data:
+            raise web.HTTPNotFound()
+
+        waveform_name = data.get("waveform_name")
+        if not isinstance(waveform_name, str) or not waveform_name:
+            raise web.HTTPNotFound()
+
+        waveform_path = entry_dir / waveform_name
+        try:
+            with waveform_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound() from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("Unable to read recycle bin waveform %s: %s", waveform_path, exc)
+            raise web.HTTPNotFound() from exc
+
+        response = web.json_response(payload)
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -4778,6 +4843,7 @@ def build_app() -> web.Application:
     app.router.add_get("/api/recycle-bin", recycle_bin_list)
     app.router.add_post("/api/recycle-bin/restore", recycle_bin_restore)
     app.router.add_post("/api/recycle-bin/purge", recycle_bin_purge)
+    app.router.add_get("/api/recycle-bin/{entry_id}/waveform", recycle_bin_waveform)
     app.router.add_get("/recycle-bin/{entry_id}", recycle_bin_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/config/archival", config_archival_get)
