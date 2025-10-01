@@ -2699,6 +2699,10 @@ body[data-theme="light"] .record-in-progress {
   pointer-events: auto;
 }
 
+.confirm-modal {
+  z-index: 1100;
+}
+
 .confirm-dialog,
 .rename-dialog {
   width: min(420px, 100%);
