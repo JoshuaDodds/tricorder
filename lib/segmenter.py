@@ -464,8 +464,30 @@ class StreamingOpusEncoder:
         try:
             self._queue.put_nowait(None)
         except queue.Full:
-            # Fall back to blocking put; ensures sentinel eventually delivered
-            self._queue.put(None)
+            worker_alive = self._thread is not None and self._thread.is_alive()
+            if worker_alive:
+                try:
+                    # Avoid hanging forever if the worker stopped draining.
+                    block_timeout = timeout if timeout is not None else 1.0
+                    self._queue.put(None, timeout=block_timeout)
+                except queue.Full:
+                    worker_alive = False
+            if not worker_alive:
+                drained = 0
+                while True:
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    else:
+                        self._queue.task_done()
+                        drained += 1
+                if drained:
+                    self._dropped += drained
+                try:
+                    self._queue.put_nowait(None)
+                except queue.Full:
+                    pass
 
         if self._thread is not None:
             self._thread.join(timeout)
