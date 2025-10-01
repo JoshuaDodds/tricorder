@@ -31,7 +31,8 @@
 
 4. **Expose in-progress recordings to the dashboard**
    - Enhance `/api/status` to surface the active event (path, duration, size) so the UI can render it in the recordings list with a red badge until `in_progress` clears.【F:lib/web_streamer.py†L2798-L3185】
-   - Teach the UI to insert/update a placeholder row representing the partial file, pointing the audio player at `/recordings/<day>/<file>.partial.opus`. Highlight it in red while `in_progress=true`, then swap to the final `.opus` entry once rename completes.【F:lib/webui/static/js/dashboard.js†L5710-L5713】【F:lib/webui/static/js/dashboard.js†L1740-L1985】
+   - Teach the UI to insert/update a placeholder row representing the partial file, pointing the audio player at a streaming endpoint (e.g., `/api/stream/<day>/<file>`) that proxies the live encoder output with chunked transfer or websockets. Highlight it in red while `in_progress=true`, then swap to the final `.opus` entry once rename completes.【F:lib/webui/static/js/dashboard.js†L5710-L5713】【F:lib/webui/static/js/dashboard.js†L1740-L1985】
+   - Replace the current `web.FileResponse` handler serving `/recordings/...` with a streaming response that keeps the HTTP connection open and yields encoder chunks until `stdin` closes. Fall back to static file serving for fully materialised recordings so existing downloads remain unchanged.【F:lib/web_streamer.py†L1435-L1506】
    - Adjust download/cleanup handlers to treat `.partial.opus` as read-only (no delete) until finalised, and hide it from ingestion/backfill jobs by extending ignore lists.【F:lib/web_streamer.py†L1435-L1506】
 
 5. **Add configurability and fallbacks**
