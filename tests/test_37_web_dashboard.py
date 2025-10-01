@@ -51,7 +51,12 @@ async def _start_client(app: web.Application) -> tuple[TestClient, TestServer]:
     return client, server
 
 
-def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
+def _write_waveform_stub(
+    target: Path,
+    duration: float = 1.0,
+    *,
+    start_epoch: float | None = None,
+) -> None:
     payload = {
         "version": 1,
         "channels": 1,
@@ -62,6 +67,12 @@ def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
         "peaks": [0, 0],
         "rms_values": [0],
     }
+    if start_epoch is not None:
+        payload["start_epoch"] = float(start_epoch)
+        payload["started_epoch"] = float(start_epoch)
+        payload["started_at"] = datetime.fromtimestamp(
+            float(start_epoch), tz=timezone.utc
+        ).isoformat()
     target.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -1562,8 +1573,10 @@ def test_delete_recording(dashboard_env):
         target_dir.mkdir()
         target = target_dir / "delete-me.opus"
         target.write_bytes(b"data")
+        start_epoch = datetime(2024, 1, 3, 5, 6, 7, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (start_epoch, start_epoch))
         waveform = target.with_suffix(target.suffix + ".waveform.json")
-        _write_waveform_stub(waveform)
+        _write_waveform_stub(waveform, start_epoch=start_epoch)
 
         app = web_streamer.build_app()
         client, server = await _start_client(app)
@@ -1603,6 +1616,9 @@ def test_delete_recording(dashboard_env):
             entry_id = item["id"]
             assert item["restorable"] is True
             assert item["size_bytes"] == len(b"data")
+            assert item["start_epoch"] == pytest.approx(start_epoch)
+            assert item["started_at"].startswith("2024-01-03T05:06:07")
+            assert item["start_epoch"] != item["deleted_at_epoch"]
 
             resp = await client.get(f"/recycle-bin/{entry_id}")
             assert resp.status == 200
