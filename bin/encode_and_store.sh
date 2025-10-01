@@ -48,8 +48,16 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
   if [[ "${#FILTERS[@]}" -gt 0 ]]; then
     echo "[encode] Streaming encoder provided $existing_opus; applying filters" | systemd-cat -t tricorder
     temp_outdir="$(dirname "$existing_opus")"
-    temp_basename=".$(basename "$existing_opus").filtered.$$"
-    temp_outfile="${temp_outdir}/${temp_basename}"
+    temp_filename="$(basename "$existing_opus")"
+    temp_ext="${temp_filename##*.}"
+    if [[ "$temp_ext" == "$temp_filename" ]]; then
+      temp_ext=""
+      temp_stem="$temp_filename"
+    else
+      temp_ext=".${temp_ext}"
+      temp_stem="${temp_filename%.*}"
+    fi
+    temp_outfile="${temp_outdir}/.${temp_stem}.filtered.$$${temp_ext}"
     if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
       -i "$existing_opus" \
       "${FILTERS[@]}" \
