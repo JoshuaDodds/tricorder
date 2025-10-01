@@ -1081,6 +1081,8 @@ class TimelineRecorder:
                 "service_running",
                 "event_duration_seconds",
                 "event_size_bytes",
+                "partial_recording_path",
+                "streaming_container_format",
                 "encoding",
             )
             if extra and self._status_mode == "live":
