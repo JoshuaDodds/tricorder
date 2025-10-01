@@ -115,6 +115,7 @@ _DEFAULTS: Dict[str, Any] = {
     "adaptive_rms": {
         "enabled": False,
         "min_thresh": 0.01,
+        "max_rms": None,
         "max_thresh": 1.0,
         "margin": 1.2,
         "update_interval_sec": 5.0,
@@ -342,6 +343,7 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
     adaptive_env = {
         "ADAPTIVE_RMS_ENABLED": ("enabled", _parse_bool),
         "ADAPTIVE_RMS_MIN_THRESH": ("min_thresh", float),
+        "ADAPTIVE_RMS_MAX_RMS": ("max_rms", int),
         "ADAPTIVE_RMS_MAX_THRESH": ("max_thresh", float),
         "ADAPTIVE_RMS_MARGIN": ("margin", float),
         "ADAPTIVE_RMS_UPDATE_INTERVAL_SEC": ("update_interval_sec", float),

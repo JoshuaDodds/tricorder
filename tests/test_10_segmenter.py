@@ -202,7 +202,7 @@ def test_adaptive_threshold_ceiling(monkeypatch):
         cfg_section={
             "enabled": True,
             "min_thresh": 0.001,
-            "max_thresh": 0.02,
+            "max_rms": 500,
             "margin": 1.2,
             "update_interval_sec": 0.05,
             "window_sec": 0.2,
@@ -212,7 +212,8 @@ def test_adaptive_threshold_ceiling(monkeypatch):
         debug=False,
     )
 
-    ceiling_linear = int(round(ctrl.max_thresh_norm * segmenter.AdaptiveRmsController._NORM))
+    ceiling_linear = ctrl.max_threshold_linear
+    assert ceiling_linear == 500
 
     for _ in range(12):
         ctrl.observe(2500, voiced=False)

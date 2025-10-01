@@ -531,6 +531,18 @@ class AdaptiveRmsController:
         except (TypeError, ValueError):
             raw_max = 1.0
         self.max_thresh_norm = min(1.0, max(self.min_thresh_norm, raw_max))
+        self._max_threshold_linear: int | None = None
+        max_rms_raw = section.get("max_rms")
+        if isinstance(max_rms_raw, (int, float)) and not isinstance(max_rms_raw, bool):
+            if math.isfinite(float(max_rms_raw)):
+                candidate = int(round(float(max_rms_raw)))
+                if candidate > 0:
+                    self._max_threshold_linear = candidate
+                    linear_norm = min(1.0, candidate / self._NORM)
+                    self.max_thresh_norm = min(
+                        self.max_thresh_norm,
+                        max(self.min_thresh_norm, linear_norm),
+                    )
         self.margin = max(0.0, float(section.get("margin", 1.2)))
         self.update_interval = max(0.1, float(section.get("update_interval_sec", 5.0)))
         self.hysteresis_tolerance = max(0.0, float(section.get("hysteresis_tolerance", 0.1)))
@@ -544,8 +556,8 @@ class AdaptiveRmsController:
         self._last_release: float | None = None
         self._last_observation: AdaptiveRmsObservation | None = None
         initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
-        initial_norm = min(self.max_thresh_norm, initial_norm)
         if self.enabled:
+            initial_norm = min(self.max_thresh_norm, initial_norm)
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
         self.debug = bool(debug)
@@ -554,7 +566,18 @@ class AdaptiveRmsController:
     def threshold_linear(self) -> int:
         if not self.enabled:
             return int(self._current_norm * self._NORM)
-        return int(round(self._current_norm * self._NORM))
+        value = int(round(self._current_norm * self._NORM))
+        if self._max_threshold_linear is not None:
+            return min(value, self._max_threshold_linear)
+        return value
+
+    @property
+    def max_threshold_linear(self) -> int | None:
+        if self._max_threshold_linear is not None:
+            return self._max_threshold_linear
+        if self.max_thresh_norm >= 1.0:
+            return None
+        return int(round(self.max_thresh_norm * self._NORM))
 
     @property
     def threshold_norm(self) -> float:
@@ -629,10 +652,14 @@ class AdaptiveRmsController:
             should_update = (delta / self._current_norm) >= self.hysteresis_tolerance
 
         if should_update:
-            self._current_norm = candidate
+            self._current_norm = min(candidate, self.max_thresh_norm)
         final_threshold = int(round(self._current_norm * self._NORM))
         previous_threshold = int(round(previous_norm * self._NORM))
         candidate_threshold = int(round(candidate * self._NORM))
+        if self._max_threshold_linear is not None:
+            final_threshold = min(final_threshold, self._max_threshold_linear)
+            previous_threshold = min(previous_threshold, self._max_threshold_linear)
+            candidate_threshold = min(candidate_threshold, self._max_threshold_linear)
         self._last_observation = AdaptiveRmsObservation(
             timestamp=time.time(),
             updated=bool(should_update),

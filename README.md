@@ -327,6 +327,8 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
+  - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
+    For example, set `max_rms: 250` to allow adaptive increases up to 250 and no higher.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
 - `notifications` – optional webhook/email alerts when events finish recording.
