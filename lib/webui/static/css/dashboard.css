@@ -2625,6 +2625,11 @@ body[data-scroll-locked="true"] {
   letter-spacing: 0.04em;
 }
 
+.meta-pill.live-pill {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 .record-mobile-subtext {
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -2646,6 +2651,41 @@ body[data-scroll-locked="true"] {
   background: rgba(56, 189, 248, 0.18);
   color: var(--primary);
   font-size: 0.75rem;
+}
+
+.badge.badge-recording {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.record-in-progress {
+  background: rgba(248, 113, 113, 0.08);
+}
+
+body[data-theme="light"] .record-in-progress {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.record-in-progress:hover {
+  background: rgba(248, 113, 113, 0.14);
+}
+
+.record-in-progress .record-title {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.in-progress-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 .code-block {
