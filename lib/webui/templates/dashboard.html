@@ -185,12 +185,40 @@
             </div>
             <h1 class="app-title">
               <span class="sr-only">Tricorder dashboard home</span>
-              <img
-                src="{{ static_url('img/dashboard-logo.svg') }}"
+              <svg
                 class="app-title-logo"
-                alt=""
-                role="presentation"
-              />
+                viewBox="0 0 56 56"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <defs>
+                  <linearGradient
+                    id="dashboard-logo-gradient"
+                    x1="11"
+                    y1="4"
+                    x2="44"
+                    y2="52"
+                    gradientUnits="userSpaceOnUse"
+                  >
+                    <stop stop-color="#f97316" />
+                    <stop offset="1" stop-color="#fbbf24" />
+                  </linearGradient>
+                </defs>
+                <rect x="4" y="4" width="48" height="48" rx="14" fill="url(#dashboard-logo-gradient)" />
+                <text
+                  x="28"
+                  y="38"
+                  text-anchor="middle"
+                  font-family="'Inter', 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif"
+                  font-size="30"
+                  font-weight="700"
+                  fill="#ffffff"
+                >3</text>
+              </svg>
+              <span class="app-title-text">
+                <span class="app-title-text-primary">Corder</span>
+                <span class="app-title-text-secondary">DASHBOARD</span>
+              </span>
             </h1>
           </div>
         </div>
