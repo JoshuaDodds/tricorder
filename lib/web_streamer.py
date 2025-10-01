@@ -3550,6 +3550,110 @@ def build_app() -> web.Application:
 
         return web.json_response({"restored": restored, "errors": errors})
 
+    async def recycle_bin_purge(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        errors: list[dict[str, str]] = []
+        items_value = data.get("items")
+        requested_ids: set[str] = set()
+
+        if items_value is not None:
+            if not isinstance(items_value, list):
+                raise web.HTTPBadRequest(reason="'items' must be a list")
+            for raw in items_value:
+                if not isinstance(raw, str) or not raw.strip():
+                    errors.append({"item": str(raw), "error": "invalid entry id"})
+                    continue
+                entry_id = raw.strip()
+                if not RECYCLE_ID_PATTERN.match(entry_id):
+                    errors.append({"item": entry_id, "error": "invalid entry id"})
+                    continue
+                requested_ids.add(entry_id)
+
+        delete_all = bool(data.get("delete_all"))
+
+        older_than_seconds_raw = data.get("older_than_seconds")
+        age_cutoff: float | None = None
+        if older_than_seconds_raw is not None:
+            try:
+                older_than_seconds = float(older_than_seconds_raw)
+            except (TypeError, ValueError):
+                errors.append({"item": "older_than_seconds", "error": "invalid age"})
+            else:
+                if older_than_seconds < 0:
+                    errors.append({"item": "older_than_seconds", "error": "age must be non-negative"})
+                else:
+                    age_cutoff = time.time() - older_than_seconds
+
+        if items_value is None and not delete_all and age_cutoff is None:
+            raise web.HTTPBadRequest(reason="No purge criteria provided")
+
+        entries_by_id: dict[str, dict[str, object]] = {}
+        if recycle_root.exists():
+            try:
+                candidates = list(recycle_root.iterdir())
+            except OSError:
+                candidates = []
+            for entry_dir in candidates:
+                data = _read_recycle_entry(entry_dir)
+                if not data:
+                    continue
+                entry_id = str(data.get("id", ""))
+                if entry_id:
+                    entries_by_id[entry_id] = data
+
+        targets: dict[str, dict[str, object]] = {}
+
+        if delete_all:
+            targets.update(entries_by_id)
+
+        if age_cutoff is not None:
+            for entry_id, entry_data in entries_by_id.items():
+                deleted_epoch = entry_data.get("deleted_at_epoch")
+                if isinstance(deleted_epoch, (int, float)) and deleted_epoch <= age_cutoff:
+                    targets.setdefault(entry_id, entry_data)
+
+        for entry_id in sorted(requested_ids):
+            entry_data = entries_by_id.get(entry_id)
+            if not entry_data:
+                errors.append({"item": entry_id, "error": "entry not found"})
+                continue
+            targets.setdefault(entry_id, entry_data)
+
+        purged: list[str] = []
+        for entry_id in sorted(targets):
+            entry_data = targets[entry_id]
+            entry_dir = entry_data.get("dir")
+            if not isinstance(entry_dir, Path):
+                errors.append({"item": entry_id, "error": "entry directory unavailable"})
+                continue
+            try:
+                shutil.rmtree(entry_dir)
+            except FileNotFoundError:
+                purged.append(entry_id)
+            except Exception as exc:
+                errors.append({"item": entry_id, "error": f"unable to purge entry: {exc}"})
+                continue
+            else:
+                purged.append(entry_id)
+
+        if recycle_root.exists():
+            try:
+                next(recycle_root.iterdir())
+            except StopIteration:
+                try:
+                    recycle_root.rmdir()
+                except OSError:
+                    pass
+            except OSError:
+                pass
+
+        return web.json_response({"purged": purged, "errors": errors})
+
     async def recycle_bin_file(request: web.Request) -> web.StreamResponse:
         entry_id = request.match_info.get("entry_id", "").strip()
         if not entry_id or not RECYCLE_ID_PATTERN.match(entry_id):
@@ -4472,6 +4576,7 @@ def build_app() -> web.Application:
     app.router.add_get("/recordings/{path:.*}", recordings_file)
     app.router.add_get("/api/recycle-bin", recycle_bin_list)
     app.router.add_post("/api/recycle-bin/restore", recycle_bin_restore)
+    app.router.add_post("/api/recycle-bin/purge", recycle_bin_purge)
     app.router.add_get("/recycle-bin/{entry_id}", recycle_bin_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/config/archival", config_archival_get)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -191,6 +194,110 @@ def test_parse_show_output_handles_blank_fields():
     assert parsed["Description"] == "Recorder"
     assert parsed["CanStart"] == "yes"
     assert parsed["TriggeredBy"] == ""
+
+
+@pytest.mark.asyncio
+async def test_recycle_bin_purge_removes_requested_entries(monkeypatch, tmp_path, aiohttp_client):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = recordings_dir / "sample.opus"
+    audio_path.write_bytes(b"audio")
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    delete_response = await client.post(
+        "/api/recordings/delete",
+        json={"items": ["sample.opus"]},
+    )
+    assert delete_response.status == 200
+    delete_payload = await delete_response.json()
+    assert delete_payload["deleted"] == ["sample.opus"]
+
+    recycle_root = recordings_dir / web_streamer.RECYCLE_BIN_DIRNAME
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1
+    entry_id = entries[0].name
+
+    purge_response = await client.post(
+        "/api/recycle-bin/purge",
+        json={"items": [entry_id]},
+    )
+    assert purge_response.status == 200
+    purge_payload = await purge_response.json()
+    assert purge_payload["purged"] == [entry_id]
+    assert purge_payload["errors"] == []
+    assert not any(recycle_root.iterdir()) if recycle_root.exists() else True
+
+
+@pytest.mark.asyncio
+async def test_recycle_bin_purge_supports_age_filters(monkeypatch, tmp_path, aiohttp_client):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    first_path = recordings_dir / "first.opus"
+    first_path.write_bytes(b"first")
+    second_path = recordings_dir / "second.opus"
+    second_path.write_bytes(b"second")
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    delete_response = await client.post(
+        "/api/recordings/delete",
+        json={"items": ["first.opus", "second.opus"]},
+    )
+    assert delete_response.status == 200
+
+    recycle_root = recordings_dir / web_streamer.RECYCLE_BIN_DIRNAME
+    entry_dirs = {entry.name: entry for entry in recycle_root.iterdir()}
+    assert len(entry_dirs) == 2
+
+    old_epoch = time.time() - 3600
+    old_iso = datetime.fromtimestamp(old_epoch, tz=timezone.utc).isoformat()
+
+    old_entry_id = ""
+    new_entry_id = ""
+    for entry_id, entry_dir in entry_dirs.items():
+        metadata_path = entry_dir / web_streamer.RECYCLE_METADATA_FILENAME
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            metadata = json.load(handle)
+        if metadata.get("stored_name") == "first.opus":
+            metadata["deleted_at_epoch"] = old_epoch
+            metadata["deleted_at"] = old_iso
+            old_entry_id = entry_id
+        else:
+            new_entry_id = entry_id
+        with metadata_path.open("w", encoding="utf-8") as handle:
+            json.dump(metadata, handle)
+
+    purge_response = await client.post(
+        "/api/recycle-bin/purge",
+        json={"older_than_seconds": 10},
+    )
+    assert purge_response.status == 200
+    purge_payload = await purge_response.json()
+    assert purge_payload["errors"] == []
+    assert purge_payload["purged"] == [old_entry_id]
+    assert (recycle_root / old_entry_id).exists() is False
+    assert (recycle_root / new_entry_id).exists()
 
 
 def test_parse_show_output_handles_value_only_payload():
