@@ -2871,6 +2871,15 @@ def build_app() -> web.Application:
             trigger_rms = event_payload.get("trigger_rms")
             if isinstance(trigger_rms, (int, float)):
                 event["trigger_rms"] = float(trigger_rms)
+            partial_path = event_payload.get("partial_recording_path")
+            if isinstance(partial_path, str) and partial_path:
+                event["partial_recording_path"] = partial_path
+            in_progress = event_payload.get("in_progress")
+            if isinstance(in_progress, bool):
+                event["in_progress"] = in_progress
+            streaming_format = event_payload.get("streaming_container_format")
+            if isinstance(streaming_format, str) and streaming_format:
+                event["streaming_container_format"] = streaming_format
             if event:
                 status["event"] = event
 
@@ -2901,6 +2910,15 @@ def build_app() -> web.Application:
             etype = last_payload.get("etype")
             if isinstance(etype, str) and etype:
                 last_event["etype"] = etype
+            recording_path = last_payload.get("recording_path")
+            if isinstance(recording_path, str) and recording_path:
+                last_event["recording_path"] = recording_path
+            last_in_progress = last_payload.get("in_progress")
+            if isinstance(last_in_progress, bool):
+                last_event["in_progress"] = last_in_progress
+            last_streaming_format = last_payload.get("streaming_container_format")
+            if isinstance(last_streaming_format, str) and last_streaming_format:
+                last_event["streaming_container_format"] = last_streaming_format
             if last_event:
                 status["last_event"] = last_event
 
@@ -2947,6 +2965,14 @@ def build_app() -> web.Application:
         event_size_bytes = raw.get("event_size_bytes")
         if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
             status["event_size_bytes"] = max(0, int(event_size_bytes))
+
+        partial_recording_path = raw.get("partial_recording_path")
+        if isinstance(partial_recording_path, str) and partial_recording_path:
+            status["partial_recording_path"] = partial_recording_path
+
+        streaming_format = raw.get("streaming_container_format")
+        if isinstance(streaming_format, str) and streaming_format:
+            status["streaming_container_format"] = streaming_format
 
         avg_ms = raw.get("filter_chain_avg_ms")
         if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):

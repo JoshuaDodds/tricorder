@@ -13,12 +13,18 @@ DENOISE="${DENOISE:-1}"
 
 in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1
+existing_opus="${3:-}"
 VENV="/apps/tricorder/venv"
 day="$(date +%Y%m%d)"
 outdir="/apps/tricorder/recordings/$day"
 mkdir -p "$outdir"
 
-outfile="$outdir/${base}.opus"
+if [[ -n "$existing_opus" ]]; then
+  outfile="$existing_opus"
+else
+  outfile="$outdir/${base}.opus"
+fi
+mkdir -p "$(dirname "$outfile")"
 waveform_file="${outfile}.waveform.json"
 
 # Optional denoise filter chain
@@ -38,15 +44,19 @@ fi
 #   resample if the WAV header is off or if ALSA produced a surprise rate.
 # - Use application=audio (general content), 20ms frames, VBR on, 48 kbps.
 # - One thread to reduce CPU spikes on the Zero 2 W.
-if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
-  -i "$in_wav" \
-  "${FILTERS[@]}" \
-  -ac 1 -ar 48000 -sample_fmt s16 \
-  -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
-  "$outfile"; then
-    echo "[encode] ffmpeg failed for $in_wav" | systemd-cat -t tricorder
-    "$VENV/bin/python" -m lib.fault_handler encode_failure "$in_wav" "$base"
-    exit 1
+if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
+  echo "[encode] Streaming encoder provided $existing_opus; skipping ffmpeg" | systemd-cat -t tricorder
+else
+  if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
+    -i "$in_wav" \
+    "${FILTERS[@]}" \
+    -ac 1 -ar 48000 -sample_fmt s16 \
+    -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
+    "$outfile"; then
+      echo "[encode] ffmpeg failed for $in_wav" | systemd-cat -t tricorder
+      "$VENV/bin/python" -m lib.fault_handler encode_failure "$in_wav" "$base"
+      exit 1
+  fi
 fi
 
 if ! "$VENV/bin/python" -m lib.waveform_cache "$in_wav" "$waveform_file"; then
