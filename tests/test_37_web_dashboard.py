@@ -1398,6 +1398,50 @@ def test_delete_recording(dashboard_env):
             assert not target.exists()
             assert not waveform.exists()
 
+            recycle_root = dashboard_env / ".recycle_bin"
+            assert recycle_root.is_dir()
+            entries = list(recycle_root.iterdir())
+            assert len(entries) == 1
+
+            # Create a conflicting file to ensure restorable flag flips
+            target_dir.mkdir(exist_ok=True)
+            target.write_bytes(b"shadow")
+
+            resp = await client.get("/api/recycle-bin")
+            assert resp.status == 200
+            listing = await resp.json()
+            assert listing["total"] == 1
+            item = listing["items"][0]
+            assert item["original_path"] == "20240103/delete-me.opus"
+            assert item["restorable"] is False
+
+            target.unlink()
+
+            resp = await client.get("/api/recycle-bin")
+            assert resp.status == 200
+            listing = await resp.json()
+            assert listing["total"] == 1
+            item = listing["items"][0]
+            entry_id = item["id"]
+            assert item["restorable"] is True
+            assert item["size_bytes"] == len(b"data")
+
+            resp = await client.get(f"/recycle-bin/{entry_id}")
+            assert resp.status == 200
+            preview_data = await resp.read()
+            assert preview_data == b"data"
+
+            resp = await client.post("/api/recycle-bin/restore", json={"items": [entry_id]})
+            assert resp.status == 200
+            restore_payload = await resp.json()
+            assert restore_payload["restored"] == ["20240103/delete-me.opus"]
+            assert target.exists()
+            assert target.read_bytes() == b"data"
+
+            resp = await client.get("/api/recycle-bin")
+            assert resp.status == 200
+            assert await resp.json() == {"items": [], "total": 0}
+
             resp = await client.post("/api/recordings/delete", json={"items": ["../outside"]})
             assert resp.status == 200
             payload = await resp.json()
