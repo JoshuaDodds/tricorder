@@ -3199,6 +3199,7 @@ def build_app() -> web.Application:
         errors: list[dict[str, str]] = []
         root_resolved = recordings_root_resolved
         recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        recycle_root_resolved: Path | None = None
         try:
             recycle_root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -3206,6 +3207,11 @@ def build_app() -> web.Application:
             recycle_root_ready = False
         else:
             recycle_root_ready = True
+            try:
+                recycle_root_resolved = recycle_root.resolve()
+            except OSError as exc:
+                log.warning("Unable to resolve recycle bin directory: %s", exc)
+                recycle_root_ready = False
 
         for raw in items:
             if not isinstance(raw, str) or not raw.strip():
@@ -3231,6 +3237,10 @@ def build_app() -> web.Application:
 
             if not resolved.is_file():
                 errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            if recycle_root_resolved is not None and resolved.is_relative_to(recycle_root_resolved):
+                errors.append({"item": rel, "error": "already in recycle bin"})
                 continue
 
             if not recycle_root_ready:
