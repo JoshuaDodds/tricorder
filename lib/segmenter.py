@@ -709,8 +709,11 @@ class _EncoderWorker(threading.Thread):
                 cmd = [ENCODER, wav_path, base_name]
                 if existing_opus:
                     cmd.append(existing_opus)
+                env = os.environ.copy()
+                env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
+                env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
                 try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
                 except subprocess.CalledProcessError as exc:
                     print(f"[encoder] FAIL {exc.returncode}", flush=True)
                     if exc.stdout:

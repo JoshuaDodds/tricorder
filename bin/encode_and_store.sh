@@ -22,7 +22,24 @@ mkdir -p "$outdir"
 if [[ -n "$existing_opus" ]]; then
   outfile="$existing_opus"
 else
-  outfile="$outdir/${base}.opus"
+  container_format="${STREAMING_CONTAINER_FORMAT:-opus}"
+  container_format="${container_format,,}"
+  case "$container_format" in
+    webm)
+      default_extension=".webm"
+      ;;
+    *)
+      default_extension=".opus"
+      ;;
+  esac
+  if [[ -n "${STREAMING_EXTENSION:-}" ]]; then
+    ext="${STREAMING_EXTENSION}"
+    if [[ "${ext}" != .* ]]; then
+      ext=".${ext}"
+    fi
+    default_extension="$ext"
+  fi
+  outfile="$outdir/${base}${default_extension}"
 fi
 mkdir -p "$(dirname "$outfile")"
 waveform_file="${outfile}.waveform.json"
