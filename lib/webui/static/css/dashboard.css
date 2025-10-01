@@ -468,7 +468,7 @@ body[data-theme="light"] .app-menu-toggle {
 }
 
 .app-title-text-primary {
-  font-size: clamp(1.65rem, 2.3vw, 1.95rem);
+  font-size: clamp(1.27rem, 1.76vw, 1.50rem);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--logo-text-primary);
