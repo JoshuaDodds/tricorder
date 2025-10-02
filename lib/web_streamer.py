@@ -4399,11 +4399,11 @@ def build_app() -> web.Application:
         except ValueError:
             raise web.HTTPNotFound()
 
-        if not resolved.is_file():
-            raise web.HTTPNotFound()
-
         if _path_is_partial(resolved):
             return await _stream_partial_file(request, resolved)
+
+        if not resolved.is_file():
+            raise web.HTTPNotFound()
 
         response = web.FileResponse(resolved)
         disposition = "attachment" if request.rel_url.query.get("download") == "1" else "inline"
