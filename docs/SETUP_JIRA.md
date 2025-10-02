@@ -5,10 +5,11 @@
 2. Create token, label it (e.g., “Agents PAT”); copy the value.
 
 **Store as environment variables (CI/CD and local):**
-    
-    JIRA_BASE_URL=https://<your-domain>.atlassian.net
+
     JIRA_EMAIL=<jira-account-email>
     JIRA_PAT=<paste-token>
+
+The Jira base URL is derived each run from the organization name `mfisbv`, producing `https://mfisbv.atlassian.net`, so no `JIRA_BASE_URL` variable is required.
 
 ## 2) Enable Git ↔ Jira Integration (Smart Commits)
 - For GitHub: install **Jira Cloud** app and connect your org/repositories.
@@ -26,7 +27,7 @@
 **A. API smoke test**
 
 - `GET /rest/api/3/myself` → returns your Jira user.
-- `GET /rest/api/3/issue/TR-<int>` → issue loads.
+- `GET /rest/api/3/issue/TR-<int>` → issue loads (project key `TR` is embedded in the ticket ID).
 - `GET /rest/api/3/issue/TR-<int>/transitions` → includes **In Progress** and **In Review**.
 - `POST /rest/api/3/issue/TR-<int>/comment` → adds a comment.
 
