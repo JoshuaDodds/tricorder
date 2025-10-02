@@ -1558,6 +1558,7 @@ def test_recording_start_epoch_in_payload(dashboard_env):
             assert match is not None
             expected = time.mktime(time.strptime("20240105 12-34-56", "%Y%m%d %H-%M-%S"))
             assert match["start_epoch"] == pytest.approx(expected, rel=0, abs=1e-6)
+            assert match["started_epoch"] == pytest.approx(expected, rel=0, abs=1e-6)
             assert isinstance(match["started_at"], str)
             assert match["started_at"].startswith("2024-01-05T")
         finally:
@@ -1617,6 +1618,7 @@ def test_delete_recording(dashboard_env):
             assert item["restorable"] is True
             assert item["size_bytes"] == len(b"data")
             assert item["start_epoch"] == pytest.approx(start_epoch)
+            assert item["started_epoch"] == pytest.approx(start_epoch)
             assert item["started_at"].startswith("2024-01-03T05:06:07")
             assert item["start_epoch"] != item["deleted_at_epoch"]
 
