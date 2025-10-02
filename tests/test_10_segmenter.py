@@ -5,6 +5,9 @@ import re
 
 import pytest
 
+import collections
+from pathlib import Path
+
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 import lib.segmenter as segmenter
 
@@ -134,6 +137,82 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
         assert not first_obs.updated
     if second_obs:
         assert not second_obs.updated
+
+
+def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    rec_dir = tmp_path / "rec"
+    tmp_dir = tmp_path / "tmp"
+    rec_dir.mkdir()
+    tmp_dir.mkdir()
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", True)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 5)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
+
+    encoder_instances: list[object] = []
+
+    class FakeEncoder:
+        def __init__(self, partial_path: str, *, container_format: str = "opus") -> None:
+            self.partial_path = partial_path
+            self.container_format = container_format
+            self._drops = 0
+            self._bytes = 0
+            self._feeds = 0
+            encoder_instances.append(self)
+
+        def start(self) -> None:
+            Path(self.partial_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.partial_path).write_bytes(b"")
+
+        def feed(self, chunk: bytes) -> bool:
+            self._feeds += 1
+            if self._feeds >= 2:
+                self._drops += 1
+                return False
+            with open(self.partial_path, "ab") as handle:
+                handle.write(chunk)
+            self._bytes += len(chunk)
+            return True
+
+        def close(self, *, timeout: float | None = None):
+            return segmenter.StreamingEncoderResult(
+                partial_path=self.partial_path,
+                success=True,
+                returncode=0,
+                error=None,
+                stderr=None,
+                bytes_sent=self._bytes,
+                dropped_chunks=self._drops,
+            )
+
+    monkeypatch.setattr(segmenter, "StreamingOpusEncoder", FakeEncoder)
+
+    captured: dict[str, object | None] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
+        captured["tmp_wav_path"] = tmp_wav_path
+        captured["base_name"] = base_name
+        captured["existing_opus_path"] = existing_opus_path
+        return 123
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+    for i in range(8):
+        rec.ingest(make_frame(2000), i)
+    rec.flush(20)
+
+    assert encoder_instances, "expected streaming encoder to be initialised"
+    encoder = encoder_instances[0]
+    partial_path = Path(encoder.partial_path)
+    assert not partial_path.exists(), "partial stream should be discarded when drops occur"
+    assert getattr(encoder, "_drops", 0) > 0
+
+    assert "existing_opus_path" in captured
+    assert captured.get("existing_opus_path") is None, "fallback encode should not reuse streaming output"
+
 
 
 def test_adaptive_threshold_recovery(monkeypatch):

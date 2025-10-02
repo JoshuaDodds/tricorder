@@ -223,24 +223,41 @@ Switching between modes only requires updating `streaming.mode` and restarting `
 
 ```
 tricorder/
+├── AGENTS.md
+├── CODEX_INSTRUCTIONS.txt
+├── README.md
 ├── bin/
 │   ├── encode_and_store.sh
+│   ├── service_status.sh      # systemd helper invoked by the dashboard
 │   ├── tmpfs_guard.sh
 │   └── tricorder_auto_update.sh
-├── ci/Dockerfile
+├── ci/
+│   └── Dockerfile
 ├── config.yaml                # Default configuration shipped with the repo
+├── docs/
+│   ├── tr-17-investigation.md
+│   └── tr-28-plan.md
 ├── install.sh
 ├── clear_logs.sh
 ├── lib/
+│   ├── archival.py            # Post-encode archival backends
+│   ├── audio_filter_chain.py  # Capture-time DSP helpers
 │   ├── config.py              # Config loader with YAML + env overrides
 │   ├── fault_handler.py
 │   ├── hls_controller.py
 │   ├── hls_mux.py
 │   ├── live_stream_daemon.py
+│   ├── noise_analyzer.py
+│   ├── notifications.py       # Optional webhook/email alerts
 │   ├── process_dropped_file.py
+│   ├── sd_card_health.py
+│   ├── sd_card_monitor.py
 │   ├── segmenter.py           # TimelineRecorder + encoder pipeline
+│   ├── transcription.py
 │   ├── waveform_cache.py
 │   ├── web_streamer.py        # aiohttp app + dashboard APIs
+│   ├── webrtc_buffer.py
+│   ├── webrtc_stream.py
 │   └── webui/                 # Templates + static assets for the dashboard
 ├── main.py
 ├── room_tuner.py
@@ -252,24 +269,34 @@ tricorder/
 │   ├── tmpfs-guard.timer
 │   ├── tricorder-auto-update.service
 │   ├── tricorder-auto-update.timer
+│   ├── tricorder.target
 │   ├── voice-recorder.service
 │   └── web-streamer.service
 ├── tests/
 │   ├── test_00_install.py
 │   ├── test_10_segmenter.py
+│   ├── test_15_audio_filter_chain.py
 │   ├── test_20__fault_handler.py
 │   ├── test_25_web_streamer.py
 │   ├── test_30_dropbox.py
+│   ├── test_35_hls.py
+│   ├── test_36_waveform_cache.py
+│   ├── test_37_web_dashboard.py
+│   ├── test_38_archival.py
+│   ├── test_39_notifications.py
 │   ├── test_40_end_to_end.py
+│   ├── test_41_sd_card_health.py
+│   ├── test_42_sd_card_monitor.py
+│   ├── test_45_workflow_tooling.py
 │   ├── test_50_uninstall.py
-│   ├── test_60_hls.py
-│   ├── test_waveform_cache.py
-│   ├── test_sd_card_health.py
-│   └── test_web_dashboard.py
+│   ├── test_auto_update.py
+│   ├── test_noise_analyzer.py
+│   ├── test_streaming_encoder.py
+│   └── test_transcription.py
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── updater.env-example
-└── README.md
+└── pytest.ini
 ```
 
 ---
@@ -331,7 +358,8 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run.
+- Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
     For example, set `max_rms: 250` to allow adaptive increases up to 250 and no higher.

@@ -34,6 +34,7 @@ import asyncio
 import contextlib
 import copy
 import functools
+import io
 import json
 import logging
 import math
@@ -74,6 +75,8 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
+STREAMING_POLL_INTERVAL_SECONDS = 0.25
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
@@ -1469,6 +1472,108 @@ def _probe_duration(path: Path, stat: os.stat_result) -> float | None:
     return _probe_duration_cached(str(path), int(mtime_ns), size_bytes)
 
 
+def _path_is_partial(path: Path) -> bool:
+    """Return True when the file carries the `.partial` sentinel suffix."""
+
+    try:
+        suffixes = path.suffixes
+    except AttributeError:
+        return False
+    return any(suffix.lower() == ".partial" for suffix in suffixes)
+
+
+def _resolve_start_metadata(
+    relative_path: Path | str | None,
+    file_path: Path | None,
+    stat_result: os.stat_result | None,
+    waveform_meta: dict[str, object] | None,
+) -> tuple[float | None, str]:
+    """Derive start timestamps from available metadata."""
+
+    start_epoch_value: float | None = None
+    started_at_value = ""
+
+    def _assign_start_from_epoch(raw_epoch: object) -> bool:
+        nonlocal start_epoch_value, started_at_value
+        if not isinstance(raw_epoch, (int, float)):
+            return False
+        epoch = float(raw_epoch)
+        if not math.isfinite(epoch):
+            return False
+        start_epoch_value = epoch
+        try:
+            started_at_value = datetime.fromtimestamp(
+                epoch, tz=timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at_value = ""
+        return True
+
+    def _assign_start_from_iso(raw_value: object) -> bool:
+        nonlocal start_epoch_value, started_at_value
+        if not isinstance(raw_value, str):
+            return False
+        candidate = raw_value.strip()
+        if not candidate:
+            return False
+        try:
+            if candidate.endswith("Z"):
+                candidate = f"{candidate[:-1]}+00:00"
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed_utc = parsed.astimezone(timezone.utc)
+        start_epoch_value = parsed_utc.timestamp()
+        started_at_value = parsed_utc.isoformat()
+        return True
+
+    if waveform_meta:
+        if not _assign_start_from_epoch(waveform_meta.get("start_epoch")):
+            _assign_start_from_epoch(waveform_meta.get("started_epoch"))
+        if start_epoch_value is None:
+            _assign_start_from_iso(waveform_meta.get("started_at"))
+
+    if start_epoch_value is None:
+        if isinstance(relative_path, str):
+            rel_parts = Path(relative_path).parts
+        elif isinstance(relative_path, Path):
+            rel_parts = relative_path.parts
+        else:
+            rel_parts = ()
+
+        day_component = rel_parts[0] if rel_parts else ""
+        time_component = ""
+        if len(rel_parts) > 1:
+            time_component = Path(rel_parts[1]).stem.split("_", 1)[0]
+        elif isinstance(file_path, Path):
+            time_component = file_path.stem.split("_", 1)[0]
+
+        if day_component and time_component:
+            try:
+                struct_time = time.strptime(
+                    f"{day_component} {time_component}", "%Y%m%d %H-%M-%S"
+                )
+            except ValueError:
+                struct_time = None
+            if struct_time is not None:
+                _assign_start_from_epoch(time.mktime(struct_time))
+
+    if start_epoch_value is None and stat_result is not None:
+        _assign_start_from_epoch(getattr(stat_result, "st_mtime", None))
+
+    if not started_at_value and start_epoch_value is not None:
+        try:
+            started_at_value = datetime.fromtimestamp(
+                start_epoch_value, tz=timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at_value = ""
+
+    return start_epoch_value, started_at_value
+
+
 def _scan_recordings_worker(
     recordings_root: Path, allowed_ext: tuple[str, ...]
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
@@ -1567,22 +1672,9 @@ def _scan_recordings_worker(
         rel_posix = rel.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
-        start_epoch: float | None = None
-        started_at_iso: str | None = None
-        if day:
-            time_component = path.stem.split("_", 1)[0]
-            if time_component:
-                try:
-                    struct_time = time.strptime(
-                        f"{day} {time_component}", "%Y%m%d %H-%M-%S"
-                    )
-                except ValueError:
-                    pass
-                else:
-                    start_epoch = float(time.mktime(struct_time))
-                    started_at_iso = datetime.fromtimestamp(
-                        start_epoch, tz=timezone.utc
-                    ).isoformat()
+        start_epoch, started_at_iso = _resolve_start_metadata(
+            rel, path, stat, waveform_meta
+        )
 
         if day:
             day_set.add(day)
@@ -1603,6 +1695,7 @@ def _scan_recordings_worker(
                 "duration": duration,
                 "waveform_path": waveform_rel.as_posix(),
                 "start_epoch": start_epoch,
+                "started_epoch": start_epoch,
                 "started_at": started_at_iso,
                 "has_transcript": bool(transcript_path_rel),
                 "transcript_path": transcript_path_rel,
@@ -1694,6 +1787,28 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     if not isinstance(transcript_name, str):
         transcript_name = ""
 
+    start_epoch_raw = metadata.get("start_epoch")
+    if not isinstance(start_epoch_raw, (int, float)):
+        start_epoch_raw = metadata.get("started_epoch")
+    if isinstance(start_epoch_raw, (int, float)) and math.isfinite(float(start_epoch_raw)):
+        start_epoch = float(start_epoch_raw)
+    else:
+        start_epoch = None
+
+    started_at = metadata.get("started_at")
+    if isinstance(started_at, str):
+        started_at_value = started_at
+    else:
+        started_at_value = ""
+
+    if not started_at_value and start_epoch is not None:
+        try:
+            started_at_value = datetime.fromtimestamp(
+                start_epoch, tz=timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at_value = ""
+
     return {
         "id": entry_id,
         "dir": entry_dir,
@@ -1708,7 +1823,35 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "deleted_at_epoch": deleted_epoch,
         "size_bytes": size_bytes,
         "duration": duration,
+        "start_epoch": start_epoch,
+        "started_epoch": start_epoch,
+        "started_at": started_at_value,
     }
+
+
+def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
+    total = 0
+    if not recycle_root.exists():
+        return 0
+    try:
+        candidates = list(recycle_root.iterdir())
+    except OSError:
+        return 0
+    for entry_dir in candidates:
+        data = _read_recycle_entry(entry_dir)
+        if not data:
+            continue
+        size_bytes = data.get("size_bytes")
+        if isinstance(size_bytes, (int, float)):
+            total += int(size_bytes)
+            continue
+        audio_path = data.get("audio_path")
+        if isinstance(audio_path, Path):
+            try:
+                total += int(audio_path.stat().st_size)
+            except OSError:
+                continue
+    return max(total, 0)
 
 def _service_label_from_unit(unit: str) -> str:
     base = unit.split(".", 1)[0]
@@ -2835,6 +2978,28 @@ def build_app() -> web.Application:
 
     capture_status_path = os.path.join(cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json")
 
+    def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
+        if not isinstance(raw, str) or not raw.strip():
+            return None, None
+        candidate = Path(raw.strip())
+        try:
+            resolved = candidate.resolve(strict=False)
+        except (OSError, RuntimeError):
+            resolved = candidate
+
+        rel_candidate: Path | None = None
+        base = recordings_root_resolved or recordings_root
+        try:
+            rel_candidate = resolved.relative_to(base)
+        except ValueError:
+            try:
+                rel_candidate = candidate.relative_to(base)
+            except ValueError:
+                rel_candidate = None
+
+        rel_path = rel_candidate.as_posix() if rel_candidate is not None else None
+        return str(resolved), rel_path
+
     def _read_capture_status() -> dict[str, object]:
         try:
             with open(capture_status_path, "r", encoding="utf-8") as handle:
@@ -2871,6 +3036,19 @@ def build_app() -> web.Application:
             trigger_rms = event_payload.get("trigger_rms")
             if isinstance(trigger_rms, (int, float)):
                 event["trigger_rms"] = float(trigger_rms)
+            partial_path = event_payload.get("partial_recording_path")
+            if isinstance(partial_path, str) and partial_path:
+                normalized_path, rel_path = _normalize_partial_path(partial_path)
+                if normalized_path:
+                    event["partial_recording_path"] = normalized_path
+                if rel_path:
+                    event["partial_recording_rel_path"] = rel_path
+            in_progress = event_payload.get("in_progress")
+            if isinstance(in_progress, bool):
+                event["in_progress"] = in_progress
+            streaming_format = event_payload.get("streaming_container_format")
+            if isinstance(streaming_format, str) and streaming_format:
+                event["streaming_container_format"] = streaming_format
             if event:
                 status["event"] = event
 
@@ -2901,6 +3079,15 @@ def build_app() -> web.Application:
             etype = last_payload.get("etype")
             if isinstance(etype, str) and etype:
                 last_event["etype"] = etype
+            recording_path = last_payload.get("recording_path")
+            if isinstance(recording_path, str) and recording_path:
+                last_event["recording_path"] = recording_path
+            last_in_progress = last_payload.get("in_progress")
+            if isinstance(last_in_progress, bool):
+                last_event["in_progress"] = last_in_progress
+            last_streaming_format = last_payload.get("streaming_container_format")
+            if isinstance(last_streaming_format, str) and last_streaming_format:
+                last_event["streaming_container_format"] = last_streaming_format
             if last_event:
                 status["last_event"] = last_event
 
@@ -2947,6 +3134,18 @@ def build_app() -> web.Application:
         event_size_bytes = raw.get("event_size_bytes")
         if isinstance(event_size_bytes, (int, float)) and math.isfinite(event_size_bytes):
             status["event_size_bytes"] = max(0, int(event_size_bytes))
+
+        partial_recording_path = raw.get("partial_recording_path")
+        if isinstance(partial_recording_path, str) and partial_recording_path:
+            normalized_path, rel_path = _normalize_partial_path(partial_recording_path)
+            if normalized_path:
+                status["partial_recording_path"] = normalized_path
+            if rel_path:
+                status["partial_recording_rel_path"] = rel_path
+
+        streaming_format = raw.get("streaming_container_format")
+        if isinstance(streaming_format, str) and streaming_format:
+            status["streaming_container_format"] = streaming_format
 
         avg_ms = raw.get("filter_chain_avg_ms")
         if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):
@@ -3166,6 +3365,11 @@ def build_app() -> web.Application:
                     if isinstance(entry.get("start_epoch"), (int, float))
                     else None
                 ),
+                "started_epoch": (
+                    float(entry.get("started_epoch", 0.0))
+                    if isinstance(entry.get("started_epoch"), (int, float))
+                    else None
+                ),
                 "started_at": (
                     str(entry.get("started_at"))
                     if isinstance(entry.get("started_at"), str)
@@ -3220,6 +3424,8 @@ def build_app() -> web.Application:
             payload["storage_total_bytes"] = int(usage.total)
             payload["storage_used_bytes"] = int(usage.used)
             payload["storage_free_bytes"] = int(usage.free)
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        payload["recycle_bin_total_bytes"] = _calculate_recycle_bin_usage(recycle_root)
         payload["capture_status"] = _read_capture_status()
         return web.json_response(payload)
 
@@ -3275,6 +3481,10 @@ def build_app() -> web.Application:
 
             if not resolved.is_file():
                 errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            if _path_is_partial(resolved):
+                errors.append({"item": rel, "error": "recording in progress"})
                 continue
 
             if recycle_root_resolved is not None and resolved.is_relative_to(recycle_root_resolved):
@@ -3334,10 +3544,15 @@ def build_app() -> web.Application:
             waveform_name = ""
             transcript_name = ""
             duration_value: float | None = None
+
             if waveform_meta is not None:
                 raw_duration = waveform_meta.get("duration_seconds")
                 if isinstance(raw_duration, (int, float)):
                     duration_value = float(raw_duration)
+
+            start_epoch_value, started_at_value = _resolve_start_metadata(
+                rel_posix, resolved, stat_result, waveform_meta
+            )
 
             try:
                 shutil.move(str(resolved), str(audio_destination))
@@ -3365,6 +3580,9 @@ def build_app() -> web.Application:
                     "duration_seconds": duration_value,
                     "waveform_name": waveform_name,
                     "transcript_name": transcript_name,
+                    "start_epoch": start_epoch_value,
+                    "started_epoch": start_epoch_value,
+                    "started_at": started_at_value,
                 }
                 with metadata_path.open("w", encoding="utf-8") as handle:
                     json.dump(metadata, handle)
@@ -3446,6 +3664,27 @@ def build_app() -> web.Application:
                 else:
                     deleted_epoch_value = None
 
+                start_epoch_raw = data.get("start_epoch")
+                if isinstance(start_epoch_raw, (int, float)):
+                    start_epoch_value = float(start_epoch_raw)
+                else:
+                    start_epoch_value = None
+
+                started_at_raw = data.get("started_at")
+                started_at_value = (
+                    str(started_at_raw)
+                    if isinstance(started_at_raw, str)
+                    else ""
+                )
+
+                size_value = data.get("size_bytes", 0)
+                try:
+                    size_int = int(size_value)
+                except (TypeError, ValueError):
+                    size_int = 0
+                else:
+                    if size_int < 0:
+                        size_int = 0
                 entries.append(
                     {
                         "id": entry_id,
@@ -3454,13 +3693,17 @@ def build_app() -> web.Application:
                         "original_path": original_rel,
                         "deleted_at": str(data.get("deleted_at", "")),
                         "deleted_at_epoch": deleted_epoch_value,
-                        "size_bytes": int(data.get("size_bytes", 0) or 0),
+                        "start_epoch": start_epoch_value,
+                        "started_epoch": start_epoch_value,
+                        "started_at": started_at_value,
+                        "size_bytes": size_int,
                         "duration_seconds": (
                             float(data.get("duration"))
                             if isinstance(data.get("duration"), (int, float))
                             else None
                         ),
                         "restorable": restorable,
+                        "waveform_available": bool(data.get("waveform_name")),
                     }
                 )
 
@@ -3740,6 +3983,35 @@ def build_app() -> web.Application:
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
+    async def recycle_bin_waveform(request: web.Request) -> web.Response:
+        entry_id = request.match_info.get("entry_id", "").strip()
+        if not entry_id or not RECYCLE_ID_PATTERN.match(entry_id):
+            raise web.HTTPNotFound()
+
+        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
+        entry_dir = recycle_root / entry_id
+        data = _read_recycle_entry(entry_dir)
+        if not data:
+            raise web.HTTPNotFound()
+
+        waveform_name = data.get("waveform_name")
+        if not isinstance(waveform_name, str) or not waveform_name:
+            raise web.HTTPNotFound()
+
+        waveform_path = entry_dir / waveform_name
+        try:
+            with waveform_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound() from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("Unable to read recycle bin waveform %s: %s", waveform_path, exc)
+            raise web.HTTPNotFound() from exc
+
+        response = web.json_response(payload)
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
     async def recordings_rename(request: web.Request) -> web.Response:
         try:
             data = await request.json()
@@ -3770,6 +4042,9 @@ def build_app() -> web.Application:
 
         if not source_resolved.is_file():
             raise web.HTTPNotFound(reason="recording not found")
+
+        if _path_is_partial(source_resolved):
+            raise web.HTTPConflict(reason="recording in progress")
 
         new_name = raw_name.strip()
         if new_name in {".", ".."}:
@@ -4051,6 +4326,63 @@ def build_app() -> web.Application:
 
         return web.json_response(payload)
 
+    async def _stream_partial_file(
+        request: web.Request, resolved: Path
+    ) -> web.StreamResponse:
+        loop = asyncio.get_running_loop()
+        deadline = time.monotonic() + STREAMING_OPEN_TIMEOUT_SECONDS
+        handle: io.BufferedReader | None = None
+
+        while handle is None:
+            try:
+                handle = resolved.open("rb", buffering=0)
+            except FileNotFoundError as exc:
+                if time.monotonic() >= deadline:
+                    raise web.HTTPNotFound() from exc
+                await asyncio.sleep(0.1)
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise web.HTTPServiceUnavailable(text=str(exc)) from exc
+                await asyncio.sleep(0.1)
+
+        suffixes = resolved.suffixes
+        container = suffixes[-1].lower() if suffixes else ""
+        if container == ".webm":
+            content_type = "audio/webm"
+        else:
+            content_type = "audio/ogg"
+
+        response = web.StreamResponse(status=200)
+        response.headers["Content-Type"] = content_type
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="{resolved.name}"'
+        )
+        await response.prepare(request)
+
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, handle.read, 32768)
+                if chunk:
+                    try:
+                        await response.write(chunk)
+                    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                        break
+                    continue
+
+                if not resolved.exists():
+                    break
+                await asyncio.sleep(STREAMING_POLL_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                handle.close()
+            with contextlib.suppress(Exception):
+                await response.write_eof()
+
+        return response
+
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
         if not rel:
@@ -4066,6 +4398,9 @@ def build_app() -> web.Application:
             resolved.relative_to(recordings_root_resolved)
         except ValueError:
             raise web.HTTPNotFound()
+
+        if _path_is_partial(resolved):
+            return await _stream_partial_file(request, resolved)
 
         if not resolved.is_file():
             raise web.HTTPNotFound()
@@ -4642,6 +4977,7 @@ def build_app() -> web.Application:
     app.router.add_get("/api/recycle-bin", recycle_bin_list)
     app.router.add_post("/api/recycle-bin/restore", recycle_bin_restore)
     app.router.add_post("/api/recycle-bin/purge", recycle_bin_purge)
+    app.router.add_get("/api/recycle-bin/{entry_id}/waveform", recycle_bin_waveform)
     app.router.add_get("/recycle-bin/{entry_id}", recycle_bin_file)
     app.router.add_get("/api/config", config_snapshot)
     app.router.add_get("/api/config/archival", config_archival_get)
