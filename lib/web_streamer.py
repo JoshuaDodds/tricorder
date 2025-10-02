@@ -1482,6 +1482,98 @@ def _path_is_partial(path: Path) -> bool:
     return any(suffix.lower() == ".partial" for suffix in suffixes)
 
 
+def _resolve_start_metadata(
+    relative_path: Path | str | None,
+    file_path: Path | None,
+    stat_result: os.stat_result | None,
+    waveform_meta: dict[str, object] | None,
+) -> tuple[float | None, str]:
+    """Derive start timestamps from available metadata."""
+
+    start_epoch_value: float | None = None
+    started_at_value = ""
+
+    def _assign_start_from_epoch(raw_epoch: object) -> bool:
+        nonlocal start_epoch_value, started_at_value
+        if not isinstance(raw_epoch, (int, float)):
+            return False
+        epoch = float(raw_epoch)
+        if not math.isfinite(epoch):
+            return False
+        start_epoch_value = epoch
+        try:
+            started_at_value = datetime.fromtimestamp(
+                epoch, tz=timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at_value = ""
+        return True
+
+    def _assign_start_from_iso(raw_value: object) -> bool:
+        nonlocal start_epoch_value, started_at_value
+        if not isinstance(raw_value, str):
+            return False
+        candidate = raw_value.strip()
+        if not candidate:
+            return False
+        try:
+            if candidate.endswith("Z"):
+                candidate = f"{candidate[:-1]}+00:00"
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed_utc = parsed.astimezone(timezone.utc)
+        start_epoch_value = parsed_utc.timestamp()
+        started_at_value = parsed_utc.isoformat()
+        return True
+
+    if waveform_meta:
+        if not _assign_start_from_epoch(waveform_meta.get("start_epoch")):
+            _assign_start_from_epoch(waveform_meta.get("started_epoch"))
+        if start_epoch_value is None:
+            _assign_start_from_iso(waveform_meta.get("started_at"))
+
+    if start_epoch_value is None:
+        if isinstance(relative_path, str):
+            rel_parts = Path(relative_path).parts
+        elif isinstance(relative_path, Path):
+            rel_parts = relative_path.parts
+        else:
+            rel_parts = ()
+
+        day_component = rel_parts[0] if rel_parts else ""
+        time_component = ""
+        if len(rel_parts) > 1:
+            time_component = Path(rel_parts[1]).stem.split("_", 1)[0]
+        elif isinstance(file_path, Path):
+            time_component = file_path.stem.split("_", 1)[0]
+
+        if day_component and time_component:
+            try:
+                struct_time = time.strptime(
+                    f"{day_component} {time_component}", "%Y%m%d %H-%M-%S"
+                )
+            except ValueError:
+                struct_time = None
+            if struct_time is not None:
+                _assign_start_from_epoch(time.mktime(struct_time))
+
+    if start_epoch_value is None and stat_result is not None:
+        _assign_start_from_epoch(getattr(stat_result, "st_mtime", None))
+
+    if not started_at_value and start_epoch_value is not None:
+        try:
+            started_at_value = datetime.fromtimestamp(
+                start_epoch_value, tz=timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at_value = ""
+
+    return start_epoch_value, started_at_value
+
+
 def _scan_recordings_worker(
     recordings_root: Path, allowed_ext: tuple[str, ...]
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
@@ -1580,22 +1672,9 @@ def _scan_recordings_worker(
         rel_posix = rel.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
-        start_epoch: float | None = None
-        started_at_iso: str | None = None
-        if day:
-            time_component = path.stem.split("_", 1)[0]
-            if time_component:
-                try:
-                    struct_time = time.strptime(
-                        f"{day} {time_component}", "%Y%m%d %H-%M-%S"
-                    )
-                except ValueError:
-                    pass
-                else:
-                    start_epoch = float(time.mktime(struct_time))
-                    started_at_iso = datetime.fromtimestamp(
-                        start_epoch, tz=timezone.utc
-                    ).isoformat()
+        start_epoch, started_at_iso = _resolve_start_metadata(
+            rel, path, stat, waveform_meta
+        )
 
         if day:
             day_set.add(day)
@@ -1616,6 +1695,7 @@ def _scan_recordings_worker(
                 "duration": duration,
                 "waveform_path": waveform_rel.as_posix(),
                 "start_epoch": start_epoch,
+                "started_epoch": start_epoch,
                 "started_at": started_at_iso,
                 "has_transcript": bool(transcript_path_rel),
                 "transcript_path": transcript_path_rel,
@@ -3285,6 +3365,11 @@ def build_app() -> web.Application:
                     if isinstance(entry.get("start_epoch"), (int, float))
                     else None
                 ),
+                "started_epoch": (
+                    float(entry.get("started_epoch", 0.0))
+                    if isinstance(entry.get("started_epoch"), (int, float))
+                    else None
+                ),
                 "started_at": (
                     str(entry.get("started_at"))
                     if isinstance(entry.get("started_at"), str)
@@ -3459,73 +3544,15 @@ def build_app() -> web.Application:
             waveform_name = ""
             transcript_name = ""
             duration_value: float | None = None
-            start_epoch_value: float | None = None
-            started_at_value = ""
-
-            def _assign_start_from_epoch(raw_epoch: object) -> bool:
-                nonlocal start_epoch_value, started_at_value
-                if not isinstance(raw_epoch, (int, float)):
-                    return False
-                epoch = float(raw_epoch)
-                if not math.isfinite(epoch):
-                    return False
-                start_epoch_value = epoch
-                try:
-                    started_at_value = datetime.fromtimestamp(
-                        epoch, tz=timezone.utc
-                    ).isoformat()
-                except (OverflowError, OSError, ValueError):
-                    started_at_value = ""
-                return True
-
-            def _assign_start_from_iso(raw_value: object) -> bool:
-                nonlocal start_epoch_value, started_at_value
-                if not isinstance(raw_value, str):
-                    return False
-                candidate = raw_value.strip()
-                if not candidate:
-                    return False
-                parsed: datetime | None
-                try:
-                    if candidate.endswith("Z"):
-                        candidate = f"{candidate[:-1]}+00:00"
-                    parsed = datetime.fromisoformat(candidate)
-                except ValueError:
-                    return False
-                if parsed is None:
-                    return False
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                parsed_utc = parsed.astimezone(timezone.utc)
-                start_epoch_value = parsed_utc.timestamp()
-                started_at_value = parsed_utc.isoformat()
-                return True
 
             if waveform_meta is not None:
                 raw_duration = waveform_meta.get("duration_seconds")
                 if isinstance(raw_duration, (int, float)):
                     duration_value = float(raw_duration)
 
-                if not _assign_start_from_epoch(waveform_meta.get("start_epoch")):
-                    _assign_start_from_epoch(waveform_meta.get("started_epoch"))
-                if start_epoch_value is None:
-                    _assign_start_from_iso(waveform_meta.get("started_at"))
-
-            if start_epoch_value is None:
-                day_component = rel.split("/", 1)[0]
-                time_component = resolved.stem.split("_", 1)[0]
-                if day_component and time_component:
-                    try:
-                        struct_time = time.strptime(
-                            f"{day_component} {time_component}", "%Y%m%d %H-%M-%S"
-                        )
-                    except ValueError:
-                        struct_time = None
-                    if struct_time is not None:
-                        _assign_start_from_epoch(time.mktime(struct_time))
-
-            if start_epoch_value is None:
-                _assign_start_from_epoch(getattr(stat_result, "st_mtime", None))
+            start_epoch_value, started_at_value = _resolve_start_metadata(
+                rel_posix, resolved, stat_result, waveform_meta
+            )
 
             try:
                 shutil.move(str(resolved), str(audio_destination))
