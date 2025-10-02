@@ -17,24 +17,28 @@ Naming discipline when tickets are referenced:
 
 Smart commit policy:
 - All commit messages must include the Jira key(s) and smart commit tags.
-- Format: `git commit -m "<PROJECT>-<int> <imperative summary> #comment <concise what/why> #time <duration> #transition In Review"`.
+- Format: `git commit -m "<PROJECT>-<int> <imperative summary> #comment <concise what/why> #time <duration you spent working since the last commit was made> #transition In Review"`.
 - The summary must be ≤72 chars and describe the outcome.
 - `#comment` is a one-line reviewer-friendly note describing what changed and why.
-- `#time` logs the effort (e.g., `12m`, `45m`, `1h 30m`).
-- Only the final ready-for-review commit includes `#transition In Review`; keep intermediate commits in **In Progress**.
+- `#time` logs the actual duration you spent working rounded to the neared minute (for example, `12m`, `45m`, `1h 30m`).
+- On your very last commit before you stop the task and wait for permission to push the change your final commit muct include `#transition In Review`; keep intermediate commits in **In Progress**.
 - Multiple tickets can be referenced by listing each key once (e.g., `TR-101 AUDIO-202 ...`).
 - Ensure the Git author email matches a Jira user for smart-commit linkage.
 
 Ticket lifecycle expectations (Board: To Do → In Progress → In Review):
 1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket, add the startup comment, optionally log initial time.
-2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates as needed.
+2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates to add time tracking information between commits.
 3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, total time logged, current status (**In Review**), and links back to the task run and PR/commit diff. Do **not** move to Done.
 4. **Failures** – if transitions fail, comment the error, retry with backoff (3 attempts), and proceed with manual follow-up instructions.
-5. **Fallback** – if Smart Commit automations are unavailable (permissions/workflow), explicitly post Jira comments, worklogs, and transitions through the API.
+5. **Fallback** – if Smart Commit automations are unavailable (permissions/workflow), explicitly post Jira comments, worklogs, and transitions using the Jira API.
 
-Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` to be available in the environment and they are preconfigured for codex agents in their work environments already; derive the base URL as `https://mfisbv.atlassian.net` each run instead of reading a `JIRA_BASE_URL` variable. Read tokens from the environment only, redact PAT values in logs, and scope credentials minimally (issue read/write, worklog, transitions). Resolve transition IDs dynamically by name (“In Progress”, “In Review”), and verify capabilities (`/myself`, read issue, list transitions, add comment/worklog) before first use. Remember that Jira ticket keys already embed the project prefix (`ABC-123` ⇒ project key `ABC`, `TR-456` ⇒ project key `TR`). Perform a self-check at startup to confirm transitions map correctly and permissions allow commenting/worklogging. On closeout, ensure total time logged and final status are reported in Jira comments.
+Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` is available to you and they are preconfigured for codex agents in their work environments already; derive the base URL as `https://mfisbv.atlassian.net` each run instead of reading a `JIRA_BASE_URL` variable. Read tokens from the environment only, redact PAT values in logs, and scope credentials minimally (issue read/write, worklog, transitions). Resolve transition IDs dynamically by name (“In Progress”, “In Review”), and verify capabilities (`/myself`, read issue, list transitions, add comment/worklog) before first use. Remember that Jira ticket keys already embed the project prefix (`ABC-123` ⇒ project key `ABC`, `TR-456` ⇒ project key `TR`). Perform a self-check at startup to confirm transitions map correctly and permissions allow commenting/worklogging. On closeout, ensure total time logged and final status are reported in Jira comments.
+You are expected to strictly adhere to Jira API usage guidelines and not make any changes to the Jira UI. You are expected to send Jira API regularly to keep your work tracked.
+The ENV vars mentioned above are already configured for you. 
 
-Before pushing:
+Regarding time, we want actual duration between commits rouded to the minute and not an estimate of what it would have taken a human to complete the task.
+
+Before final commit with smart commit messages pushing:
 1. Run: git fetch origin && git rebase origin/<base-branch>
    - If rebase fails, discard local changes and re-run the implementation against the updated branch.
 2. Run tests (export DEV=1 && pytest -q). All tests must pass.
