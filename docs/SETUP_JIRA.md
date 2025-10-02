@@ -11,6 +11,8 @@
 
 The Jira base URL is derived each run from the organization name `mfisbv`, producing `https://mfisbv.atlassian.net`, so no `JIRA_BASE_URL` variable is required.
 
+When parsing instructions or commit messages, detect Jira issue keys generically with regex `\b[A-Z][A-Z0-9]+-\d+\b`; the uppercase prefix before the dash is always the project key.
+
 ## 2) Enable Git ↔ Jira Integration (Smart Commits)
 - For GitHub: install **Jira Cloud** app and connect your org/repositories.
 - Ensure **Smart Commits** are enabled for the repo.
@@ -27,13 +29,13 @@ The Jira base URL is derived each run from the organization name `mfisbv`, produ
 **A. API smoke test**
 
 - `GET /rest/api/3/myself` → returns your Jira user.
-- `GET /rest/api/3/issue/TR-<int>` → issue loads (project key `TR` is embedded in the ticket ID).
-- `GET /rest/api/3/issue/TR-<int>/transitions` → includes **In Progress** and **In Review**.
-- `POST /rest/api/3/issue/TR-<int>/comment` → adds a comment.
+- `GET /rest/api/3/issue/<PROJECT>-<int>` → issue loads (the uppercase prefix, e.g., `TR` in `TR-101`, is the project key).
+- `GET /rest/api/3/issue/<PROJECT>-<int>/transitions` → includes **In Progress** and **In Review**.
+- `POST /rest/api/3/issue/<PROJECT>-<int>/comment` → adds a comment.
 
 **B. Smart Commit test**
 
-    git commit -m "TR-<int> Connectivity smoke test #comment verify smart commits #time 2m"
+    git commit -m "<PROJECT>-<int> Connectivity smoke test #comment verify smart commits #time 2m"
 
 Push and confirm in Jira:
 - Commit is linked to the issue.
@@ -46,8 +48,8 @@ Push and confirm in Jira:
 - **Multiple workflows**: transitions differ by issue type; always fetch transitions per issue.
 
 ## 6) PR/Branch Conventions (Recommended)
-- Branch: `tr-<num>-<short-slug>`
-- PR title: `TR-<num>: <summary>`
+- Branch: `<project>-<num>-<short-slug>` (e.g., `tr-123-audio-trim` for `TR-123`)
+- PR title: `<PROJECT>-<num>: <summary>`
 - PR description: What/Why, How (high-level), Risk/Rollback, Links (Jira, commit/PR, run)
 
 ## 7) Safety
