@@ -135,6 +135,18 @@ TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
 ENCODER = cfg["paths"]["encoder_script"]
 
+STREAMING_ENCODE_ENABLED = bool(
+    cfg["segmenter"].get("streaming_encode", False)
+)
+_STREAMING_FORMAT = str(
+    cfg["segmenter"].get("streaming_encode_container", "opus")
+).strip().lower()
+if _STREAMING_FORMAT not in {"opus", "webm"}:
+    _STREAMING_FORMAT = "opus"
+STREAMING_CONTAINER_FORMAT = _STREAMING_FORMAT
+STREAMING_EXTENSION = ".opus" if STREAMING_CONTAINER_FORMAT == "opus" else ".webm"
+STREAMING_PARTIAL_SUFFIX = f".partial{STREAMING_EXTENSION}"
+
 # PRE_PAD / POST_PAD
 PRE_PAD = int(cfg["segmenter"]["pre_pad_ms"])
 POST_PAD = int(cfg["segmenter"]["post_pad_ms"])
@@ -159,6 +171,15 @@ GAIN = float(cfg["audio"]["gain"])
 USE_RNNOISE = bool(cfg["segmenter"]["use_rnnoise"])
 USE_NOISEREDUCE = bool(cfg["segmenter"]["use_noisereduce"])
 DENOISE_BEFORE_VAD = bool(cfg["segmenter"]["denoise_before_vad"])
+
+if (USE_RNNOISE or USE_NOISEREDUCE) and not DENOISE_BEFORE_VAD:
+    print(
+        "[segmenter] denoise filters requested but denoise_before_vad is false; "
+        "disabling RNNoise/noisereduce toggles",
+        flush=True,
+    )
+    USE_RNNOISE = False
+    USE_NOISEREDUCE = False
 
 # Filter chain instrumentation tunables
 FILTER_CHAIN_METRICS_WINDOW = int(
@@ -287,6 +308,214 @@ class _WriterWorker(threading.Thread):
             finally:
                 self.q.task_done()
 
+
+# ---------- Streaming Opus encoder helper ----------
+
+
+@dataclass
+class StreamingEncoderResult:
+    partial_path: str | None
+    success: bool
+    returncode: int | None
+    error: Exception | None
+    stderr: str | None
+    bytes_sent: int
+    dropped_chunks: int
+
+
+class StreamingOpusEncoder:
+    def __init__(self, partial_path: str, *, container_format: str = "opus") -> None:
+        if not partial_path:
+            raise ValueError("partial_path is required for StreamingOpusEncoder")
+        self.partial_path = partial_path
+        self.container_format = container_format if container_format in {"opus", "webm"} else "opus"
+        self._process: subprocess.Popen | None = None
+        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=MAX_QUEUE_FRAMES)
+        self._thread: threading.Thread | None = None
+        self._bytes_sent = 0
+        self._dropped = 0
+        self._error: Exception | None = None
+        self._stderr: bytes | None = None
+        self._returncode: int | None = None
+        self._closed = threading.Event()
+
+    def _build_command(self) -> list[str]:
+        base_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "s16le",
+            "-ar",
+            str(SAMPLE_RATE),
+            "-ac",
+            "1",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "48k",
+            "-vbr",
+            "on",
+            "-application",
+            "audio",
+            "-frame_duration",
+            "20",
+            "-f",
+            self.container_format,
+            self.partial_path,
+        ]
+        return base_cmd
+
+    def start(self, command: list[str] | None = None) -> None:
+        if self._process is not None:
+            raise RuntimeError("StreamingOpusEncoder already started")
+        os.makedirs(os.path.dirname(self.partial_path), exist_ok=True)
+        try:
+            if os.path.exists(self.partial_path):
+                os.unlink(self.partial_path)
+        except OSError:
+            pass
+        if command is None:
+            command = self._build_command()
+        try:
+            self._process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface failure upstream
+            self._error = exc
+            raise
+
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self) -> None:
+        proc = self._process
+        if proc is None:
+            self._closed.set()
+            return
+        try:
+            stdin = proc.stdin
+            if stdin is None:
+                raise RuntimeError("encoder stdin unavailable")
+            while True:
+                try:
+                    chunk = self._queue.get(timeout=0.5)
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        break
+                    continue
+
+                if chunk is None:
+                    self._queue.task_done()
+                    break
+
+                try:
+                    stdin.write(chunk)
+                    if hasattr(stdin, "flush"):
+                        stdin.flush()
+                    self._bytes_sent += len(chunk)
+                except Exception as exc:  # noqa: BLE001 - propagate failure
+                    self._error = exc
+                    break
+                finally:
+                    self._queue.task_done()
+        finally:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._stderr = proc.stderr.read() if proc.stderr else None
+            except Exception:
+                self._stderr = None
+            self._returncode = proc.wait()
+            self._closed.set()
+
+    def feed(self, chunk: bytes) -> bool:
+        if not chunk or self._process is None:
+            return False
+        try:
+            self._queue.put_nowait(bytes(chunk))
+            return True
+        except queue.Full:
+            self._dropped += 1
+            return False
+
+    def close(self, *, timeout: float | None = None) -> StreamingEncoderResult:
+        if self._process is None:
+            return StreamingEncoderResult(
+                partial_path=self.partial_path,
+                success=False,
+                returncode=None,
+                error=self._error,
+                stderr=None,
+                bytes_sent=self._bytes_sent,
+                dropped_chunks=self._dropped,
+            )
+
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            worker_alive = self._thread is not None and self._thread.is_alive()
+            if worker_alive:
+                try:
+                    # Avoid hanging forever if the worker stopped draining.
+                    block_timeout = timeout if timeout is not None else 1.0
+                    self._queue.put(None, timeout=block_timeout)
+                except queue.Full:
+                    worker_alive = False
+            if not worker_alive:
+                drained = 0
+                while True:
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    else:
+                        self._queue.task_done()
+                        drained += 1
+                if drained:
+                    self._dropped += drained
+                try:
+                    self._queue.put_nowait(None)
+                except queue.Full:
+                    pass
+
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._returncode = self._process.wait()
+
+        success = self._error is None and (self._returncode or 0) == 0
+        stderr_text = None
+        if self._stderr:
+            try:
+                stderr_text = self._stderr.decode("utf-8", errors="ignore")
+            except Exception:
+                stderr_text = None
+
+        return StreamingEncoderResult(
+            partial_path=self.partial_path,
+            success=success,
+            returncode=self._returncode,
+            error=self._error,
+            stderr=stderr_text,
+            bytes_sent=self._bytes_sent,
+            dropped_chunks=self._dropped,
+        )
 
 # ---------- Async encoder worker ----------
 ENCODE_QUEUE: queue.Queue = queue.Queue()
@@ -461,16 +690,30 @@ class _EncoderWorker(threading.Thread):
                 job_id: int | None
                 wav_path: str
                 base_name: str
-                if isinstance(item, tuple) and len(item) == 3:
+                existing_opus: str | None = None
+                if isinstance(item, tuple) and len(item) == 4:
+                    job_id, wav_path, base_name, existing_opus = item
+                elif isinstance(item, tuple) and len(item) == 3:
                     job_id, wav_path, base_name = item
                 else:
                     job_id = None
-                    wav_path, base_name = item
+                    if isinstance(item, tuple):
+                        wav_path = item[0]
+                        base_name = item[1]
+                        if len(item) >= 3:
+                            existing_opus = item[2]
+                    else:
+                        wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
                     ENCODING_STATUS.mark_started(job_id, base_name)
                 cmd = [ENCODER, wav_path, base_name]
+                if existing_opus:
+                    cmd.append(existing_opus)
+                env = os.environ.copy()
+                env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
+                env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
                 try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
                 except subprocess.CalledProcessError as exc:
                     print(f"[encoder] FAIL {exc.returncode}", flush=True)
                     if exc.stdout:
@@ -499,15 +742,17 @@ def _enqueue_encode_job(
     base_name: str,
     *,
     source: str = "live",
+    existing_opus_path: str | None = None,
 ) -> int | None:
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
     job_id = ENCODING_STATUS.enqueue(base_name, source=source)
+    payload = (job_id, tmp_wav_path, base_name, existing_opus_path)
     try:
-        ENCODE_QUEUE.put_nowait((job_id, tmp_wav_path, base_name))
+        ENCODE_QUEUE.put_nowait(payload)
     except queue.Full:
-        ENCODE_QUEUE.put((job_id, tmp_wav_path, base_name))
+        ENCODE_QUEUE.put(payload)
     print(f"[segmenter] queued encode job for {base_name}", flush=True)
     return job_id
 
@@ -526,6 +771,23 @@ class AdaptiveRmsController:
         section = cfg_section or {}
         self.enabled = bool(section.get("enabled", False))
         self.min_thresh_norm = min(1.0, max(0.0, float(section.get("min_thresh", 0.01))))
+        try:
+            raw_max = float(section.get("max_thresh", 1.0))
+        except (TypeError, ValueError):
+            raw_max = 1.0
+        self.max_thresh_norm = min(1.0, max(self.min_thresh_norm, raw_max))
+        self._max_threshold_linear: int | None = None
+        max_rms_raw = section.get("max_rms")
+        if isinstance(max_rms_raw, (int, float)) and not isinstance(max_rms_raw, bool):
+            if math.isfinite(float(max_rms_raw)):
+                candidate = int(round(float(max_rms_raw)))
+                if candidate > 0:
+                    self._max_threshold_linear = candidate
+                    linear_norm = min(1.0, candidate / self._NORM)
+                    self.max_thresh_norm = min(
+                        self.max_thresh_norm,
+                        max(self.min_thresh_norm, linear_norm),
+                    )
         self.margin = max(0.0, float(section.get("margin", 1.2)))
         self.update_interval = max(0.1, float(section.get("update_interval_sec", 5.0)))
         self.hysteresis_tolerance = max(0.0, float(section.get("hysteresis_tolerance", 0.1)))
@@ -540,6 +802,7 @@ class AdaptiveRmsController:
         self._last_observation: AdaptiveRmsObservation | None = None
         initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
         if self.enabled:
+            initial_norm = min(self.max_thresh_norm, initial_norm)
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
         self.debug = bool(debug)
@@ -548,7 +811,18 @@ class AdaptiveRmsController:
     def threshold_linear(self) -> int:
         if not self.enabled:
             return int(self._current_norm * self._NORM)
-        return int(round(self._current_norm * self._NORM))
+        value = int(round(self._current_norm * self._NORM))
+        if self._max_threshold_linear is not None:
+            return min(value, self._max_threshold_linear)
+        return value
+
+    @property
+    def max_threshold_linear(self) -> int | None:
+        if self._max_threshold_linear is not None:
+            return self._max_threshold_linear
+        if self.max_thresh_norm >= 1.0:
+            return None
+        return int(round(self.max_thresh_norm * self._NORM))
 
     @property
     def threshold_norm(self) -> float:
@@ -592,10 +866,13 @@ class AdaptiveRmsController:
         ordered = sorted(self._buffer)
         idx = max(0, int(math.ceil(0.95 * len(ordered)) - 1))
         p95 = ordered[idx]
-        candidate_raise = min(1.0, max(self.min_thresh_norm, p95 * self.margin))
+        candidate_raise = min(self.max_thresh_norm, max(self.min_thresh_norm, p95 * self.margin))
         rel_idx = max(0, int(math.ceil(self.release_percentile * len(ordered)) - 1))
         release_val = ordered[rel_idx]
-        candidate_release = min(1.0, max(self.min_thresh_norm, release_val * self.margin))
+        candidate_release = min(
+            self.max_thresh_norm,
+            max(self.min_thresh_norm, release_val * self.margin),
+        )
         if (
             # Require both gates to move upward before raising the threshold.
             # This avoids ping-ponging when the long-tail release sample still
@@ -620,10 +897,14 @@ class AdaptiveRmsController:
             should_update = (delta / self._current_norm) >= self.hysteresis_tolerance
 
         if should_update:
-            self._current_norm = candidate
+            self._current_norm = min(candidate, self.max_thresh_norm)
         final_threshold = int(round(self._current_norm * self._NORM))
         previous_threshold = int(round(previous_norm * self._NORM))
         candidate_threshold = int(round(candidate * self._NORM))
+        if self._max_threshold_linear is not None:
+            final_threshold = min(final_threshold, self._max_threshold_linear)
+            previous_threshold = min(previous_threshold, self._max_threshold_linear)
+            candidate_threshold = min(candidate_threshold, self._max_threshold_linear)
         self._last_observation = AdaptiveRmsObservation(
             timestamp=time.time(),
             updated=bool(should_update),
@@ -668,6 +949,10 @@ class TimelineRecorder:
         self.done_q: queue.Queue = queue.Queue(maxsize=2)
         self.writer = _WriterWorker(self.audio_q, self.done_q, FLUSH_THRESHOLD)
         self.writer.start()
+
+        self._streaming_enabled = STREAMING_ENCODE_ENABLED
+        self._streaming_encoder: StreamingOpusEncoder | None = None
+        self._streaming_day_dir: str | None = None
 
         self._adaptive = AdaptiveRmsController(
             frame_ms=FRAME_MS,
@@ -729,6 +1014,8 @@ class TimelineRecorder:
                     "current_rms": 0,
                     "event_duration_seconds": None,
                     "event_size_bytes": None,
+                    "partial_recording_path": None,
+                    "streaming_container_format": None,
                 },
             )
 
@@ -797,6 +1084,8 @@ class TimelineRecorder:
                 "service_running",
                 "event_duration_seconds",
                 "event_size_bytes",
+                "partial_recording_path",
+                "streaming_container_format",
                 "encoding",
             )
             if extra and self._status_mode == "live":
@@ -868,7 +1157,11 @@ class TimelineRecorder:
         return capturing, event, last_event, reason
 
     def _current_event_size(self) -> int | None:
-        path = self.tmp_wav_path
+        path = None
+        if self._streaming_encoder:
+            path = self._streaming_encoder.partial_path
+        if not path:
+            path = self.tmp_wav_path
         if not path:
             return None
         try:
@@ -908,6 +1201,14 @@ class TimelineRecorder:
                     else None
                 ),
                 "event_size_bytes": self._current_event_size() if capturing else None,
+                "partial_recording_path": (
+                    self._streaming_encoder.partial_path
+                    if capturing and self._streaming_encoder
+                    else None
+                ),
+                "streaming_container_format": (
+                    STREAMING_CONTAINER_FORMAT if capturing and self._streaming_encoder else None
+                ),
                 "filter_chain_avg_ms": round(self._filter_avg_ms, 3),
                 "filter_chain_peak_ms": round(self._filter_peak_ms, 3),
                 "filter_chain_avg_budget_ms": FILTER_CHAIN_AVG_BUDGET_MS,
@@ -1108,9 +1409,34 @@ class TimelineRecorder:
 
                 self._q_send(('open', self.base_name, self.tmp_wav_path))
 
+                if self._streaming_enabled:
+                    try:
+                        day = time.strftime("%Y%m%d")
+                        day_dir = os.path.join(REC_DIR, day)
+                        os.makedirs(day_dir, exist_ok=True)
+                        partial_path = os.path.join(
+                            day_dir,
+                            f"{self.base_name}{STREAMING_PARTIAL_SUFFIX}",
+                        )
+                        self._streaming_day_dir = day_dir
+                        self._streaming_encoder = StreamingOpusEncoder(
+                            partial_path,
+                            container_format=STREAMING_CONTAINER_FORMAT,
+                        )
+                        self._streaming_encoder.start()
+                    except Exception as exc:
+                        print(
+                            f"[segmenter] WARN: failed to start streaming encoder: {exc!r}",
+                            flush=True,
+                        )
+                        self._streaming_encoder = None
+                        self._streaming_day_dir = None
+
                 if self.prebuf:
                     for f in self.prebuf:
                         self._q_send(bytes(f))
+                        if self._streaming_encoder and not self._streaming_encoder.feed(bytes(f)):
+                            self.queue_drops += 1
                         self.frames_written += 1
                         self.sum_rms += rms(f)
                 self.prebuf.clear()
@@ -1132,10 +1458,21 @@ class TimelineRecorder:
                     "trigger_rms": self.trigger_rms,
                 }
                 if self._status_mode == "live":
+                    if self._streaming_encoder:
+                        event_status = dict(event_status)
+                        event_status["in_progress"] = True
+                        event_status["partial_recording_path"] = (
+                            self._streaming_encoder.partial_path
+                        )
+                        event_status["streaming_container_format"] = (
+                            STREAMING_CONTAINER_FORMAT
+                        )
                     self._update_capture_status(True, event=event_status)
             return
 
         self._q_send(bytes(buf))
+        if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
+            self.queue_drops += 1
         self.frames_written += 1
         self.sum_rms += rms(proc_for_analysis)
         self.saw_voiced = voiced or self.saw_voiced
@@ -1153,6 +1490,51 @@ class TimelineRecorder:
         if self.frames_written <= 0 or not self.base_name:
             self._reset_event_state()
             return
+
+        streaming_result: StreamingEncoderResult | None = None
+        partial_stream_path: str | None = None
+        final_stream_path: str | None = None
+        streaming_drop_detected = False
+        day_dir = self._streaming_day_dir
+        if self._streaming_encoder:
+            try:
+                streaming_result = self._streaming_encoder.close(timeout=5.0)
+            except Exception as exc:
+                print(
+                    f"[segmenter] WARN: streaming encoder close failed: {exc!r}",
+                    flush=True,
+                )
+                streaming_result = StreamingEncoderResult(
+                    partial_path=self._streaming_encoder.partial_path,
+                    success=False,
+                    returncode=None,
+                    error=exc,
+                    stderr=None,
+                    bytes_sent=0,
+                    dropped_chunks=0,
+                )
+            finally:
+                self._streaming_encoder = None
+        if streaming_result:
+            partial_stream_path = streaming_result.partial_path
+            streaming_drop_detected = bool(streaming_result.dropped_chunks)
+
+        if self.queue_drops:
+            streaming_drop_detected = True
+
+        if streaming_drop_detected:
+            drop_details = []
+            if streaming_result:
+                drop_details.append(
+                    f"encoder={streaming_result.dropped_chunks}"
+                )
+            if self.queue_drops:
+                drop_details.append(f"queue={self.queue_drops}")
+            details = ", ".join(drop_details) if drop_details else "unknown"
+            print(
+                f"[segmenter] WARN: streaming encoder dropped chunks ({details}); falling back to offline encode",
+                flush=True,
+            )
 
         if self.saw_voiced and self.saw_loud:
             etype_label = EVENT_TAGS["both"]
@@ -1188,10 +1570,48 @@ class TimelineRecorder:
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             safe_etype = _sanitize_event_tag(etype_label)
             final_base = f"{event_ts}_{safe_etype}_RMS-{trigger_rms}_{event_count}"
+            streaming_succeeded = False
+            target_day_dir = day_dir or os.path.join(REC_DIR, day)
+            os.makedirs(target_day_dir, exist_ok=True)
+            final_opus_path = os.path.join(target_day_dir, f"{final_base}{STREAMING_EXTENSION}")
+            if (
+                streaming_result
+                and streaming_result.success
+                and not streaming_drop_detected
+                and partial_stream_path
+                and os.path.exists(partial_stream_path)
+            ):
+                try:
+                    os.replace(partial_stream_path, final_opus_path)
+                    streaming_succeeded = True
+                    final_stream_path = final_opus_path
+                    print(
+                        f"[segmenter] Streaming encode finalized at {final_opus_path}",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[segmenter] WARN: failed to finalize streaming output: {exc!r}",
+                        flush=True,
+                    )
+                    streaming_succeeded = False
+            elif streaming_result and not streaming_result.success:
+                if streaming_result.stderr:
+                    print(
+                        f"[segmenter] WARN: streaming encoder stderr: {streaming_result.stderr.strip()}",
+                        flush=True,
+                    )
+            if not streaming_succeeded and partial_stream_path and os.path.exists(partial_stream_path):
+                try:
+                    os.unlink(partial_stream_path)
+                except OSError:
+                    pass
+
             job_id = _enqueue_encode_job(
                 tmp_wav_path,
                 final_base,
                 source=self._recording_source,
+                existing_opus_path=final_stream_path if streaming_succeeded else None,
             )
             if job_id is not None:
                 self._encode_jobs.append(job_id)
@@ -1205,7 +1625,9 @@ class TimelineRecorder:
                         ),
                         flush=True,
                     )
+        self._streaming_day_dir = None
 
+        if tmp_wav_path and base:
             last_event_status = {
                 "base_name": final_base,
                 "started_at": self.event_timestamp,
@@ -1229,12 +1651,21 @@ class TimelineRecorder:
             }
 
         last_event_status["end_reason"] = reason
+        last_event_status["in_progress"] = False
+        if final_stream_path:
+            last_event_status["recording_path"] = final_stream_path
+            last_event_status["streaming_container_format"] = STREAMING_CONTAINER_FORMAT
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
                 last_event=last_event_status,
                 reason=reason,
-                extra={"event_duration_seconds": None, "event_size_bytes": None},
+                extra={
+                    "event_duration_seconds": None,
+                    "event_size_bytes": None,
+                    "partial_recording_path": None,
+                    "streaming_container_format": None,
+                },
             )
         if NOTIFIER:
             try:
@@ -1247,6 +1678,27 @@ class TimelineRecorder:
         self._reset_event_state()
 
     def _reset_event_state(self):
+        if self._streaming_encoder:
+            result: StreamingEncoderResult | None = None
+            try:
+                result = self._streaming_encoder.close(timeout=1.0)
+            except Exception:
+                result = StreamingEncoderResult(
+                    partial_path=self._streaming_encoder.partial_path,
+                    success=False,
+                    returncode=None,
+                    error=None,
+                    stderr=None,
+                    bytes_sent=0,
+                    dropped_chunks=0,
+                )
+            if result and result.partial_path and os.path.exists(result.partial_path):
+                try:
+                    os.unlink(result.partial_path)
+                except OSError:
+                    pass
+        self._streaming_encoder = None
+        self._streaming_day_dir = None
         self.active = False
         self.post_count = 0
         self.recent_active.clear()
@@ -1290,6 +1742,8 @@ class TimelineRecorder:
                     "current_rms": 0,
                     "event_duration_seconds": None,
                     "event_size_bytes": None,
+                    "partial_recording_path": None,
+                    "streaming_container_format": None,
                 },
             )
 

@@ -5,6 +5,9 @@ import re
 
 import pytest
 
+import collections
+from pathlib import Path
+
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 import lib.segmenter as segmenter
 
@@ -136,6 +139,82 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
         assert not second_obs.updated
 
 
+def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    rec_dir = tmp_path / "rec"
+    tmp_dir = tmp_path / "tmp"
+    rec_dir.mkdir()
+    tmp_dir.mkdir()
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", True)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 5)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
+
+    encoder_instances: list[object] = []
+
+    class FakeEncoder:
+        def __init__(self, partial_path: str, *, container_format: str = "opus") -> None:
+            self.partial_path = partial_path
+            self.container_format = container_format
+            self._drops = 0
+            self._bytes = 0
+            self._feeds = 0
+            encoder_instances.append(self)
+
+        def start(self) -> None:
+            Path(self.partial_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.partial_path).write_bytes(b"")
+
+        def feed(self, chunk: bytes) -> bool:
+            self._feeds += 1
+            if self._feeds >= 2:
+                self._drops += 1
+                return False
+            with open(self.partial_path, "ab") as handle:
+                handle.write(chunk)
+            self._bytes += len(chunk)
+            return True
+
+        def close(self, *, timeout: float | None = None):
+            return segmenter.StreamingEncoderResult(
+                partial_path=self.partial_path,
+                success=True,
+                returncode=0,
+                error=None,
+                stderr=None,
+                bytes_sent=self._bytes,
+                dropped_chunks=self._drops,
+            )
+
+    monkeypatch.setattr(segmenter, "StreamingOpusEncoder", FakeEncoder)
+
+    captured: dict[str, object | None] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
+        captured["tmp_wav_path"] = tmp_wav_path
+        captured["base_name"] = base_name
+        captured["existing_opus_path"] = existing_opus_path
+        return 123
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+    for i in range(8):
+        rec.ingest(make_frame(2000), i)
+    rec.flush(20)
+
+    assert encoder_instances, "expected streaming encoder to be initialised"
+    encoder = encoder_instances[0]
+    partial_path = Path(encoder.partial_path)
+    assert not partial_path.exists(), "partial stream should be discarded when drops occur"
+    assert getattr(encoder, "_drops", 0) > 0
+
+    assert "existing_opus_path" in captured
+    assert captured.get("existing_opus_path") is None, "fallback encode should not reuse streaming output"
+
+
+
 def test_adaptive_threshold_recovery(monkeypatch):
     fake_time = [0.0]
 
@@ -176,13 +255,58 @@ def test_adaptive_threshold_recovery(monkeypatch):
     lowered = ctrl.threshold_linear
     assert lowered < raised
 
-    expected_norm = max(
-        ctrl.min_thresh_norm,
-        (200 / segmenter.AdaptiveRmsController._NORM) * ctrl.margin,
+    expected_norm = min(
+        ctrl.max_thresh_norm,
+        max(
+            ctrl.min_thresh_norm,
+            (200 / segmenter.AdaptiveRmsController._NORM) * ctrl.margin,
+        ),
     )
     expected_linear = int(round(expected_norm * segmenter.AdaptiveRmsController._NORM))
     assert lowered == expected_linear
     assert any(obs and obs.updated for obs in lowering_observations)
+
+
+def test_adaptive_threshold_ceiling(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=300,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.001,
+            "max_rms": 500,
+            "margin": 1.2,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.2,
+            "hysteresis_tolerance": 0.0,
+            "release_percentile": 0.5,
+        },
+        debug=False,
+    )
+
+    ceiling_linear = ctrl.max_threshold_linear
+    assert ceiling_linear == 500
+
+    for _ in range(12):
+        ctrl.observe(2500, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear == ceiling_linear
+
+    for _ in range(12):
+        ctrl.observe(200, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear < ceiling_linear
 
 
 def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):

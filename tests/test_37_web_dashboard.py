@@ -51,7 +51,12 @@ async def _start_client(app: web.Application) -> tuple[TestClient, TestServer]:
     return client, server
 
 
-def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
+def _write_waveform_stub(
+    target: Path,
+    duration: float = 1.0,
+    *,
+    start_epoch: float | None = None,
+) -> None:
     payload = {
         "version": 1,
         "channels": 1,
@@ -62,6 +67,12 @@ def _write_waveform_stub(target: Path, duration: float = 1.0) -> None:
         "peaks": [0, 0],
         "rms_values": [0],
     }
+    if start_epoch is not None:
+        payload["start_epoch"] = float(start_epoch)
+        payload["started_epoch"] = float(start_epoch)
+        payload["started_at"] = datetime.fromtimestamp(
+            float(start_epoch), tz=timezone.utc
+        ).isoformat()
     target.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -265,6 +276,94 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert second_status.get("event") is None
             assert "encoding" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
+    async def runner():
+        now = 1_700_060_000.0
+        monkeypatch.setattr(web_streamer.time, "time", lambda: now)
+        status_path = Path(os.environ["TMP_DIR"]) / "segmenter_status.json"
+
+        day_dir = dashboard_env / "20240105"
+        day_dir.mkdir()
+        partial_path = day_dir / "alpha.partial.opus"
+        partial_path.write_bytes(b"header")
+
+        payload = {
+            "capturing": True,
+            "service_running": True,
+            "updated_at": now,
+            "event_size_bytes": 5120,
+            "event_duration_seconds": 4.0,
+            "partial_recording_path": str(partial_path),
+            "streaming_container_format": "opus",
+            "event": {
+                "base_name": "alpha",
+                "in_progress": True,
+                "started_epoch": now - 2,
+                "started_at": "12-00-00",
+                "partial_recording_path": str(partial_path),
+                "streaming_container_format": "opus",
+            },
+        }
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings")
+            assert resp.status == 200
+            data = await resp.json()
+            capture_status = data.get("capture_status", {})
+            rel_path = capture_status.get("partial_recording_rel_path")
+            assert rel_path == "20240105/alpha.partial.opus"
+            event = capture_status.get("event", {})
+            assert event.get("partial_recording_rel_path") == rel_path
+            assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_streams_partial_until_finalized(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240106"
+        day_dir.mkdir()
+        partial_path = day_dir / "beta.partial.opus"
+        final_path = day_dir / "beta.opus"
+        partial_path.write_bytes(b"HEAD")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        async def append_and_finalize():
+            await asyncio.sleep(0.05)
+            with partial_path.open("ab") as handle:
+                handle.write(b"BODY1")
+                handle.flush()
+            await asyncio.sleep(0.05)
+            with partial_path.open("ab") as handle:
+                handle.write(b"BODY2")
+                handle.flush()
+            await asyncio.sleep(0.05)
+            os.replace(partial_path, final_path)
+
+        try:
+            rel = partial_path.relative_to(dashboard_env).as_posix()
+            resp = await client.get(f"/recordings/{rel}")
+            append_task = asyncio.create_task(append_and_finalize())
+            body = await resp.read()
+            await append_task
+            assert body == b"HEADBODY1BODY2"
+            assert resp.headers.get("Content-Type") == "audio/ogg"
         finally:
             await client.close()
             await server.close()
@@ -1459,6 +1558,7 @@ def test_recording_start_epoch_in_payload(dashboard_env):
             assert match is not None
             expected = time.mktime(time.strptime("20240105 12-34-56", "%Y%m%d %H-%M-%S"))
             assert match["start_epoch"] == pytest.approx(expected, rel=0, abs=1e-6)
+            assert match["started_epoch"] == pytest.approx(expected, rel=0, abs=1e-6)
             assert isinstance(match["started_at"], str)
             assert match["started_at"].startswith("2024-01-05T")
         finally:
@@ -1474,8 +1574,10 @@ def test_delete_recording(dashboard_env):
         target_dir.mkdir()
         target = target_dir / "delete-me.opus"
         target.write_bytes(b"data")
+        start_epoch = datetime(2024, 1, 3, 5, 6, 7, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (start_epoch, start_epoch))
         waveform = target.with_suffix(target.suffix + ".waveform.json")
-        _write_waveform_stub(waveform)
+        _write_waveform_stub(waveform, start_epoch=start_epoch)
 
         app = web_streamer.build_app()
         client, server = await _start_client(app)
@@ -1487,6 +1589,54 @@ def test_delete_recording(dashboard_env):
             assert payload["deleted"] == ["20240103/delete-me.opus"]
             assert not target.exists()
             assert not waveform.exists()
+
+            recycle_root = dashboard_env / ".recycle_bin"
+            assert recycle_root.is_dir()
+            entries = list(recycle_root.iterdir())
+            assert len(entries) == 1
+
+            # Create a conflicting file to ensure restorable flag flips
+            target_dir.mkdir(exist_ok=True)
+            target.write_bytes(b"shadow")
+
+            resp = await client.get("/api/recycle-bin")
+            assert resp.status == 200
+            listing = await resp.json()
+            assert listing["total"] == 1
+            item = listing["items"][0]
+            assert item["original_path"] == "20240103/delete-me.opus"
+            assert item["restorable"] is False
+
+            target.unlink()
+
+            resp = await client.get("/api/recycle-bin")
+            assert resp.status == 200
+            listing = await resp.json()
+            assert listing["total"] == 1
+            item = listing["items"][0]
+            entry_id = item["id"]
+            assert item["restorable"] is True
+            assert item["size_bytes"] == len(b"data")
+            assert item["start_epoch"] == pytest.approx(start_epoch)
+            assert item["started_epoch"] == pytest.approx(start_epoch)
+            assert item["started_at"].startswith("2024-01-03T05:06:07")
+            assert item["start_epoch"] != item["deleted_at_epoch"]
+
+            resp = await client.get(f"/recycle-bin/{entry_id}")
+            assert resp.status == 200
+            preview_data = await resp.read()
+            assert preview_data == b"data"
+
+            resp = await client.post("/api/recycle-bin/restore", json={"items": [entry_id]})
+            assert resp.status == 200
+            restore_payload = await resp.json()
+            assert restore_payload["restored"] == ["20240103/delete-me.opus"]
+            assert target.exists()
+            assert target.read_bytes() == b"data"
+
+            resp = await client.get("/api/recycle-bin")
+            assert resp.status == 200
+            assert await resp.json() == {"items": [], "total": 0}
 
             resp = await client.post("/api/recordings/delete", json={"items": ["../outside"]})
             assert resp.status == 200

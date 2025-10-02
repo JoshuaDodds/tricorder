@@ -315,7 +315,7 @@
           </div>
         </div>
         <div class="stat storage-stat stat-storage">
-          <span class="label">Storage</span>
+          <span class="label">Storage use</span>
           <span class="value" id="storage-usage-text">--</span>
           <div class="storage-progress">
             <div class="storage-progress-bar" id="storage-progress-bar"></div>
@@ -351,7 +351,7 @@
         </div>
       </section>
       <section class="main-grid">
-        <div id="player-card" class="card player-card" hidden data-active="false">
+        <div id="player-card" class="card player-card" hidden data-active="false" data-context="recordings">
           <div class="card-header">
             <div class="card-heading">
               <h2>Preview</h2>
@@ -590,7 +590,10 @@
                 <button id="rename-selected" class="ghost-button small" type="button" disabled>
                   Rename selected
                 </button>
-                <button id="delete-selected" class="danger-button small" type="button" disabled>Delete selected</button>
+                <button id="open-recycle-bin" class="ghost-button small" type="button">Recycle bin</button>
+                <button id="delete-selected" class="danger-button small" type="button" disabled>
+                  Move to recycle bin
+                </button>
               </div>
             </div>
             <div class="table-responsive">
@@ -670,10 +673,10 @@
         aria-describedby="confirm-modal-message"
         tabindex="-1"
       >
-        <h2 id="confirm-modal-title" class="confirm-title">Delete recordings</h2>
+        <h2 id="confirm-modal-title" class="confirm-title">Move recordings to recycle bin</h2>
         <p id="confirm-modal-message" class="confirm-message"></p>
         <div class="confirm-actions">
-          <button id="confirm-modal-confirm" class="danger-button" type="button">OK</button>
+          <button id="confirm-modal-confirm" class="danger-button" type="button">Move</button>
           <button id="confirm-modal-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
       </div>
@@ -705,6 +708,69 @@
             <button id="rename-confirm" class="primary-button" type="submit">Rename</button>
           </div>
         </form>
+      </div>
+    </div>
+    <div
+      id="recycle-bin-modal"
+      class="recycle-bin-modal"
+      hidden
+      data-visible="false"
+      aria-hidden="true"
+    >
+      <div
+        id="recycle-bin-dialog"
+        class="recycle-bin-dialog card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="recycle-bin-title"
+        aria-describedby="recycle-bin-description"
+        tabindex="-1"
+      >
+        <div class="card-header recycle-bin-header">
+          <div class="card-heading">
+            <h2 id="recycle-bin-title">Recycle bin</h2>
+            <p id="recycle-bin-description" class="card-subtitle">
+              Recently removed recordings are staged here until you restore them.
+            </p>
+          </div>
+          <div class="recycle-bin-header-actions">
+            <button id="recycle-bin-refresh" class="ghost-button small" type="button">Refresh</button>
+            <button id="recycle-bin-restore" class="primary-button small" type="button" disabled>
+              Restore selected
+            </button>
+            <button id="recycle-bin-purge" class="danger-button small" type="button" disabled>
+              Delete permanently
+            </button>
+            <button id="recycle-bin-close" class="ghost-button small" type="button">Close</button>
+          </div>
+        </div>
+        <div class="recycle-bin-body">
+          <div class="recycle-bin-list" role="region" aria-live="polite">
+            <div class="table-responsive recycle-bin-table-wrapper">
+              <table id="recycle-bin-table" class="recycle-bin-table">
+                <thead>
+                  <tr>
+                    <th class="checkbox-cell">
+                      <input
+                        type="checkbox"
+                        id="recycle-bin-toggle-all"
+                        aria-label="Select all recycled recordings"
+                      />
+                    </th>
+                    <th>Name</th>
+                    <th>Original path</th>
+                    <th>Deleted</th>
+                    <th>Size</th>
+                  </tr>
+                </thead>
+                <tbody id="recycle-bin-tbody"></tbody>
+              </table>
+            </div>
+            <div id="recycle-bin-empty" class="recycle-bin-empty" hidden>
+              No recordings in the recycle bin.
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div
@@ -1154,6 +1220,19 @@
                 <label for="adaptive-min-thresh">Minimum threshold</label>
                 <input id="adaptive-min-thresh" type="number" min="0" max="1" step="0.001" />
                 <p class="field-description">Floor for the normalized RMS threshold (0–1 scale).</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-max-rms">Hard RMS ceiling</label>
+                <input
+                  id="adaptive-max-rms"
+                  type="number"
+                  min="0"
+                  max="32767"
+                  step="1"
+                  inputmode="numeric"
+                  placeholder="(optional)"
+                />
+                <p class="field-description">Ceiling that prevents the adaptive gate from climbing indefinitely.</p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-margin">Noise margin</label>
