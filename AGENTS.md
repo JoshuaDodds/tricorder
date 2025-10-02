@@ -26,13 +26,13 @@ Smart commit policy:
 - Ensure the Git author email matches a Jira user for smart-commit linkage.
 
 Ticket lifecycle expectations (Board: To Do → In Progress → In Review):
-1. **Start/pickup** – transition to **In Progress**, add the startup comment, optionally log initial time.
+1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket, add the startup comment, optionally log initial time.
 2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates as needed.
 3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, total time logged, current status (**In Review**), and links back to the task run and PR/commit diff. Do **not** move to Done.
 4. **Failures** – if transitions fail, comment the error, retry with backoff (3 attempts), and proceed with manual follow-up instructions.
 5. **Fallback** – if Smart Commit automations are unavailable (permissions/workflow), explicitly post Jira comments, worklogs, and transitions through the API.
 
-Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` to be available in the environment; derive the base URL as `https://mfisbv.atlassian.net` each run instead of reading a `JIRA_BASE_URL` variable. Read tokens from the environment only, redact PAT values in logs, and scope credentials minimally (issue read/write, worklog, transitions). Resolve transition IDs dynamically by name (“In Progress”, “In Review”), and verify capabilities (`/myself`, read issue, list transitions, add comment/worklog) before first use. Remember that Jira ticket keys already embed the project prefix (`ABC-123` ⇒ project key `ABC`, `TR-456` ⇒ project key `TR`). Perform a self-check at startup to confirm transitions map correctly and permissions allow commenting/worklogging. On closeout, ensure total time logged and final status are reported in Jira comments.
+Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` to be available in the environment and they are preconfigured for codex agents in their work environments already; derive the base URL as `https://mfisbv.atlassian.net` each run instead of reading a `JIRA_BASE_URL` variable. Read tokens from the environment only, redact PAT values in logs, and scope credentials minimally (issue read/write, worklog, transitions). Resolve transition IDs dynamically by name (“In Progress”, “In Review”), and verify capabilities (`/myself`, read issue, list transitions, add comment/worklog) before first use. Remember that Jira ticket keys already embed the project prefix (`ABC-123` ⇒ project key `ABC`, `TR-456` ⇒ project key `TR`). Perform a self-check at startup to confirm transitions map correctly and permissions allow commenting/worklogging. On closeout, ensure total time logged and final status are reported in Jira comments.
 
 Before pushing:
 1. Run: git fetch origin && git rebase origin/<base-branch>
