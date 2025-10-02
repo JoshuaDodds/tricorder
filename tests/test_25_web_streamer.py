@@ -326,6 +326,53 @@ def test_resolve_web_server_runtime_requires_manual_paths():
         web_streamer._resolve_web_server_runtime(cfg)
 
 
+@pytest.mark.asyncio
+async def test_lets_encrypt_renewal_reloads_ssl_context(monkeypatch, tmp_path):
+    cert_path = tmp_path / "fullchain.pem"
+    key_path = tmp_path / "privkey.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+
+    loop = asyncio.get_running_loop()
+    reload_event = asyncio.Event()
+    load_calls: list[tuple[str, str]] = []
+
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+    def fake_load_cert_chain(*, certfile: str, keyfile: str) -> None:
+        load_calls.append((certfile, keyfile))
+        loop.call_soon_threadsafe(reload_event.set)
+
+    monkeypatch.setattr(ssl_context, "load_cert_chain", fake_load_cert_chain)
+
+    class DummyManager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ensure_certificate(self) -> tuple[Path, Path]:
+            self.calls += 1
+            return cert_path, key_path
+
+    manager = DummyManager()
+    app = web_streamer.build_app(lets_encrypt_manager=manager)
+    app[web_streamer.SSL_CONTEXT_KEY] = ssl_context
+
+    monkeypatch.setattr(web_streamer, "LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS", 0.01)
+
+    await app.on_startup[-1](app)
+    try:
+        await asyncio.wait_for(reload_event.wait(), timeout=1.0)
+    finally:
+        for cleanup_cb in app.on_cleanup:
+            await cleanup_cb(app)
+
+    assert manager.calls >= 1
+    assert load_calls
+    certfile, keyfile = load_calls[-1]
+    assert certfile == str(cert_path)
+    assert keyfile == str(key_path)
+
+
 def test_lets_encrypt_manager_requests_certificate(tmp_path, monkeypatch):
     manager = lets_encrypt.LetsEncryptManager(
         domains=["recorder.example.com"],

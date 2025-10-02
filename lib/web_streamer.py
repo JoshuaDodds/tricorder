@@ -2199,6 +2199,7 @@ AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
 STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
 WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
 LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", object)
+SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
 )
@@ -5314,7 +5315,26 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 while True:
                     await asyncio.sleep(LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS)
                     try:
-                        await asyncio.to_thread(lets_encrypt_manager.ensure_certificate)
+                        cert_path, key_path = await asyncio.to_thread(
+                            lets_encrypt_manager.ensure_certificate
+                        )
+                        ssl_context = app.get(SSL_CONTEXT_KEY)
+                        if ssl_context is not None:
+                            try:
+                                await asyncio.to_thread(
+                                    ssl_context.load_cert_chain,
+                                    certfile=str(cert_path),
+                                    keyfile=str(key_path),
+                                )
+                                log.info(
+                                    "Reloaded HTTPS certificate from %s", cert_path
+                                )
+                            except Exception as exc:
+                                log.warning(
+                                    "Unable to reload HTTPS certificate %s: %s",
+                                    cert_path,
+                                    exc,
+                                )
                     except LetsEncryptError as exc:
                         log.warning("Let's Encrypt renewal failed: %s", exc)
                     except Exception as exc:  # pragma: no cover - defensive logging
@@ -5481,6 +5501,8 @@ def start_web_streamer_in_thread(
     def _run():
         asyncio.set_event_loop(loop)
         app = build_app(lets_encrypt_manager=lets_encrypt_manager)
+        if ssl_context is not None:
+            app[SSL_CONTEXT_KEY] = ssl_context
         runner = web.AppRunner(app, access_log=access_log)
         loop.run_until_complete(runner.setup())
         site = web.TCPSite(runner, host, port, ssl_context=ssl_context)
