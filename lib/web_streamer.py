@@ -1707,6 +1707,28 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     if not isinstance(transcript_name, str):
         transcript_name = ""
 
+    start_epoch_raw = metadata.get("start_epoch")
+    if not isinstance(start_epoch_raw, (int, float)):
+        start_epoch_raw = metadata.get("started_epoch")
+    if isinstance(start_epoch_raw, (int, float)) and math.isfinite(float(start_epoch_raw)):
+        start_epoch = float(start_epoch_raw)
+    else:
+        start_epoch = None
+
+    started_at = metadata.get("started_at")
+    if isinstance(started_at, str):
+        started_at_value = started_at
+    else:
+        started_at_value = ""
+
+    if not started_at_value and start_epoch is not None:
+        try:
+            started_at_value = datetime.fromtimestamp(
+                start_epoch, tz=timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at_value = ""
+
     return {
         "id": entry_id,
         "dir": entry_dir,
@@ -1721,6 +1743,9 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "deleted_at_epoch": deleted_epoch,
         "size_bytes": size_bytes,
         "duration": duration,
+        "start_epoch": start_epoch,
+        "started_epoch": start_epoch,
+        "started_at": started_at_value,
     }
 
 
@@ -3434,10 +3459,73 @@ def build_app() -> web.Application:
             waveform_name = ""
             transcript_name = ""
             duration_value: float | None = None
+            start_epoch_value: float | None = None
+            started_at_value = ""
+
+            def _assign_start_from_epoch(raw_epoch: object) -> bool:
+                nonlocal start_epoch_value, started_at_value
+                if not isinstance(raw_epoch, (int, float)):
+                    return False
+                epoch = float(raw_epoch)
+                if not math.isfinite(epoch):
+                    return False
+                start_epoch_value = epoch
+                try:
+                    started_at_value = datetime.fromtimestamp(
+                        epoch, tz=timezone.utc
+                    ).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    started_at_value = ""
+                return True
+
+            def _assign_start_from_iso(raw_value: object) -> bool:
+                nonlocal start_epoch_value, started_at_value
+                if not isinstance(raw_value, str):
+                    return False
+                candidate = raw_value.strip()
+                if not candidate:
+                    return False
+                parsed: datetime | None
+                try:
+                    if candidate.endswith("Z"):
+                        candidate = f"{candidate[:-1]}+00:00"
+                    parsed = datetime.fromisoformat(candidate)
+                except ValueError:
+                    return False
+                if parsed is None:
+                    return False
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed_utc = parsed.astimezone(timezone.utc)
+                start_epoch_value = parsed_utc.timestamp()
+                started_at_value = parsed_utc.isoformat()
+                return True
+
             if waveform_meta is not None:
                 raw_duration = waveform_meta.get("duration_seconds")
                 if isinstance(raw_duration, (int, float)):
                     duration_value = float(raw_duration)
+
+                if not _assign_start_from_epoch(waveform_meta.get("start_epoch")):
+                    _assign_start_from_epoch(waveform_meta.get("started_epoch"))
+                if start_epoch_value is None:
+                    _assign_start_from_iso(waveform_meta.get("started_at"))
+
+            if start_epoch_value is None:
+                day_component = rel.split("/", 1)[0]
+                time_component = resolved.stem.split("_", 1)[0]
+                if day_component and time_component:
+                    try:
+                        struct_time = time.strptime(
+                            f"{day_component} {time_component}", "%Y%m%d %H-%M-%S"
+                        )
+                    except ValueError:
+                        struct_time = None
+                    if struct_time is not None:
+                        _assign_start_from_epoch(time.mktime(struct_time))
+
+            if start_epoch_value is None:
+                _assign_start_from_epoch(getattr(stat_result, "st_mtime", None))
 
             try:
                 shutil.move(str(resolved), str(audio_destination))
@@ -3465,6 +3553,9 @@ def build_app() -> web.Application:
                     "duration_seconds": duration_value,
                     "waveform_name": waveform_name,
                     "transcript_name": transcript_name,
+                    "start_epoch": start_epoch_value,
+                    "started_epoch": start_epoch_value,
+                    "started_at": started_at_value,
                 }
                 with metadata_path.open("w", encoding="utf-8") as handle:
                     json.dump(metadata, handle)
@@ -3546,6 +3637,19 @@ def build_app() -> web.Application:
                 else:
                     deleted_epoch_value = None
 
+                start_epoch_raw = data.get("start_epoch")
+                if isinstance(start_epoch_raw, (int, float)):
+                    start_epoch_value = float(start_epoch_raw)
+                else:
+                    start_epoch_value = None
+
+                started_at_raw = data.get("started_at")
+                started_at_value = (
+                    str(started_at_raw)
+                    if isinstance(started_at_raw, str)
+                    else ""
+                )
+
                 size_value = data.get("size_bytes", 0)
                 try:
                     size_int = int(size_value)
@@ -3562,6 +3666,9 @@ def build_app() -> web.Application:
                         "original_path": original_rel,
                         "deleted_at": str(data.get("deleted_at", "")),
                         "deleted_at_epoch": deleted_epoch_value,
+                        "start_epoch": start_epoch_value,
+                        "started_epoch": start_epoch_value,
+                        "started_at": started_at_value,
                         "size_bytes": size_int,
                         "duration_seconds": (
                             float(data.get("duration"))
