@@ -5321,8 +5321,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         ssl_context = app.get(SSL_CONTEXT_KEY)
                         if ssl_context is not None:
                             try:
-                                await asyncio.to_thread(
-                                    ssl_context.load_cert_chain,
+                                ssl_context.load_cert_chain(
                                     certfile=str(cert_path),
                                     keyfile=str(key_path),
                                 )
