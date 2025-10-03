@@ -1624,6 +1624,27 @@
                   Port used for HTTP-01 validation (default 80). Ensure it is reachable from the public internet.
                 </p>
               </div>
+              <div class="settings-field">
+                <label for="web-server-letsencrypt-cache-dir">Cache directory</label>
+                <input id="web-server-letsencrypt-cache-dir" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Directory where certbot stores account data and issued certificates. Update when using a custom storage path.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="web-server-letsencrypt-certbot">Certbot command</label>
+                <input id="web-server-letsencrypt-certbot" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Override the certbot executable (default <code>certbot</code>) if it is installed in a non-standard location.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="web-server-letsencrypt-renew-before">Renew before (days)</label>
+                <input id="web-server-letsencrypt-renew-before" type="number" min="1" max="90" />
+                <p class="field-description">
+                  How many days before expiration the recorder requests a renewal. Increase for short validation windows.
+                </p>
+              </div>
             </section>
 
             <section
