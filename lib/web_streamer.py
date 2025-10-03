@@ -1453,7 +1453,11 @@ def _normalize_dashboard_payload(payload: Any) -> tuple[dict[str, Any], list[str
 
 
 def _normalize_web_server_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
-    normalized = _web_server_defaults()
+    try:
+        cfg_snapshot = get_cfg()
+    except Exception:  # pragma: no cover - defensive fallback
+        cfg_snapshot = {}
+    normalized = copy.deepcopy(_canonical_web_server_settings(cfg_snapshot))
     errors: list[str] = []
 
     if not isinstance(payload, dict):
