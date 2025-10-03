@@ -6,9 +6,6 @@
 
 ## For Automated AI/LLM Agents
 IMPORTANT:
-Before starting to work and after checking out code:
-1. Ensure the `origin` remote exists and points to the GitHub repo. Do not remove it! You will need it later. If it was removed, re-add it.
-
 Naming discipline when tickets are referenced:
 - Detect Jira keys in the format `<PROJECT>-<int>` using regex `\b[A-Z][A-Z0-9]+-\d+\b` across instructions, attachments, or assets.
 - If a key is present, immediately transition the Jira issue from **To Do** to **In Progress**, comment “Agent started work on this ticket.”, and (optionally) log setup time.
@@ -39,11 +36,12 @@ The ENV vars mentioned above are already configured for you.
 Regarding time, we want actual duration between commits rouded to the minute and not an estimate of what it would have taken a human to complete the task.
 
 Before final commit with smart commit messages pushing:
-1. Run: git fetch origin && git rebase origin/<base-branch>
-   - If rebase fails, discard local changes and re-run the implementation against the updated branch.
-2. Run tests (export DEV=1 && pytest -q). All tests must pass.
-3. Push back to the same branch on origin with:
-   `git push origin HEAD:<branch-name>`.
+1. Run tests (export DEV=0 && pytest -q). All tests must pass.
+2. Empty Commit (Fallback)
+If no files are changed and no doc is needed:
+3. Push Workflow
+At the end of the run, the orchestration system should reattach `origin` with credentials and push the `work` branch.  
+    git commit --allow-empty -m "TR-52 Finalization #comment trigger pipeline #time 2m #transition In Review"
 
 Pull request hygiene:
 - PR titles must begin with the Jira key (e.g., `TR-123: Fix …`, `AUDIO-45: Update mixer`).
