@@ -121,7 +121,7 @@ When modifying architecture or adding features, preserve these qualities: keep m
 ---
 
 ## Testing and validation
-- Run `pytest -q` before submitting changes. If making a targeted change, run the specific module tests as well as the full suite.
+- Run `export DEV=0; pytest -q` before submitting changes. If making a targeted change, run the specific module tests as well as the full suite.
 - If changes affect installation/uninstallation, run `pytest tests/test_00_install.py` and/or `pytest tests/test_50_uninstall.py`.
 - If touching shell scripts/systemd, prefer a dry run on a Raspberry Pi or document why that isn’t feasible.
 - When adding features, add tests in `tests/` and document their intent in `README.md` and `tests/README.md`.
