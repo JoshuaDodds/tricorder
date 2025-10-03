@@ -121,6 +121,15 @@
                     Transcription
                   </button>
                   <button
+                    id="recorder-menu-notifications"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="notifications"
+                  >
+                    Notifications
+                  </button>
+                  <button
                     id="recorder-menu-logging"
                     class="menu-item recorder-menu-item"
                     type="button"
@@ -1403,6 +1412,157 @@
                 <div class="button-row">
                   <button id="transcription-reset" class="ghost-button" type="button" disabled>Reset</button>
                   <button id="transcription-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="notifications"
+            aria-labelledby="recorder-notifications-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-notifications-title" class="settings-section-title">Notifications</h3>
+              <p class="settings-section-description">
+                Configure webhook and email alerts that fire when recordings finish processing.
+              </p>
+            </div>
+            <form id="notifications-form" class="settings-subform" novalidate>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="notifications-enabled" type="checkbox" />
+                  <label for="notifications-enabled">Enable notifications</label>
+                </div>
+                <p class="field-description">
+                  Toggle all webhook and email delivery. When disabled, no external alerts are sent.
+                </p>
+              </div>
+
+              <div class="settings-subheading">Filters</div>
+              <p class="settings-subheading-description">
+                Limit which events trigger alerts to avoid unnecessary noise.
+              </p>
+
+              <div class="settings-field">
+                <label for="notifications-allowed-types">Allowed event types</label>
+                <textarea id="notifications-allowed-types" rows="3" spellcheck="false"></textarea>
+                <p class="field-description">
+                  One classification per line (for example <code>Human</code>, <code>Both</code>). Leave blank to notify on all events.
+                </p>
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-min-rms">Minimum trigger RMS</label>
+                <input id="notifications-min-rms" type="number" min="0" step="1" inputmode="numeric" />
+                <p class="field-description">
+                  Only send alerts when the triggering RMS meets or exceeds this value. Leave blank to disable the threshold.
+                </p>
+              </div>
+
+              <div class="settings-subheading">Webhook delivery</div>
+              <p class="settings-subheading-description">
+                Push JSON payloads to downstream services whenever an event completes.
+              </p>
+
+              <div class="settings-field">
+                <label for="notifications-webhook-url">Webhook URL</label>
+                <input id="notifications-webhook-url" type="url" autocomplete="off" />
+                <p class="field-description">
+                  Requests include event metadata in the body. Leave blank to disable webhooks.
+                </p>
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-webhook-method">HTTP method</label>
+                <select id="notifications-webhook-method">
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
+                  <option value="GET">GET</option>
+                </select>
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-webhook-headers">Headers</label>
+                <textarea id="notifications-webhook-headers" rows="3" spellcheck="false"></textarea>
+                <p class="field-description">
+                  One <code>Name: Value</code> pair per line. Useful for authentication tokens.
+                </p>
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-webhook-timeout">Timeout (seconds)</label>
+                <input id="notifications-webhook-timeout" type="number" min="0.1" step="0.1" inputmode="decimal" />
+              </div>
+
+              <div class="settings-subheading">Email delivery</div>
+              <p class="settings-subheading-description">
+                Send SMTP alerts alongside webhook calls.
+              </p>
+
+              <div class="settings-field">
+                <label for="notifications-email-host">SMTP host</label>
+                <input id="notifications-email-host" type="text" autocomplete="off" />
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-port">SMTP port</label>
+                <input id="notifications-email-port" type="number" min="1" max="65535" inputmode="numeric" />
+              </div>
+
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="notifications-email-use-tls" type="checkbox" />
+                  <label for="notifications-email-use-tls">Use STARTTLS</label>
+                </div>
+              </div>
+
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="notifications-email-use-ssl" type="checkbox" />
+                  <label for="notifications-email-use-ssl">Use implicit TLS (SMTPS)</label>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-username">SMTP username</label>
+                <input id="notifications-email-username" type="text" autocomplete="off" />
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-password">SMTP password</label>
+                <input id="notifications-email-password" type="password" autocomplete="new-password" />
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-from">From address</label>
+                <input id="notifications-email-from" type="email" autocomplete="off" />
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-recipients">Recipients</label>
+                <textarea id="notifications-email-recipients" rows="3" spellcheck="false"></textarea>
+                <p class="field-description">
+                  One address per line. Leave blank to disable email delivery.
+                </p>
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-subject">Subject template</label>
+                <input id="notifications-email-subject" type="text" autocomplete="off" />
+              </div>
+
+              <div class="settings-field">
+                <label for="notifications-email-body">Body template</label>
+                <textarea id="notifications-email-body" rows="6" spellcheck="false"></textarea>
+              </div>
+
+              <div class="settings-section-footer">
+                <div id="notifications-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="notifications-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="notifications-save" class="primary-button" type="submit" disabled>Save changes</button>
                 </div>
               </div>
             </form>

@@ -535,6 +535,40 @@ def _transcription_defaults() -> dict[str, Any]:
     }
 
 
+def _notifications_defaults() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "allowed_event_types": ["Human", "Both"],
+        "min_trigger_rms": 400,
+        "webhook": {
+            "url": "",
+            "method": "POST",
+            "headers": {},
+            "timeout_sec": 5.0,
+        },
+        "email": {
+            "smtp_host": "",
+            "smtp_port": 587,
+            "use_tls": True,
+            "use_ssl": False,
+            "username": "",
+            "password": "",
+            "from": "tricorder@example.com",
+            "to": ["alerts@example.com"],
+            "subject_template": "Tricorder event: {etype} (RMS {trigger_rms})",
+            "body_template": (
+                "Event {base_name} completed on {host}.\n"
+                "Type: {etype}\n"
+                "Trigger RMS: {trigger_rms}\n"
+                "Average RMS: {avg_rms}\n"
+                "Duration: {duration_seconds}s\n"
+                "Start: {started_at}\n"
+                "Reason: {end_reason}"
+            ),
+        },
+    }
+
+
 def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     result = _audio_defaults()
     raw = cfg.get("audio", {})
@@ -896,6 +930,132 @@ def _canonical_transcription_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     max_alternatives = raw.get("max_alternatives")
     if isinstance(max_alternatives, (int, float)) and not isinstance(max_alternatives, bool):
         result["max_alternatives"] = max(0, int(max_alternatives))
+
+    return result
+
+
+def _canonical_notifications_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _notifications_defaults()
+    raw = cfg.get("notifications", {})
+    if not isinstance(raw, dict):
+        return result
+
+    enabled = raw.get("enabled")
+    if isinstance(enabled, bool):
+        result["enabled"] = enabled
+    elif enabled is not None:
+        result["enabled"] = _bool_from_any(enabled)
+
+    allowed = raw.get("allowed_event_types")
+    if isinstance(allowed, (list, tuple, set)):
+        items: list[str] = []
+        seen: set[str] = set()
+        for entry in allowed:
+            if not isinstance(entry, str):
+                continue
+            normalized = entry.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            items.append(normalized)
+        result["allowed_event_types"] = items
+    elif isinstance(allowed, str):
+        items = [segment.strip() for segment in allowed.splitlines() if segment.strip()]
+        result["allowed_event_types"] = items
+
+    min_rms = raw.get("min_trigger_rms")
+    if isinstance(min_rms, (int, float)) and not isinstance(min_rms, bool):
+        candidate = int(round(float(min_rms)))
+        result["min_trigger_rms"] = candidate if candidate >= 0 else None
+    elif min_rms in (None, ""):
+        result["min_trigger_rms"] = None
+
+    webhook_raw = raw.get("webhook")
+    if isinstance(webhook_raw, dict):
+        url = webhook_raw.get("url")
+        if isinstance(url, str):
+            result["webhook"]["url"] = url.strip()
+
+        method = webhook_raw.get("method")
+        if isinstance(method, str):
+            normalized_method = method.strip().upper()
+            if normalized_method:
+                result["webhook"]["method"] = normalized_method
+
+        timeout = webhook_raw.get("timeout_sec")
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+            result["webhook"]["timeout_sec"] = float(timeout)
+
+        headers = webhook_raw.get("headers")
+        if isinstance(headers, dict):
+            normalized_headers: dict[str, str] = {}
+            for key, value in headers.items():
+                if not isinstance(key, str):
+                    continue
+                header_key = key.strip()
+                if not header_key:
+                    continue
+                if isinstance(value, str):
+                    normalized_headers[header_key] = value.strip()
+                elif value is None:
+                    normalized_headers[header_key] = ""
+                else:
+                    normalized_headers[header_key] = str(value).strip()
+            result["webhook"]["headers"] = normalized_headers
+
+    email_raw = raw.get("email")
+    if isinstance(email_raw, dict):
+        smtp_host = email_raw.get("smtp_host")
+        if isinstance(smtp_host, str):
+            result["email"]["smtp_host"] = smtp_host.strip()
+
+        smtp_port = email_raw.get("smtp_port")
+        if isinstance(smtp_port, (int, float)) and not isinstance(smtp_port, bool):
+            result["email"]["smtp_port"] = int(smtp_port)
+
+        for flag in ("use_tls", "use_ssl"):
+            if flag in email_raw:
+                result["email"][flag] = _bool_from_any(email_raw.get(flag))
+
+        username = email_raw.get("username")
+        if isinstance(username, str):
+            result["email"]["username"] = username.strip()
+
+        password = email_raw.get("password")
+        if isinstance(password, str):
+            result["email"]["password"] = password
+
+        sender = email_raw.get("from")
+        if isinstance(sender, str):
+            result["email"]["from"] = sender.strip()
+
+        recipients = email_raw.get("to")
+        if isinstance(recipients, (list, tuple, set)):
+            items: list[str] = []
+            seen: set[str] = set()
+            for entry in recipients:
+                if not isinstance(entry, str):
+                    continue
+                normalized = entry.strip()
+                if not normalized:
+                    continue
+                lowered = normalized.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                items.append(normalized)
+            result["email"]["to"] = items
+        elif isinstance(recipients, str):
+            items = [segment.strip() for segment in recipients.splitlines() if segment.strip()]
+            result["email"]["to"] = items
+
+        subject = email_raw.get("subject_template")
+        if isinstance(subject, str):
+            result["email"]["subject_template"] = subject.strip()
+
+        body = email_raw.get("body_template")
+        if isinstance(body, str):
+            result["email"]["body_template"] = body.replace("\r\n", "\n")
 
     return result
 
@@ -1434,6 +1594,154 @@ def _normalize_streaming_payload(payload: Any) -> tuple[dict[str, Any], list[str
     return normalized, errors
 
 
+def _normalize_notifications_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _notifications_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["enabled"] = _bool_from_any(payload.get("enabled"))
+
+    allowed, allowed_provided = _string_list_from_payload(
+        payload.get("allowed_event_types"), "allowed_event_types", errors
+    )
+    if allowed_provided:
+        normalized["allowed_event_types"] = allowed
+
+    min_rms_raw = payload.get("min_trigger_rms")
+    if min_rms_raw in (None, ""):
+        normalized["min_trigger_rms"] = None
+    else:
+        min_rms = _coerce_int(min_rms_raw, "min_trigger_rms", errors, min_value=0)
+        if min_rms is not None:
+            normalized["min_trigger_rms"] = min_rms
+
+    webhook_raw = payload.get("webhook")
+    if webhook_raw is not None:
+        if isinstance(webhook_raw, dict):
+            url = webhook_raw.get("url")
+            if url is None:
+                normalized["webhook"]["url"] = ""
+            elif isinstance(url, str):
+                normalized["webhook"]["url"] = url.strip()
+            else:
+                errors.append("webhook.url must be a string")
+
+            method = webhook_raw.get("method")
+            if method is None:
+                pass
+            elif isinstance(method, str):
+                normalized_method = method.strip().upper()
+                if normalized_method:
+                    normalized["webhook"]["method"] = normalized_method
+            else:
+                errors.append("webhook.method must be a string")
+
+            timeout_raw = webhook_raw.get("timeout_sec")
+            if timeout_raw is not None:
+                timeout = _coerce_float(
+                    timeout_raw, "webhook.timeout_sec", errors, min_value=0.1, max_value=600.0
+                )
+                if timeout is not None:
+                    normalized["webhook"]["timeout_sec"] = timeout
+
+            headers_raw = webhook_raw.get("headers")
+            if headers_raw is None:
+                normalized["webhook"]["headers"] = {}
+            elif isinstance(headers_raw, dict):
+                headers: dict[str, str] = {}
+                for key, value in headers_raw.items():
+                    if not isinstance(key, str):
+                        errors.append("webhook.headers keys must be strings")
+                        continue
+                    header_key = key.strip()
+                    if not header_key:
+                        continue
+                    if isinstance(value, str):
+                        headers[header_key] = value.strip()
+                    elif value is None:
+                        headers[header_key] = ""
+                    else:
+                        headers[header_key] = str(value).strip()
+                normalized["webhook"]["headers"] = headers
+            else:
+                errors.append("webhook.headers must be an object")
+        else:
+            errors.append("webhook must be an object")
+
+    email_raw = payload.get("email")
+    if email_raw is not None:
+        if isinstance(email_raw, dict):
+            host = email_raw.get("smtp_host")
+            if host is None:
+                normalized["email"]["smtp_host"] = ""
+            elif isinstance(host, str):
+                normalized["email"]["smtp_host"] = host.strip()
+            else:
+                errors.append("email.smtp_host must be a string")
+
+            port_raw = email_raw.get("smtp_port")
+            if port_raw is not None:
+                port = _coerce_int(port_raw, "email.smtp_port", errors, min_value=1, max_value=65535)
+                if port is not None:
+                    normalized["email"]["smtp_port"] = port
+
+            for flag in ("use_tls", "use_ssl"):
+                if flag in email_raw:
+                    normalized["email"][flag] = _bool_from_any(email_raw.get(flag))
+
+            username = email_raw.get("username")
+            if username is None:
+                normalized["email"]["username"] = ""
+            elif isinstance(username, str):
+                normalized["email"]["username"] = username.strip()
+            else:
+                errors.append("email.username must be a string")
+
+            password = email_raw.get("password")
+            if password is None:
+                normalized["email"]["password"] = ""
+            elif isinstance(password, str):
+                normalized["email"]["password"] = password
+            else:
+                errors.append("email.password must be a string")
+
+            sender = email_raw.get("from")
+            if sender is None:
+                normalized["email"]["from"] = ""
+            elif isinstance(sender, str):
+                normalized["email"]["from"] = sender.strip()
+            else:
+                errors.append("email.from must be a string")
+
+            recipients, recipients_provided = _string_list_from_payload(
+                email_raw.get("to"), "email.to", errors
+            )
+            if recipients_provided:
+                normalized["email"]["to"] = recipients
+
+            subject = email_raw.get("subject_template")
+            if subject is None:
+                normalized["email"]["subject_template"] = ""
+            elif isinstance(subject, str):
+                normalized["email"]["subject_template"] = subject
+            else:
+                errors.append("email.subject_template must be a string")
+
+            body = email_raw.get("body_template")
+            if body is None:
+                normalized["email"]["body_template"] = ""
+            elif isinstance(body, str):
+                normalized["email"]["body_template"] = body.replace("\r\n", "\n")
+            else:
+                errors.append("email.body_template must be a string")
+        else:
+            errors.append("email must be an object")
+
+    return normalized, errors
+
+
 def _normalize_dashboard_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     normalized = _dashboard_defaults()
     errors: list[str] = []
@@ -1672,6 +1980,7 @@ from lib.config import (
     update_dashboard_settings,
     update_ingest_settings,
     update_logging_settings,
+    update_notifications_settings,
     update_segmenter_settings,
     update_streaming_settings,
     update_transcription_settings,
@@ -4740,6 +5049,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         "adaptive_rms": ["voice-recorder.service"],
         "ingest": ["dropbox.path", "dropbox.service"],
         "transcription": ["voice-recorder.service"],
+        "notifications": ["voice-recorder.service"],
         "logging": ["voice-recorder.service"],
         "streaming": ["voice-recorder.service", "web-streamer.service"],
         "dashboard": ["web-streamer.service"],
@@ -4858,6 +5168,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             normalize=_normalize_transcription_payload,
             update_func=update_transcription_settings,
             canonical_fn=_canonical_transcription_settings,
+        )
+
+    async def config_notifications_get(request: web.Request) -> web.Response:
+        return await _settings_get("notifications", _canonical_notifications_settings)
+
+    async def config_notifications_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="notifications",
+            section_label="notifications",
+            normalize=_normalize_notifications_payload,
+            update_func=update_notifications_settings,
+            canonical_fn=_canonical_notifications_settings,
         )
 
     async def config_logging_get(request: web.Request) -> web.Response:
@@ -5283,6 +5606,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/config/ingest", config_ingest_update)
     app.router.add_get("/api/config/transcription", config_transcription_get)
     app.router.add_post("/api/config/transcription", config_transcription_update)
+    app.router.add_get("/api/config/notifications", config_notifications_get)
+    app.router.add_post("/api/config/notifications", config_notifications_update)
     app.router.add_get("/api/config/logging", config_logging_get)
     app.router.add_post("/api/config/logging", config_logging_update)
     app.router.add_get("/api/config/streaming", config_streaming_get)

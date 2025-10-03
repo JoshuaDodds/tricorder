@@ -976,6 +976,10 @@ def update_logging_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("logging", settings, merge=True)
 
 
+def update_notifications_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("notifications", settings, merge=True)
+
+
 def update_streaming_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("streaming", settings, merge=True)
 

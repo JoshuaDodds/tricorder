@@ -1327,6 +1327,160 @@ def test_transcription_settings_require_model_path(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_notifications_settings_roundtrip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+notifications:
+  enabled: false
+  allowed_event_types: []
+  min_trigger_rms: 400
+  webhook:
+    url: ""
+    method: POST
+    headers: {}
+    timeout_sec: 5.0
+  email:
+    smtp_host: ""
+    smtp_port: 587
+    use_tls: true
+    use_ssl: false
+    username: ""
+    password: ""
+    from: tricorder@example.com
+    to: []
+    subject_template: "Tricorder event: {etype} (RMS {trigger_rms})"
+    body_template: "Default body"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/notifications")
+            assert resp.status == 200
+            payload = await resp.json()
+            section = payload["notifications"]
+            assert section["enabled"] is False
+            assert section["allowed_event_types"] == []
+            assert section["webhook"]["method"] == "POST"
+
+            update_payload = {
+                "enabled": True,
+                "allowed_event_types": ["Human"],
+                "min_trigger_rms": 512,
+                "webhook": {
+                    "url": "https://hooks.example.com/notify",
+                    "method": "post",
+                    "headers": {"Authorization": "Bearer token"},
+                    "timeout_sec": 3.5,
+                },
+                "email": {
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": 465,
+                    "use_tls": False,
+                    "use_ssl": True,
+                    "username": "tricorder",
+                    "password": "s3cr3t",
+                    "from": "tricorder@example.com",
+                    "to": ["alerts@example.com", "ops@example.com"],
+                    "subject_template": "Event {etype}",
+                    "body_template": "Body {trigger_rms}",
+                },
+            }
+
+            resp = await client.post("/api/config/notifications", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            section = updated["notifications"]
+            assert section["enabled"] is True
+            assert section["allowed_event_types"] == ["Human"]
+            assert section["min_trigger_rms"] == 512
+            assert section["webhook"]["url"] == "https://hooks.example.com/notify"
+            assert section["webhook"]["method"] == "POST"
+            assert section["webhook"]["headers"] == {"Authorization": "Bearer token"}
+            assert section["webhook"]["timeout_sec"] == 3.5
+            assert section["email"]["smtp_host"] == "smtp.example.com"
+            assert section["email"]["smtp_port"] == 465
+            assert section["email"]["use_tls"] is False
+            assert section["email"]["use_ssl"] is True
+            assert section["email"]["to"] == ["alerts@example.com", "ops@example.com"]
+            assert section["email"]["subject_template"] == "Event {etype}"
+            assert section["email"]["body_template"] == "Body {trigger_rms}"
+
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+            ]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            saved = persisted["notifications"]
+            assert saved["enabled"] is True
+            assert saved["allowed_event_types"] == ["Human"]
+            assert saved["min_trigger_rms"] == 512
+            assert saved["webhook"]["method"] == "POST"
+            assert saved["email"]["smtp_port"] == 465
+            assert saved["email"]["use_ssl"] is True
+            assert saved["email"]["to"] == ["alerts@example.com", "ops@example.com"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_notifications_settings_validation(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("notifications:\n  enabled: false\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "enabled": True,
+                "min_trigger_rms": -10,
+                "webhook": {"headers": "not-a-dict"},
+                "email": {"smtp_port": -1, "to": ["alerts@example.com", 5]},
+            }
+            resp = await client.post("/api/config/notifications", json=payload)
+            assert resp.status == 400
+            data = await resp.json()
+            assert "errors" in data
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
