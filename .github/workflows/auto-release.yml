@@ -59,11 +59,11 @@ jobs:
                     const parentComparison = await github.rest.repos.compareCommitsWithBasehead({
                       owner,
                       repo,
-                      basehead: `${parentSha}...${integrationBranch}`,
+                      basehead: `${integrationBranch}...${parentSha}`,
                     });
 
-                    const { status, behind_by: behindBy } = parentComparison.data;
-                    const parentReachable = (status === 'ahead' || status === 'identical') && behindBy === 0;
+                    const { status, ahead_by: aheadBy, behind_by: behindBy } = parentComparison.data;
+                    const parentReachable = (status === 'behind' || status === 'identical') && aheadBy === 0;
 
                     if (parentReachable) {
                       eligible = true;
