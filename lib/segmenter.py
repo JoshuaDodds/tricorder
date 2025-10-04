@@ -14,7 +14,7 @@ from pathlib import Path
 import threading
 import queue
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Optional
 import array
 warnings.filterwarnings(
@@ -263,7 +263,11 @@ def _derive_final_base(wav_path: Path, rms_value: int) -> str:
     return f"{event_ts}_{safe_label}_RMS-{rms_component}_{event_count}"
 
 
-def _collect_streaming_artifacts(day_dir: Path, original_base: str, final_base: str) -> list[Path]:
+def _collect_streaming_artifacts(
+    day_dir: Path,
+    original_base: str,
+    final_bases: Iterable[str],
+) -> list[Path]:
     artifacts: list[Path] = []
     if day_dir.exists():
         partial_name = f"{original_base}{STREAMING_PARTIAL_SUFFIX}" if STREAMING_PARTIAL_SUFFIX else ""
@@ -272,8 +276,46 @@ def _collect_streaming_artifacts(day_dir: Path, original_base: str, final_base: 
             artifacts.append(partial_path)
             artifacts.append(partial_path.with_name(partial_path.name + ".waveform.json"))
             artifacts.append(partial_path.with_name(partial_path.name + ".transcript.json"))
-        artifacts.extend(day_dir.glob(f".{final_base}.filtered*"))
+        for base in set(final_bases):
+            artifacts.extend(day_dir.glob(f".{base}.filtered*"))
     return [p for p in artifacts if p.exists()]
+
+
+def _parse_event_identity(stem: str) -> tuple[str | None, str | None]:
+    parts = stem.split("_")
+    if not parts:
+        return None, None
+    event_ts = parts[0] or None
+    event_count = parts[-1] if len(parts) > 1 and parts[-1].isdigit() else None
+    return event_ts, event_count
+
+
+def _find_existing_final_bases(
+    day_dir: Path,
+    event_ts: str | None,
+    event_count: str | None,
+    final_extension: str,
+) -> list[str]:
+    if not day_dir.exists() or not event_ts:
+        return []
+
+    if not final_extension.startswith("."):
+        final_extension = f".{final_extension}"
+
+    count_pattern = re.escape(event_count) if event_count else r"\d+"
+    pattern = re.compile(
+        rf"^{re.escape(event_ts)}_.+_RMS-\d+_{count_pattern}{re.escape(final_extension)}$"
+    )
+
+    matches: list[str] = []
+    for candidate in day_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        if candidate.suffix != final_extension:
+            continue
+        if pattern.match(candidate.name):
+            matches.append(candidate.stem)
+    return matches
 
 
 def _remove_file(path: Path, report: StartupRecoveryReport, *, category: str) -> None:
@@ -341,11 +383,16 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         final_base = _derive_final_base(wav_path, rms_value)
         day_dir = rec_root / datetime.fromtimestamp(stat.st_mtime).strftime("%Y%m%d")
 
-        for artifact in _collect_streaming_artifacts(day_dir, wav_path.stem, final_base):
+        event_ts, event_count = _parse_event_identity(wav_path.stem)
+        existing_final_bases = _find_existing_final_bases(
+            day_dir, event_ts, event_count, final_extension
+        )
+
+        artifact_bases = [final_base, *existing_final_bases]
+        for artifact in _collect_streaming_artifacts(day_dir, wav_path.stem, artifact_bases):
             _remove_file(artifact, report, category="artifact")
 
-        final_path = day_dir / f"{final_base}{final_extension}"
-        if final_path.exists():
+        if existing_final_bases:
             _remove_file(wav_path, report, category="wav")
             continue
 
