@@ -18,23 +18,43 @@ jobs:
         with:
           script: |
             const integrationBranch = process.env.INTEGRATION_BRANCH;
-            const headCommit = context.payload.head_commit;
-            if (!headCommit) {
-              core.info('No head commit information available. Skipping release.');
-              core.setOutput('eligible', 'false');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+
+            if (!integrationBranch) {
+              core.setFailed('INTEGRATION_BRANCH env variable is not set.');
               return;
             }
-            const message = headCommit.message || '';
-            const patterns = [
-              new RegExp(`Merge pull request #\\d+.*\\/${integrationBranch}\\b`),
-              new RegExp(`Merge branch ['\"]${integrationBranch}['\"]`),
-              new RegExp(`Merge remote-tracking branch ['\"]origin\\/${integrationBranch}['\"]`)
-            ];
-            const eligible = patterns.some((pattern) => pattern.test(message));
-            if (!eligible) {
-              core.info(`Head commit message did not match integration branch merge patterns. Message: ${message}`);
+
+            try {
+              const comparison = await github.rest.repos.compareCommitsWithBasehead({
+                owner,
+                repo,
+                base: sha,
+                head: integrationBranch,
+              });
+
+              const mergeBaseSha = comparison.data.merge_base_commit?.sha;
+              const eligible = mergeBaseSha === sha;
+
+              if (!eligible) {
+                const status = comparison.data.status;
+                core.info(
+                  `Head commit ${sha} is not contained in ${integrationBranch}. ` +
+                  `Comparison status: ${status}. Merge base: ${mergeBaseSha}`
+                );
+              }
+
+              core.setOutput('eligible', eligible ? 'true' : 'false');
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`Branch ${integrationBranch} not found. Skipping release.`);
+                core.setOutput('eligible', 'false');
+                return;
+              }
+              core.setFailed(`Failed to compare commits with ${integrationBranch}: ${error.message}`);
             }
-            core.setOutput('eligible', eligible ? 'true' : 'false');
       - name: Checkout
         if: steps.check.outputs.eligible == 'true'
         uses: actions/checkout@v4
