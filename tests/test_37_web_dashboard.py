@@ -481,6 +481,138 @@ def test_archival_settings_validation_error(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_web_server_settings_round_trip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+web_server:
+  mode: http
+  listen_host: 0.0.0.0
+  listen_port: 8080
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/config/web-server")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["web_server"]["mode"] == "http"
+            assert payload["web_server"]["listen_port"] == 8080
+            assert payload["web_server"]["tls_provider"] == "letsencrypt"
+            assert payload["config_path"] == str(config_path)
+
+            update_payload = {
+                "mode": "https",
+                "listen_host": "0.0.0.0",
+                "listen_port": 443,
+                "tls_provider": "manual",
+                "certificate_path": "/etc/tricorder/cert.pem",
+                "private_key_path": "/etc/tricorder/key.pem",
+            }
+
+            resp = await client.post("/api/config/web-server", json=update_payload)
+            assert resp.status == 200
+            updated = await resp.json()
+            assert updated["web_server"]["mode"] == "https"
+            assert updated["web_server"]["listen_port"] == 443
+            assert updated["web_server"]["tls_provider"] == "manual"
+            assert updated["web_server"]["lets_encrypt"]["enabled"] is False
+            assert updated["config_path"] == str(config_path)
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["web_server"]["mode"] == "https"
+            assert persisted["web_server"]["listen_port"] == 443
+            assert persisted["web_server"]["tls_provider"] == "manual"
+            assert (
+                persisted["web_server"]["certificate_path"] == "/etc/tricorder/cert.pem"
+            )
+            assert (
+                persisted["web_server"]["private_key_path"] == "/etc/tricorder/key.pem"
+            )
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_web_server_settings_validation_requires_domains(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("web_server:\n  mode: http\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "mode": "https",
+                "tls_provider": "letsencrypt",
+                "lets_encrypt": {"domains": []},
+            }
+            resp = await client.post("/api/config/web-server", json=payload)
+            assert resp.status == 400
+            error_payload = await resp.json()
+            errors = error_payload.get("errors", [])
+            assert any("domains" in str(item) for item in errors)
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_web_server_settings_validation_manual_paths(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("web_server:\n  mode: https\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "mode": "https",
+                "tls_provider": "manual",
+                "certificate_path": "",
+                "private_key_path": "",
+            }
+            resp = await client.post("/api/config/web-server", json=payload)
+            assert resp.status == 400
+            error_payload = await resp.json()
+            errors = error_payload.get("errors", [])
+            assert any("certificate_path" in str(item) for item in errors)
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_audio_settings_round_trip(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

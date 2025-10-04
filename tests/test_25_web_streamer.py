@@ -3,15 +3,81 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pytest
 
 import copy
+import ssl
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import lib.web_streamer as web_streamer
+import lib.lets_encrypt as lets_encrypt
 
 pytest_plugins = ("aiohttp.pytest_plugin",)
+
+
+TEST_CERT_PEM = """-----BEGIN CERTIFICATE-----
+MIIDDTCCAfWgAwIBAgIUCetl27jBsWzLcDiiax1l5UG7YmAwDQYJKoZIhvcNAQEL
+BQAwFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wHhcNMjUxMDAyMTAxMTU2WhcNMjUx
+MDAzMTAxMTU2WjAWMRQwEgYDVQQDDAtleGFtcGxlLmNvbTCCASIwDQYJKoZIhvcN
+AQEBBQADggEPADCCAQoCggEBAK4Zgs0VnsxDRtnYT9eAFdDNAiYV2MZpQnsL9Eqo
+UoznUeamSf1McLYGmqMeM2Yf99IAVewBeWBbuqQl4Y6wVPUi7G5OwN7aSK+OI5Uu
+DseqM4dA/TgEskcDE6Gob7jgMfbQQg07YDIFK3nyc62gFuC+Qc78MDHqmYCI4czW
+rQhbxEpAqSnLLkG6Kr1PDOP0GpS+q+aZysTMPc4wKN7hdClJdgkdsTFcJNPJbLqi
+X2bMMiSZ9ZRvlELJKySCr+VX2reT5u8/qyEGNRvDCNElnikPCfDmAK5XmeLfriFF
+Hq/N/4GsiRHc4jGZ8lOPtvKUSvaKXPw2uh1lQTiyyowRgQcCAwEAAaNTMFEwHQYD
+VR0OBBYEFCCp4YpRmop+Id1rLRvL4CvUVFaoMB8GA1UdIwQYMBaAFCCp4YpRmop+
+Id1rLRvL4CvUVFaoMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEB
+AEcbhmet4FeyIK3b5GnYcI3apXoskLo8gIgBzzBI/BsFoE6KI5eRwJyFLkqqa3n0
+rPyH4IoDcBLzomRrid3Nsycu17Br1kCQtVdhcWvUIXT+YNw3SzF3aSG0qorKJTFi
+DWW8tNCwo/l4eNYDSjtC/C2NLLtXzXWgpUJoPLOlvRUFDTlwkdY2sbcvew8Tf+B8
+Fuun8Va4RaPN/oEQ/geTZctmi/ZjGlrxnqAkgLKFVAFcqqaLMLScadQ5J1AyZOje
+/s6KQXCeFowoi6qWBfOKR+z6b9XBzu3PL6t09UyphcivJfClZ8SuTdxBK0uUFu2p
+y/DBb2/pfS2PDXTyIFwhtc8=
+-----END CERTIFICATE-----
+"""
+
+
+TEST_KEY_PEM = """-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCuGYLNFZ7MQ0bZ
+2E/XgBXQzQImFdjGaUJ7C/RKqFKM51Hmpkn9THC2BpqjHjNmH/fSAFXsAXlgW7qk
+JeGOsFT1IuxuTsDe2kivjiOVLg7HqjOHQP04BLJHAxOhqG+44DH20EINO2AyBSt5
+8nOtoBbgvkHO/DAx6pmAiOHM1q0IW8RKQKkpyy5Buiq9Twzj9BqUvqvmmcrEzD3O
+MCje4XQpSXYJHbExXCTTyWy6ol9mzDIkmfWUb5RCySskgq/lV9q3k+bvP6shBjUb
+wwjRJZ4pDwnw5gCuV5ni364hRR6vzf+BrIkR3OIxmfJTj7bylEr2ilz8NrodZUE4
+ssqMEYEHAgMBAAECggEAHNEFKOvksluKXSFkKb++HKbqLaKdFE403kf+weK1czQQ
+htRMV9wwpbhXHRuxFzzAWKaMkjk2PWBBdsz8VhFSppaGusVXQCuyLzigJB+Q+7Rs
+vfzgTMbeOUnFlJLcFyYorvkOjcEfrXfUl+UtB3aBguaK3vc4BPMXQEKn2S9JSaIc
+3N5QcWTf8w9yV6bzCskSu2aLm3rX4QxHtJcxOMLeFL83FGHQE2yFbIJI/Rwa9DP0
+oj3fMZEobvoGz82j98mdfZ6uxjlrk14VS9fDLs+Z9mwg2E9hLS0cE/CUR1dh64fd
+QSp5QjZ5m/abSUhTxvK93NN5dDqZgUn1tEtg0hm0gQKBgQDbjyM8agOfXD8wxm09
+p3QOCfbmHHyXivlPHByNyHC62Gn3JT/la0RHotWdSLJKtqMeVDQVYHrKgL7ys+Yp
+DmVajYF2ly2+3WDvEpS+ZLawnKNjCKL2oOybrZA8bP0gmAhspBYcTQksv/La5juz
+8VxxLYiYGis3LCty09kGwwwugQKBgQDK/teuAoAyHWoj4yVJ80dckeyxybnP+qGm
+WmfEe6V8NopT44bX1u3xQBxCuKcYum21tGuNl8mNljpGXitSx6oT5/Dk4e+jD/VC
++DkQP4ER3kNKMk0g6Fj37fPJ7Cx+E8PPC2zO55iPTtZ2YkfeQNHJHDlaH77jjRec
+MOG3Gc17hwKBgQCPQK001dbXO1Dfehf8ii1mm4nESgHgvoQ74ZOfzo/+2QUKg/tU
+rNA4DT5jCPOLW+7B8x6oc/Kp/aaYpFgfoYzvsDQwNCNczQRZ+D2knAG26fyQuSna
+0NSQHoZlZpchlRCqEcV7YagC0pqZyG5b0bcHATaGR0y7Cs6udRq9FrX0AQKBgQCa
+m4yzyM3Q3ZxopulQsIzqkW3gX085e5/A7txXxwDcYUHr8MBUBiwF8hlULAWAjQVg
+PoEoP7JQN1o9HB4NF2uPa7mK6hY1cMMRdbMoj+WDMXC4wyUBalXQx5hFc67Te8RI
+HmCKGdSVWat4URSBz4a4kNmRrdoav+x6lrRjW7CoYwKBgQCiMK5qox22o8bqOjVX
+Ww/0QDnKHa/H60576XKSiR0K37h3M9fO6ufVM0vbfbnVjZuSP32IvbqTgjNIf1A7
+QGkTnrHQiZ/OdOnwTRN97oyn3jLA90bzEDsckxvqDWag2cd66Jmo2/l7VGSYfX5s
+aC7kjiyNhRRWDfsToon9z4F5WQ==
+-----END PRIVATE KEY-----
+"""
+
+
+def _write_test_certificate(tmp_path: Path) -> tuple[Path, Path]:
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_text(TEST_CERT_PEM, encoding="utf-8")
+    key_path.write_text(TEST_KEY_PEM, encoding="utf-8")
+    return cert_path, key_path
 
 
 @pytest.mark.asyncio
@@ -169,6 +235,244 @@ def test_normalize_webrtc_ice_servers_custom_entries():
 
 def test_normalize_webrtc_ice_servers_disable():
     assert web_streamer._normalize_webrtc_ice_servers([]) == []
+
+
+def test_resolve_web_server_runtime_http_defaults():
+    cfg = {"web_server": {"mode": "http", "listen_host": "127.0.0.1", "listen_port": 9090}}
+    host, port, ssl_ctx, manager = web_streamer._resolve_web_server_runtime(cfg)
+
+    assert host == "127.0.0.1"
+    assert port == 9090
+    assert ssl_ctx is None
+    assert manager is None
+
+
+def test_resolve_web_server_runtime_manual(tmp_path):
+    cert_path, key_path = _write_test_certificate(tmp_path)
+    cfg = {
+        "web_server": {
+            "mode": "https",
+            "listen_host": "0.0.0.0",
+            "listen_port": 443,
+            "tls_provider": "manual",
+            "certificate_path": str(cert_path),
+            "private_key_path": str(key_path),
+        }
+    }
+
+    host, port, ssl_ctx, manager = web_streamer._resolve_web_server_runtime(cfg)
+
+    assert host == "0.0.0.0"
+    assert port == 443
+    assert isinstance(ssl_ctx, ssl.SSLContext)
+    assert manager is None
+
+
+def test_resolve_web_server_runtime_letsencrypt(tmp_path):
+    cert_path, key_path = _write_test_certificate(tmp_path)
+    captured: dict[str, object] = {}
+
+    class StubManager:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+
+        def ensure_certificate(self):
+            captured["called"] = True
+            return cert_path, key_path
+
+    cfg = {
+        "web_server": {
+            "mode": "https",
+            "listen_host": "0.0.0.0",
+            "listen_port": 443,
+            "tls_provider": "letsencrypt",
+            "lets_encrypt": {
+                "domains": ["recorder.example.com"],
+                "email": "ops@example.com",
+                "cache_dir": str(tmp_path / "cache"),
+                "staging": True,
+                "certbot_path": "/usr/bin/certbot",
+                "http_port": 8080,
+                "renew_before_days": 10,
+            },
+        }
+    }
+
+    host, port, ssl_ctx, manager = web_streamer._resolve_web_server_runtime(
+        cfg, manager_factory=StubManager
+    )
+
+    assert host == "0.0.0.0"
+    assert port == 443
+    assert isinstance(ssl_ctx, ssl.SSLContext)
+    assert isinstance(manager, StubManager)
+    assert captured.get("called") is True
+    kwargs = captured.get("kwargs")
+    assert isinstance(kwargs, dict)
+    assert kwargs["domains"] == ["recorder.example.com"]
+
+
+def test_resolve_web_server_runtime_requires_domains():
+    cfg = {"web_server": {"mode": "https", "tls_provider": "letsencrypt", "lets_encrypt": {"domains": []}}}
+
+    with pytest.raises(RuntimeError):
+        web_streamer._resolve_web_server_runtime(cfg)
+
+
+def test_resolve_web_server_runtime_requires_manual_paths():
+    cfg = {"web_server": {"mode": "https", "tls_provider": "manual"}}
+
+    with pytest.raises(RuntimeError):
+        web_streamer._resolve_web_server_runtime(cfg)
+
+
+@pytest.mark.asyncio
+async def test_web_server_update_triggers_streamer_restart(monkeypatch, aiohttp_client):
+    base_cfg = copy.deepcopy(web_streamer.get_cfg())
+    base_cfg.setdefault("web_server", web_streamer._web_server_defaults())
+
+    def fake_get_cfg():
+        return copy.deepcopy(base_cfg)
+
+    monkeypatch.setattr(web_streamer, "get_cfg", fake_get_cfg, raising=False)
+    monkeypatch.setattr(web_streamer, "reload_cfg", fake_get_cfg, raising=False)
+
+    recorded: dict[str, object] = {}
+
+    def fake_update(settings):
+        recorded["settings"] = copy.deepcopy(settings)
+        base_cfg.setdefault("web_server", {}).update(settings)
+        return base_cfg["web_server"]
+
+    monkeypatch.setattr(web_streamer, "update_web_server_settings", fake_update)
+
+    async def fake_restart(units):
+        recorded["restart_units"] = list(units)
+        return [
+            {
+                "unit": unit,
+                "ok": True,
+                "stdout": "",
+                "stderr": "",
+                "message": "",
+                "returncode": 0,
+            }
+            for unit in units
+        ]
+
+    monkeypatch.setattr(web_streamer, "_restart_units", fake_restart)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.post(
+        "/api/config/web-server",
+        json={
+            "mode": "https",
+            "listen_host": "0.0.0.0",
+            "listen_port": 9443,
+            "tls_provider": "letsencrypt",
+            "lets_encrypt": {
+                "enabled": True,
+                "email": "ops@example.com",
+                "domains": ["recorder.local"],
+                "http_port": 8080,
+                "renew_before_days": 15,
+            },
+        },
+    )
+
+    payload = await response.json()
+    assert response.status == 200, payload
+    assert recorded.get("restart_units") == ["web-streamer.service"]
+    restart_units = [entry.get("unit") for entry in payload.get("restart_results", [])]
+    assert "web-streamer.service" in restart_units
+
+
+@pytest.mark.asyncio
+async def test_lets_encrypt_renewal_reloads_ssl_context(monkeypatch, tmp_path):
+    cert_path = tmp_path / "fullchain.pem"
+    key_path = tmp_path / "privkey.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+
+    loop = asyncio.get_running_loop()
+    reload_event = asyncio.Event()
+    load_calls: list[tuple[str, str]] = []
+
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+    def fake_load_cert_chain(*, certfile: str, keyfile: str) -> None:
+        load_calls.append((certfile, keyfile))
+        loop.call_soon_threadsafe(reload_event.set)
+
+    monkeypatch.setattr(ssl_context, "load_cert_chain", fake_load_cert_chain)
+
+    class DummyManager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ensure_certificate(self) -> tuple[Path, Path]:
+            self.calls += 1
+            return cert_path, key_path
+
+    manager = DummyManager()
+    app = web_streamer.build_app(lets_encrypt_manager=manager)
+    app[web_streamer.SSL_CONTEXT_KEY] = ssl_context
+
+    monkeypatch.setattr(web_streamer, "LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS", 0.01)
+
+    await app.on_startup[-1](app)
+    try:
+        await asyncio.wait_for(reload_event.wait(), timeout=1.0)
+    finally:
+        for cleanup_cb in app.on_cleanup:
+            await cleanup_cb(app)
+
+    assert manager.calls >= 1
+    assert load_calls
+    certfile, keyfile = load_calls[-1]
+    assert certfile == str(cert_path)
+    assert keyfile == str(key_path)
+
+
+def test_lets_encrypt_manager_requests_certificate(tmp_path, monkeypatch):
+    manager = lets_encrypt.LetsEncryptManager(
+        domains=["recorder.example.com"],
+        email="ops@example.com",
+        cache_dir=tmp_path / "le",
+        staging=True,
+        http_port=8080,
+        renew_before_days=15,
+        certbot_path="certbot",
+    )
+
+    monkeypatch.setattr(manager, "_resolve_certbot", lambda: "/usr/bin/certbot")
+
+    run_calls: list[list[str]] = []
+
+    def fake_run(cmd, *, check, stdout, stderr, text):
+        run_calls.append(cmd)
+        cert_dest, key_dest = manager.certificate_paths()
+        cert_dest.parent.mkdir(parents=True, exist_ok=True)
+        cert_dest.write_text(TEST_CERT_PEM, encoding="utf-8")
+        key_dest.write_text(TEST_KEY_PEM, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    future_expiration = datetime.now(timezone.utc) + timedelta(days=90)
+    monkeypatch.setattr(manager, "_certificate_expiration", lambda path: future_expiration)
+
+    cert_path, key_path = manager.ensure_certificate()
+    assert cert_path.exists()
+    assert key_path.exists()
+    assert len(run_calls) == 1
+
+    run_calls.clear()
+    cert_path_2, key_path_2 = manager.ensure_certificate()
+    assert not run_calls
+    assert cert_path_2 == cert_path
+    assert key_path_2 == key_path
 
 
 def test_parse_show_output_handles_blank_fields():

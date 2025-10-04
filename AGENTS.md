@@ -11,6 +11,7 @@ Naming discipline when tickets are referenced:
 - If a key is present, immediately transition the Jira issue from **To Do** to **In Progress**, comment “Agent started work on this ticket.”, and (optionally) log setup time.
 - If no key is present, request one or have it added to scope before proceeding.
 - When a key exists, always create the working branch and PR title prefixed with that identifier (e.g., `TR-1234-description`); recommended branch format: `tr-<num>-<short-slug>`.
+- When a key exists always use the Jira key in the PR title and your own Task name in the CODEX web ui task list.  
 
 Smart commit policy:
 - All commit messages must include the Jira key(s) and smart commit tags.
@@ -23,9 +24,9 @@ Smart commit policy:
 - Ensure the Git author email matches a Jira user for smart-commit linkage.
 
 Ticket lifecycle expectations (Board: To Do → In Progress → In Review):
-1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket, add the startup comment, optionally log initial time.
-2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates to add time tracking information between commits.
-3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, total time logged, current status (**In Review**), and links back to the task run and PR/commit diff. Do **not** move to Done.
+1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket using the Jira API and env credentials available to you, add the startup comment, optionally log initial time.
+2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates to add time tracking information between commits and comments if applicable..
+3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, total time logged, current status (**In Review**), and links back to the CODE task run and PR/commit diff. Do **not** move to Done.
 4. **Failures** – if transitions fail, comment the error, retry with backoff (3 attempts), and proceed with manual follow-up instructions.
 5. **Fallback** – if Smart Commit automations are unavailable (permissions/workflow), explicitly post Jira comments, worklogs, and transitions using the Jira API.
 

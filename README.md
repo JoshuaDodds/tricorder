@@ -135,6 +135,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
+- Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
 - JSON APIs (`/api/recordings`, `/api/recycle-bin`, `/api/config`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
@@ -181,6 +182,17 @@ Visit `http://<device>:8080/` for the dashboard. When `streaming.mode` is set to
 ### Remote dashboard deployments
 
 When the static dashboard is hosted separately from the recorder APIs (for example via a CDN or another web server), set `dashboard.api_base` in `config.yaml` to the origin of the recorder instance (e.g. `https://recorder.local:8080`). The template publishes this value as `window.TRICORDER_API_BASE`, which `lib/webui/static/js/dashboard.js` uses for all API, HLS, and recording requests. When this override is set the web streamer automatically serves permissive CORS headers (including responses to `OPTIONS` preflight requests) so remote dashboards can call the JSON and HLS endpoints directly. Leaving the field blank preserves the default same-origin behavior.
+
+### Web server configuration
+
+The dashboard and JSON APIs are served by `lib/web_streamer.py`. Configure the listener with the `web_server` section in `config.yaml`:
+
+* `web_server.mode` — `http` (no TLS) or `https` (TLS enabled). Switching this value adjusts behavior without requiring different binaries or services.
+* `web_server.listen_port` — port used by the server. Set to `80` for HTTP or `443` for HTTPS to match the standard ports.
+* `web_server.tls_provider` — choose `letsencrypt` for automatic certificates or `manual` to load an existing PEM pair from `certificate_path` / `private_key_path`.
+* `web_server.lets_encrypt` — only used when TLS is enabled. Provide at least one domain and (optionally) a registration email. The server manages issuance and renewal by shelling out to `certbot` on startup and once per day.
+
+When `web_server.mode` is `https` and `tls_provider` is `letsencrypt`, ensure the configured domains resolve to the recorder and that the ACME challenge port (default `80`) is reachable from the public internet. Certificates are stored under `web_server.lets_encrypt.cache_dir` (default `/apps/tricorder/letsencrypt`).
 
 ---
 

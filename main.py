@@ -59,16 +59,22 @@ def run_once():
         pass
 
 
-def main():
-    stop_service()
-    print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
+def _start_dev_web_streamer() -> "WebStreamerHandle":
+    """Start the dashboard web streamer with the dev launcher defaults."""
 
-    web_streamer = start_web_streamer_in_thread(
+    return start_web_streamer_in_thread(
         host="0.0.0.0",
         port=8080,
         access_log=False,
         log_level="INFO",
     )
+
+
+def main():
+    stop_service()
+    print("[dev] Running live_stream_daemon (Ctrl-C to exit, Ctrl-R to restart)")
+
+    web_streamer = _start_dev_web_streamer()
 
     while True:
         watcher = KeyWatcher()
@@ -84,12 +90,7 @@ def main():
 
         if watcher.restart_requested:
             print("[dev] Restart requested via Ctrl-R")
-            web_streamer = start_web_streamer_in_thread(
-                host="0.0.0.0",
-                port=8080,
-                access_log=False,
-                log_level="INFO",
-            )
+            web_streamer = _start_dev_web_streamer()
             continue
         else:
             print("[dev] Exiting dev mode")

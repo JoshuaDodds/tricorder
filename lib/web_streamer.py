@@ -42,6 +42,7 @@ import os
 import re
 import secrets
 import shutil
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -50,7 +51,7 @@ import wave
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
@@ -65,6 +66,10 @@ RECORDINGS_TIME_RANGE_SECONDS = {
 }
 
 ARCHIVAL_BACKENDS = {"network_share", "rsync"}
+
+WEB_SERVER_MODES = {"http", "https"}
+WEB_SERVER_TLS_PROVIDERS = {"letsencrypt", "manual"}
+LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS = 12 * 60 * 60
 
 CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
 
@@ -497,6 +502,27 @@ def _dashboard_defaults() -> dict[str, Any]:
     return {"api_base": ""}
 
 
+def _web_server_defaults() -> dict[str, Any]:
+    return {
+        "mode": "http",
+        "listen_host": "0.0.0.0",
+        "listen_port": 8080,
+        "tls_provider": "letsencrypt",
+        "certificate_path": "",
+        "private_key_path": "",
+        "lets_encrypt": {
+            "enabled": False,
+            "email": "",
+            "domains": [],
+            "cache_dir": "/apps/tricorder/letsencrypt",
+            "staging": False,
+            "certbot_path": "certbot",
+            "http_port": 80,
+            "renew_before_days": 30,
+        },
+    }
+
+
 def _transcription_defaults() -> dict[str, Any]:
     return {
         "enabled": False,
@@ -740,6 +766,92 @@ def _canonical_dashboard_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         api_base = raw.get("api_base")
         if isinstance(api_base, str):
             result["api_base"] = api_base.strip()
+    return result
+
+
+def _canonical_web_server_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _web_server_defaults()
+    raw = cfg.get("web_server", {})
+    if not isinstance(raw, dict):
+        return result
+
+    mode = raw.get("mode")
+    if isinstance(mode, str):
+        candidate = mode.strip().lower()
+        if candidate in WEB_SERVER_MODES:
+            result["mode"] = candidate
+
+    host = raw.get("listen_host") or raw.get("host")
+    if isinstance(host, str):
+        stripped = host.strip()
+        if stripped:
+            result["listen_host"] = stripped
+
+    port = raw.get("listen_port") or raw.get("port")
+    if isinstance(port, (int, float)) and not isinstance(port, bool):
+        candidate = int(port)
+        if 1 <= candidate <= 65535:
+            result["listen_port"] = candidate
+
+    provider = raw.get("tls_provider") or raw.get("provider")
+    if isinstance(provider, str):
+        candidate = provider.strip().lower()
+        if candidate in WEB_SERVER_TLS_PROVIDERS:
+            result["tls_provider"] = candidate
+
+    cert_path = raw.get("certificate_path") or raw.get("cert_path")
+    if isinstance(cert_path, str):
+        result["certificate_path"] = cert_path.strip()
+
+    key_path = raw.get("private_key_path") or raw.get("key_path")
+    if isinstance(key_path, str):
+        result["private_key_path"] = key_path.strip()
+
+    lets_encrypt = raw.get("lets_encrypt") or raw.get("letsencrypt")
+    if isinstance(lets_encrypt, dict):
+        enabled = lets_encrypt.get("enabled")
+        if isinstance(enabled, bool):
+            result["lets_encrypt"]["enabled"] = enabled
+        elif enabled is not None:
+            result["lets_encrypt"]["enabled"] = _bool_from_any(enabled)
+
+        email = lets_encrypt.get("email")
+        if isinstance(email, str):
+            result["lets_encrypt"]["email"] = email.strip()
+
+        domains = _string_list_from_config(
+            lets_encrypt.get("domains"), default=result["lets_encrypt"]["domains"]
+        )
+        if domains:
+            result["lets_encrypt"]["domains"] = domains
+
+        cache_dir = lets_encrypt.get("cache_dir")
+        if isinstance(cache_dir, str):
+            result["lets_encrypt"]["cache_dir"] = cache_dir.strip()
+
+        staging = lets_encrypt.get("staging")
+        if isinstance(staging, bool):
+            result["lets_encrypt"]["staging"] = staging
+        elif staging is not None:
+            result["lets_encrypt"]["staging"] = _bool_from_any(staging)
+
+        certbot_path = lets_encrypt.get("certbot_path") or lets_encrypt.get("certbot")
+        if isinstance(certbot_path, str):
+            result["lets_encrypt"]["certbot_path"] = certbot_path.strip()
+
+        http_port = lets_encrypt.get("http_port") or lets_encrypt.get("port")
+        if isinstance(http_port, (int, float)) and not isinstance(http_port, bool):
+            candidate = int(http_port)
+            if 1 <= candidate <= 65535:
+                result["lets_encrypt"]["http_port"] = candidate
+
+        renew_before = (
+            lets_encrypt.get("renew_before_days")
+            or lets_encrypt.get("renew_days")
+        )
+        if isinstance(renew_before, (int, float)) and not isinstance(renew_before, bool):
+            result["lets_encrypt"]["renew_before_days"] = max(1, int(renew_before))
+
     return result
 
 
@@ -1340,6 +1452,161 @@ def _normalize_dashboard_payload(payload: Any) -> tuple[dict[str, Any], list[str
     return normalized, errors
 
 
+def _normalize_web_server_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    try:
+        cfg_snapshot = get_cfg()
+    except Exception:  # pragma: no cover - defensive fallback
+        cfg_snapshot = {}
+    normalized = copy.deepcopy(_canonical_web_server_settings(cfg_snapshot))
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    mode_raw = payload.get("mode")
+    if isinstance(mode_raw, str):
+        candidate = mode_raw.strip().lower()
+        if candidate in WEB_SERVER_MODES:
+            normalized["mode"] = candidate
+        else:
+            errors.append("mode must be one of: http, https")
+    else:
+        errors.append("mode must be a string")
+
+    host_raw = payload.get("listen_host") or payload.get("host")
+    if host_raw is None:
+        pass
+    elif isinstance(host_raw, str):
+        normalized["listen_host"] = host_raw.strip() or "0.0.0.0"
+    else:
+        errors.append("listen_host must be a string")
+
+    port = _coerce_int(
+        payload.get("listen_port") or payload.get("port"),
+        "listen_port",
+        errors,
+        min_value=1,
+        max_value=65535,
+    )
+    if port is not None:
+        normalized["listen_port"] = port
+
+    provider_raw = payload.get("tls_provider") or payload.get("provider")
+    if provider_raw is None:
+        pass
+    elif isinstance(provider_raw, str):
+        candidate = provider_raw.strip().lower()
+        if candidate in WEB_SERVER_TLS_PROVIDERS:
+            normalized["tls_provider"] = candidate
+        else:
+            errors.append("tls_provider must be one of: letsencrypt, manual")
+    else:
+        errors.append("tls_provider must be a string")
+
+    cert_path = payload.get("certificate_path")
+    if cert_path is None:
+        pass
+    elif isinstance(cert_path, str):
+        normalized["certificate_path"] = cert_path.strip()
+    else:
+        errors.append("certificate_path must be a string")
+
+    key_path = payload.get("private_key_path")
+    if key_path is None:
+        pass
+    elif isinstance(key_path, str):
+        normalized["private_key_path"] = key_path.strip()
+    else:
+        errors.append("private_key_path must be a string")
+
+    lets_encrypt_raw = payload.get("lets_encrypt") or payload.get("letsencrypt")
+    lets_payload: Mapping[str, Any]
+    if lets_encrypt_raw is None:
+        lets_payload = {}
+    elif isinstance(lets_encrypt_raw, Mapping):
+        lets_payload = lets_encrypt_raw
+    else:
+        errors.append("lets_encrypt must be an object")
+        lets_payload = {}
+
+    if lets_payload:
+        enabled_value = lets_payload.get("enabled")
+        if enabled_value is not None:
+            normalized["lets_encrypt"]["enabled"] = _bool_from_any(enabled_value)
+
+        email_value = lets_payload.get("email")
+        if email_value is None:
+            pass
+        elif isinstance(email_value, str):
+            normalized["lets_encrypt"]["email"] = email_value.strip()
+        else:
+            errors.append("lets_encrypt.email must be a string")
+
+        domains_value, provided_domains = _string_list_from_payload(
+            lets_payload.get("domains"),
+            "lets_encrypt.domains",
+            errors,
+        )
+        if provided_domains:
+            normalized["lets_encrypt"]["domains"] = domains_value
+
+        cache_dir_value = lets_payload.get("cache_dir")
+        if cache_dir_value is None:
+            pass
+        elif isinstance(cache_dir_value, str):
+            normalized["lets_encrypt"]["cache_dir"] = cache_dir_value.strip()
+        else:
+            errors.append("lets_encrypt.cache_dir must be a string")
+
+        staging_value = lets_payload.get("staging")
+        if staging_value is not None:
+            normalized["lets_encrypt"]["staging"] = _bool_from_any(staging_value)
+
+        certbot_value = lets_payload.get("certbot_path") or lets_payload.get("certbot")
+        if certbot_value is None:
+            pass
+        elif isinstance(certbot_value, str):
+            normalized["lets_encrypt"]["certbot_path"] = certbot_value.strip()
+        else:
+            errors.append("lets_encrypt.certbot_path must be a string")
+
+        http_port_value = _coerce_int(
+            lets_payload.get("http_port") or lets_payload.get("port"),
+            "lets_encrypt.http_port",
+            errors,
+            min_value=1,
+            max_value=65535,
+        )
+        if http_port_value is not None:
+            normalized["lets_encrypt"]["http_port"] = http_port_value
+
+        renew_value = _coerce_int(
+            lets_payload.get("renew_before_days") or lets_payload.get("renew_days"),
+            "lets_encrypt.renew_before_days",
+            errors,
+            min_value=1,
+            max_value=365,
+        )
+        if renew_value is not None:
+            normalized["lets_encrypt"]["renew_before_days"] = renew_value
+
+    if normalized["mode"] == "https":
+        provider = normalized["tls_provider"]
+        if provider == "manual":
+            if not normalized["certificate_path"] or not normalized["private_key_path"]:
+                errors.append(
+                    "certificate_path and private_key_path are required when tls_provider is manual"
+                )
+        else:
+            normalized["lets_encrypt"]["enabled"] = True
+            if not normalized["lets_encrypt"]["domains"]:
+                errors.append("lets_encrypt.domains must include at least one entry")
+    else:
+        normalized["lets_encrypt"]["enabled"] = False
+
+    return normalized, errors
+
+
 async def _restart_units(units: Iterable[str]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1408,7 +1675,9 @@ from lib.config import (
     update_segmenter_settings,
     update_streaming_settings,
     update_transcription_settings,
+    update_web_server_settings,
 )
+from lib.lets_encrypt import LetsEncryptError, LetsEncryptManager
 from lib.waveform_cache import generate_waveform
 
 
@@ -1577,6 +1846,27 @@ def _resolve_start_metadata(
 def _scan_recordings_worker(
     recordings_root: Path, allowed_ext: tuple[str, ...]
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
+    log = logging.getLogger("web_streamer")
+
+    def _iter_candidate_files() -> Iterable[Path]:
+        def _on_error(error: OSError) -> None:
+            location = getattr(error, "filename", None) or recordings_root
+            log.warning(
+                "recordings scan: unable to access %s (%s)",
+                location,
+                error,
+            )
+
+        for dirpath, dirnames, filenames in os.walk(
+            recordings_root, onerror=_on_error
+        ):
+            dir_path = Path(dirpath)
+            if RECYCLE_BIN_DIRNAME in dir_path.parts:
+                continue
+            dirnames[:] = [name for name in dirnames if name != RECYCLE_BIN_DIRNAME]
+            for filename in filenames:
+                yield dir_path / filename
+
     entries: list[dict[str, object]] = []
     day_set: set[str] = set()
     ext_set: set[str] = set()
@@ -1584,10 +1874,16 @@ def _scan_recordings_worker(
     if not recordings_root.exists():
         return entries, [], [], 0
 
-    for path in recordings_root.rglob("*"):
-        if RECYCLE_BIN_DIRNAME in path.parts:
-            continue
-        if not path.is_file():
+    for path in _iter_candidate_files():
+        try:
+            if not path.is_file():
+                continue
+        except OSError as error:
+            log.warning(
+                "recordings scan: unable to stat candidate %s (%s)",
+                path,
+                error,
+            )
             continue
         suffix = path.suffix.lower()
         if allowed_ext and suffix not in allowed_ext:
@@ -1933,6 +2229,11 @@ SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_servic
 AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
 STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
 WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
+LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", object)
+SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
+LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
+    "lets_encrypt_task", asyncio.Task
+)
 
 _SYSTEMCTL_PROPERTIES = [
     "LoadState",
@@ -2191,7 +2492,7 @@ def _kick_auto_restart_units(
         _enqueue_service_actions(unit, ["start"], delay=delay)
 
 
-def build_app() -> web.Application:
+def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.Application:
     log = logging.getLogger("web_streamer")
     cfg = get_cfg()
     dashboard_cfg = cfg.get("dashboard", {})
@@ -2222,6 +2523,9 @@ def build_app() -> web.Application:
 
     app = web.Application(middlewares=middlewares)
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
+    if lets_encrypt_manager is not None:
+        app[LETS_ENCRYPT_MANAGER_KEY] = lets_encrypt_manager
+
 
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
     tmp_root = os.environ.get("TRICORDER_TMP", default_tmp)
@@ -4457,15 +4761,18 @@ def build_app() -> web.Application:
         payload = _archival_response_payload(refreshed)
         return web.json_response(payload)
 
+    recorder_unit = "voice-recorder.service"
+    web_streamer_unit = "web-streamer.service"
     section_restart_units: dict[str, Sequence[str]] = {
-        "audio": ["voice-recorder.service"],
-        "segmenter": ["voice-recorder.service"],
-        "adaptive_rms": ["voice-recorder.service"],
+        "audio": [recorder_unit],
+        "segmenter": [recorder_unit],
+        "adaptive_rms": [recorder_unit],
         "ingest": ["dropbox.path", "dropbox.service"],
-        "transcription": ["voice-recorder.service"],
-        "logging": ["voice-recorder.service"],
-        "streaming": ["voice-recorder.service", "web-streamer.service"],
-        "dashboard": ["web-streamer.service"],
+        "transcription": [recorder_unit],
+        "logging": [recorder_unit],
+        "streaming": [recorder_unit, web_streamer_unit],
+        "dashboard": [web_streamer_unit],
+        "web_server": [web_streamer_unit],
     }
 
     async def _settings_get(
@@ -4619,6 +4926,19 @@ def build_app() -> web.Application:
             normalize=_normalize_dashboard_payload,
             update_func=update_dashboard_settings,
             canonical_fn=_canonical_dashboard_settings,
+        )
+
+    async def config_web_server_get(request: web.Request) -> web.Response:
+        return await _settings_get("web_server", _canonical_web_server_settings)
+
+    async def config_web_server_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="web_server",
+            section_label="web server",
+            normalize=_normalize_web_server_payload,
+            update_func=update_web_server_settings,
+            canonical_fn=_canonical_web_server_settings,
         )
 
     cpu_last_sample: tuple[int, int] | None = None
@@ -4998,6 +5318,8 @@ def build_app() -> web.Application:
     app.router.add_post("/api/config/streaming", config_streaming_update)
     app.router.add_get("/api/config/dashboard", config_dashboard_get)
     app.router.add_post("/api/config/dashboard", config_dashboard_update)
+    app.router.add_get("/api/config/web-server", config_web_server_get)
+    app.router.add_post("/api/config/web-server", config_web_server_update)
     app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
@@ -5020,6 +5342,49 @@ def build_app() -> web.Application:
         app.router.add_post("/webrtc/offer", webrtc_offer)
     app.router.add_static("/static/", webui.static_directory(), show_index=False)
 
+    if lets_encrypt_manager is not None:
+        async def _start_lets_encrypt(_: web.Application) -> None:
+            async def _maintain() -> None:
+                while True:
+                    await asyncio.sleep(LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS)
+                    try:
+                        cert_path, key_path = await asyncio.to_thread(
+                            lets_encrypt_manager.ensure_certificate
+                        )
+                        ssl_context = app.get(SSL_CONTEXT_KEY)
+                        if ssl_context is not None:
+                            try:
+                                ssl_context.load_cert_chain(
+                                    certfile=str(cert_path),
+                                    keyfile=str(key_path),
+                                )
+                                log.info(
+                                    "Reloaded HTTPS certificate from %s", cert_path
+                                )
+                            except Exception as exc:
+                                log.warning(
+                                    "Unable to reload HTTPS certificate %s: %s",
+                                    cert_path,
+                                    exc,
+                                )
+                    except LetsEncryptError as exc:
+                        log.warning("Let's Encrypt renewal failed: %s", exc)
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        log.warning("Unexpected Let's Encrypt error: %s", exc)
+
+            task = asyncio.create_task(_maintain())
+            app[LETS_ENCRYPT_TASK_KEY] = task
+
+        async def _stop_lets_encrypt(_: web.Application) -> None:
+            task = app.get(LETS_ENCRYPT_TASK_KEY)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        app.on_startup.append(_start_lets_encrypt)
+        app.on_cleanup.append(_stop_lets_encrypt)
+
     if webrtc_manager is not None:
         async def _cleanup_webrtc(_: web.Application) -> None:
             await webrtc_manager.shutdown()
@@ -5028,6 +5393,91 @@ def build_app() -> web.Application:
 
     app.router.add_get("/healthz", healthz)
     return app
+
+
+def _resolve_web_server_runtime(
+    cfg: dict[str, Any],
+    *,
+    manager_factory: Callable[..., LetsEncryptManager] = LetsEncryptManager,
+    logger: logging.Logger | None = None,
+) -> tuple[str, int, ssl.SSLContext | None, LetsEncryptManager | None]:
+    log = logger or logging.getLogger("web_streamer")
+    settings = _canonical_web_server_settings(cfg)
+
+    host = settings.get("listen_host") or "0.0.0.0"
+    try:
+        port = int(settings.get("listen_port") or (443 if settings["mode"] == "https" else 8080))
+    except Exception:
+        port = 443 if settings.get("mode") == "https" else 8080
+
+    ssl_context: ssl.SSLContext | None = None
+    manager: LetsEncryptManager | None = None
+
+    if settings.get("mode") == "https":
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
+        provider = settings.get("tls_provider", "letsencrypt").strip().lower()
+        if provider == "manual":
+            cert_path = settings.get("certificate_path", "").strip()
+            key_path = settings.get("private_key_path", "").strip()
+            if not cert_path or not key_path:
+                raise RuntimeError(
+                    "Manual TLS requires certificate_path and private_key_path to be set"
+                )
+            try:
+                ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+            except Exception as exc:
+                raise RuntimeError(f"Unable to load manual TLS certificate: {exc}") from exc
+        else:
+            le_cfg = settings.get("lets_encrypt", {})
+            domains = [
+                str(domain).strip()
+                for domain in le_cfg.get("domains", [])
+                if isinstance(domain, str) and str(domain).strip()
+            ]
+            if not domains:
+                raise RuntimeError("Let's Encrypt requires at least one domain")
+            email = le_cfg.get("email", "")
+            cache_dir = le_cfg.get("cache_dir") or "/apps/tricorder/letsencrypt"
+            staging = bool(le_cfg.get("staging"))
+            certbot_path = le_cfg.get("certbot_path") or "certbot"
+            try:
+                http_port = int(le_cfg.get("http_port") or 80)
+            except Exception:
+                http_port = 80
+            try:
+                renew_before = int(le_cfg.get("renew_before_days") or 30)
+            except Exception:
+                renew_before = 30
+            try:
+                manager = manager_factory(
+                    domains=domains,
+                    email=email,
+                    cache_dir=cache_dir,
+                    certbot_path=certbot_path,
+                    staging=staging,
+                    http_port=http_port,
+                    renew_before_days=renew_before,
+                    logger=log,
+                )
+            except LetsEncryptError as exc:
+                raise RuntimeError(f"Unable to initialize Let's Encrypt manager: {exc}") from exc
+
+            try:
+                cert_path, key_path = manager.ensure_certificate()
+            except LetsEncryptError as exc:
+                raise RuntimeError(f"Unable to provision Let's Encrypt certificate: {exc}") from exc
+
+            try:
+                ssl_context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+            except Exception as exc:
+                raise RuntimeError(f"Unable to load Let's Encrypt certificate: {exc}") from exc
+
+    return host, port, ssl_context, manager
 
 
 class WebStreamerHandle:
@@ -5063,8 +5513,11 @@ class WebStreamerHandle:
 def start_web_streamer_in_thread(
     host: str = "0.0.0.0",
     port: int = 8080,
+    *,
     access_log: bool = False,
     log_level: str = "INFO",
+    ssl_context: ssl.SSLContext | None = None,
+    lets_encrypt_manager: LetsEncryptManager | None = None,
 ) -> WebStreamerHandle:
     """Launch the aiohttp server in a dedicated thread with its own event loop."""
     logging.basicConfig(
@@ -5079,10 +5532,12 @@ def start_web_streamer_in_thread(
 
     def _run():
         asyncio.set_event_loop(loop)
-        app = build_app()
+        app = build_app(lets_encrypt_manager=lets_encrypt_manager)
+        if ssl_context is not None:
+            app[SSL_CONTEXT_KEY] = ssl_context
         runner = web.AppRunner(app, access_log=access_log)
         loop.run_until_complete(runner.setup())
-        site = web.TCPSite(runner, host, port)
+        site = web.TCPSite(runner, host, port, ssl_context=ssl_context)
         loop.run_until_complete(site.start())
         runner_box["runner"] = runner
         app_box["app"] = app
@@ -5107,8 +5562,12 @@ def start_web_streamer_in_thread(
 
 def cli_main():
     parser = argparse.ArgumentParser(description="HLS HTTP streamer (on-demand).")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0).")
-    parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080).")
+    parser.add_argument("--host", help="Override bind host (defaults to config).")
+    parser.add_argument(
+        "--port",
+        type=int,
+        help="Override bind port (defaults to config).",
+    )
     parser.add_argument("--access-log", action="store_true", help="Enable aiohttp access logs.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level (default: INFO).")
     args = parser.parse_args()
@@ -5117,13 +5576,33 @@ def cli_main():
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
-    logging.getLogger("web_streamer").info("Starting HLS server (on-demand) on %s:%s", args.host, args.port)
+    log = logging.getLogger("web_streamer")
+
+    cfg = reload_cfg()
+    try:
+        host_cfg, port_cfg, ssl_ctx, le_manager = _resolve_web_server_runtime(cfg, logger=log)
+    except RuntimeError as exc:
+        log.error("Unable to start web_streamer: %s", exc)
+        return 1
+
+    bind_host = args.host if args.host else host_cfg
+    bind_port = args.port if args.port else port_cfg
+    mode_label = "HTTPS" if ssl_ctx is not None else "HTTP"
+    log.info(
+        "Starting web_streamer on %s:%s (%s, access_log=%s)",
+        bind_host,
+        bind_port,
+        mode_label,
+        "on" if args.access_log else "off",
+    )
 
     handle = start_web_streamer_in_thread(
-        host=args.host,
-        port=args.port,
+        host=bind_host,
+        port=bind_port,
         access_log=args.access_log,
         log_level=args.log_level,
+        ssl_context=ssl_ctx,
+        lets_encrypt_manager=le_manager,
     )
     try:
         while True:
