@@ -291,12 +291,13 @@ def _parse_event_identity(stem: str) -> tuple[str | None, str | None]:
 
 
 def _find_existing_final_bases(
-    day_dir: Path,
+    recordings_dir: Path,
+    preferred_day_dir: Path,
     event_ts: str | None,
     event_count: str | None,
     final_extension: str,
 ) -> list[str]:
-    if not day_dir.exists() or not event_ts:
+    if not event_ts:
         return []
 
     if not final_extension.startswith("."):
@@ -308,13 +309,25 @@ def _find_existing_final_bases(
     )
 
     matches: list[str] = []
-    for candidate in day_dir.iterdir():
-        if not candidate.is_file():
-            continue
-        if candidate.suffix != final_extension:
-            continue
-        if pattern.match(candidate.name):
-            matches.append(candidate.stem)
+    search_dirs: list[Path] = []
+    if preferred_day_dir.exists():
+        search_dirs.append(preferred_day_dir)
+    if recordings_dir.exists():
+        for candidate_day in recordings_dir.iterdir():
+            if not candidate_day.is_dir():
+                continue
+            if candidate_day in search_dirs:
+                continue
+            search_dirs.append(candidate_day)
+
+    for day_dir in search_dirs:
+        for candidate in day_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            if candidate.suffix != final_extension:
+                continue
+            if pattern.match(candidate.name):
+                matches.append(candidate.stem)
     return matches
 
 
@@ -333,7 +346,12 @@ def _remove_file(path: Path, report: StartupRecoveryReport, *, category: str) ->
     _log_recovery(f"Removed {category} {path}")
 
 
-def _cleanup_orphan_partials(recordings_dir: Path, handled_stems: set[str], report: StartupRecoveryReport) -> None:
+def _cleanup_orphan_partials(
+    recordings_dir: Path,
+    handled_stems: set[str],
+    active_final_bases: set[str],
+    report: StartupRecoveryReport,
+) -> None:
     if not recordings_dir.exists():
         return
     partial_suffix = STREAMING_PARTIAL_SUFFIX
@@ -350,6 +368,9 @@ def _cleanup_orphan_partials(recordings_dir: Path, handled_stems: set[str], repo
                     aux = partial.with_name(partial.name + extra)
                     _remove_file(aux, report, category="artifact")
         for leftover in day_dir.glob(".*.filtered*"):
+            leftover_base = leftover.name[1:].split(".filtered", 1)[0]
+            if leftover_base and leftover_base in active_final_bases:
+                continue
             _remove_file(leftover, report, category="artifact")
 
 
@@ -364,6 +385,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 
     final_extension = STREAMING_EXTENSION if STREAMING_EXTENSION.startswith(".") else f".{STREAMING_EXTENSION}"
     handled_stems: set[str] = set()
+    active_final_bases: set[str] = set()
 
     for wav_path in sorted(tmp_root.glob("*.wav")):
         if not wav_path.is_file():
@@ -379,16 +401,24 @@ def perform_startup_recovery() -> StartupRecoveryReport:
             _remove_file(wav_path, report, category="wav")
             continue
 
-        rms_value = _estimate_rms_from_file(wav_path)
-        final_base = _derive_final_base(wav_path, rms_value)
         day_dir = rec_root / datetime.fromtimestamp(stat.st_mtime).strftime("%Y%m%d")
 
         event_ts, event_count = _parse_event_identity(wav_path.stem)
         existing_final_bases = _find_existing_final_bases(
-            day_dir, event_ts, event_count, final_extension
+            rec_root,
+            day_dir,
+            event_ts,
+            event_count,
+            final_extension,
         )
 
-        artifact_bases = [final_base, *existing_final_bases]
+        artifact_bases: list[str] = list(existing_final_bases)
+        final_base: str | None = None
+        if not existing_final_bases:
+            rms_value = _estimate_rms_from_file(wav_path)
+            final_base = _derive_final_base(wav_path, rms_value)
+            artifact_bases.append(final_base)
+
         for artifact in _collect_streaming_artifacts(day_dir, wav_path.stem, artifact_bases):
             _remove_file(artifact, report, category="artifact")
 
@@ -398,6 +428,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 
         day_dir.mkdir(parents=True, exist_ok=True)
         try:
+            assert final_base is not None
             _enqueue_encode_job(str(wav_path), final_base, source="recovery")
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
@@ -406,9 +437,10 @@ def perform_startup_recovery() -> StartupRecoveryReport:
             )
             continue
         report.requeued.append(final_base)
+        active_final_bases.add(final_base)
         _log_recovery(f"Requeued encode for {final_base}")
 
-    _cleanup_orphan_partials(rec_root, handled_stems, report)
+    _cleanup_orphan_partials(rec_root, handled_stems, active_final_bases, report)
     return report
 
 # Debug logging gate (DEV=1 or logging.dev_mode)
