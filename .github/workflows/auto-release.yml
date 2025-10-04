@@ -33,12 +33,11 @@ jobs:
               const comparison = await github.rest.repos.compareCommitsWithBasehead({
                 owner,
                 repo,
-                base: integrationBranch,
-                head: sha,
+                basehead: `${integrationBranch}...${sha}`,
               });
 
               const status = comparison.data.status;
-              const eligible = status === 'behind' || status === 'identical';
+              const eligible = status === 'ahead' || status === 'identical';
 
               if (!eligible) {
                 core.info(
