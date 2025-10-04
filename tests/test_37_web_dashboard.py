@@ -2,6 +2,7 @@ import asyncio
 import os
 
 import json
+import copy
 import time
 from datetime import datetime, timezone
 import io
@@ -143,7 +144,9 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
     asyncio.run(runner())
 
 
-def test_recording_preview_processing_generates_filtered_outputs(dashboard_env):
+def test_recording_preview_processing_generates_filtered_outputs(
+    dashboard_env, monkeypatch
+):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
 
@@ -155,6 +158,16 @@ def test_recording_preview_processing_generates_filtered_outputs(dashboard_env):
         _create_silent_wav(audio_path, duration=0.5)
         waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
         _write_waveform_stub(waveform_path, duration=0.5)
+
+        cfg_snapshot = copy.deepcopy(config.get_cfg())
+        audio_cfg = cfg_snapshot.setdefault("audio", {})
+        audio_cfg["sample_rate"] = 48000
+        audio_cfg["frame_ms"] = 20
+        audio_cfg["filter_chain"] = {
+            "enabled": True,
+            "highpass": {"enabled": True, "cutoff_hz": 120.0},
+        }
+        monkeypatch.setattr(web_streamer, "get_cfg", lambda: cfg_snapshot)
 
         app = web_streamer.build_app()
         client, server = await _start_client(app)

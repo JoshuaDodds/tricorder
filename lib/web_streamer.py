@@ -49,6 +49,7 @@ import threading
 import time
 import wave
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -1659,6 +1660,7 @@ from aiohttp.web import AppKey
 # better with flow control and avoids surfacing TimeoutError to clients.
 web_fileresponse.NOSENDFILE = True
 
+from lib.audio_filter_chain import AudioFilterChain
 from lib.hls_controller import controller
 from lib import webui, sd_card_health
 from lib.config import (
@@ -4257,13 +4259,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         query = request.rel_url.query
         filter_enabled = _preview_param_enabled(query.get("preview_filter"))
         denoise_enabled = _preview_param_enabled(query.get("preview_denoise"))
-        filters = _preview_filter_chain(filter_enabled, denoise_enabled)
-        if filters:
+        processing = _preview_processing_settings(filter_enabled, denoise_enabled)
+        if processing.requires_processing():
             download_requested = query.get("download") == "1"
             return await _serve_preview_audio(
                 request,
                 audio_path,
-                filters,
+                processing,
                 download=download_requested,
             )
 
@@ -4292,15 +4294,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         query = request.rel_url.query
         filter_enabled = _preview_param_enabled(query.get("preview_filter"))
         denoise_enabled = _preview_param_enabled(query.get("preview_denoise"))
-        filters = _preview_filter_chain(filter_enabled, denoise_enabled)
-        if filters:
+        processing = _preview_processing_settings(filter_enabled, denoise_enabled)
+        if processing.requires_processing():
             source_audio = data.get("audio_path")
             if isinstance(source_audio, Path) and source_audio.is_file():
                 return await _serve_preview_waveform(
                     request,
                     waveform_path,
                     source_audio,
-                    filters,
+                    processing,
                 )
 
         try:
@@ -4693,35 +4695,173 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         normalized = value.strip().lower()
         return normalized not in {"", "0", "false", "no", "off"}
 
-    def _preview_filter_chain(filter_enabled: bool, denoise_enabled: bool) -> list[str]:
-        if not (filter_enabled or denoise_enabled):
-            return []
+    @dataclass
+    class _PreviewProcessingSettings:
+        chain: AudioFilterChain | None
+        denoise: bool
+        sample_rate: int
+        frame_ms: int
 
+        def requires_processing(self) -> bool:
+            return self.chain is not None or self.denoise
+
+    def _coerce_positive_int(value: Any, default: int) -> int:
+        try:
+            candidate = int(float(value))
+        except (TypeError, ValueError):
+            return default
+        if candidate <= 0:
+            return default
+        return candidate
+
+    def _preview_processing_settings(
+        filter_enabled: bool, denoise_enabled: bool
+    ) -> _PreviewProcessingSettings:
         cfg_snapshot = get_cfg()
         audio_cfg = cfg_snapshot.get("audio", {}) if isinstance(cfg_snapshot, dict) else {}
-        chain_cfg = audio_cfg.get("filter_chain", {}) if isinstance(audio_cfg, dict) else {}
+        sample_rate = _coerce_positive_int(audio_cfg.get("sample_rate"), 48000)
+        frame_ms = _coerce_positive_int(audio_cfg.get("frame_ms"), 20)
 
-        filters: list[str] = []
-
+        chain: AudioFilterChain | None = None
         if filter_enabled:
-            cutoff_value: float | None = None
-            if isinstance(chain_cfg, dict):
-                highpass_cfg = chain_cfg.get("highpass")
-                if isinstance(highpass_cfg, dict):
-                    raw_cutoff = highpass_cfg.get("cutoff_hz")
-                    try:
-                        cutoff_value = float(raw_cutoff)  # type: ignore[arg-type]
-                    except (TypeError, ValueError):
-                        cutoff_value = None
-            if cutoff_value is None or cutoff_value <= 0:
-                cutoff_value = 80.0
-            filters.append(f"highpass=f={cutoff_value:.6f}")
+            chain_cfg = audio_cfg.get("filter_chain") if isinstance(audio_cfg, dict) else None
+            try:
+                chain = AudioFilterChain.from_config(chain_cfg)
+            except Exception as exc:
+                logging.getLogger("web_streamer").warning(
+                    "Preview filter chain configuration invalid: %s", exc
+                )
+                chain = None
 
-        if denoise_enabled:
-            # Prefer FFT-based denoise which is available in stock ffmpeg builds.
-            filters.append("afftdn")
+        return _PreviewProcessingSettings(
+            chain=chain,
+            denoise=bool(denoise_enabled),
+            sample_rate=sample_rate,
+            frame_ms=frame_ms,
+        )
 
-        return filters
+    def _preview_output_details(source_path: Path) -> tuple[str, str, str]:
+        suffix = source_path.suffix.lower()
+        if suffix == ".webm":
+            return "webm", "audio/webm", ".webm"
+        if suffix == ".opus":
+            return "ogg", "audio/ogg", ".opus"
+        if suffix == ".ogg":
+            return "ogg", "audio/ogg", ".ogg"
+        return "ogg", "audio/ogg", ".ogg"
+
+    def _apply_filter_chain_to_wav(
+        source_wav: Path,
+        dest_wav: Path,
+        *,
+        chain: AudioFilterChain,
+        sample_rate: int,
+        frame_ms: int,
+    ) -> None:
+        frame_samples = max(1, int(round(sample_rate * frame_ms / 1000)))
+        frame_bytes = frame_samples * 2
+
+        with wave.open(str(source_wav), "rb") as handle:
+            params = handle.getparams()
+            if params.nchannels != 1 or params.sampwidth != 2:
+                raise ValueError("preview filter expects mono 16-bit PCM input")
+            if params.framerate != sample_rate:
+                raise ValueError("preview filter sample rate mismatch")
+            pcm_data = handle.readframes(params.nframes)
+
+        processed = bytearray()
+        total = len(pcm_data)
+        offset = 0
+        while offset < total:
+            chunk = pcm_data[offset : offset + frame_bytes]
+            pad_len = 0
+            if len(chunk) < frame_bytes:
+                pad_len = frame_bytes - len(chunk)
+                chunk = chunk + b"\x00" * pad_len
+            filtered = chain.process(sample_rate, frame_bytes, bytes(chunk))
+            if pad_len:
+                filtered = filtered[:-pad_len]
+            processed.extend(filtered)
+            offset += frame_bytes
+
+        with wave.open(str(dest_wav), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(sample_rate)
+            handle.writeframes(bytes(processed))
+
+    async def _apply_preview_processing_to_pcm(
+        source: Path,
+        *,
+        processing: _PreviewProcessingSettings,
+        work_dir: Path,
+        log: logging.Logger,
+        context_label: str,
+    ) -> Path:
+        decoded = work_dir / "decoded.wav"
+        decode_command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-ac",
+            "1",
+            "-ar",
+            str(processing.sample_rate),
+            "-sample_fmt",
+            "s16",
+            str(decoded),
+        ]
+        await _run_ffmpeg(decode_command, context=f"preview decode for {context_label}")
+
+        current = decoded
+        if processing.chain is not None:
+            filtered = work_dir / "filtered.wav"
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    _apply_filter_chain_to_wav,
+                    current,
+                    filtered,
+                    chain=processing.chain,
+                    sample_rate=processing.sample_rate,
+                    frame_ms=processing.frame_ms,
+                )
+            except Exception as exc:
+                log.warning("Preview filter chain failed for %s: %s", context_label, exc)
+                raise web.HTTPInternalServerError(reason="preview processing failed") from exc
+            current = filtered
+
+        if processing.denoise:
+            denoised = work_dir / "denoised.wav"
+            denoise_command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(current),
+                "-af",
+                "afftdn",
+                "-ac",
+                "1",
+                "-ar",
+                str(processing.sample_rate),
+                "-sample_fmt",
+                "s16",
+                str(denoised),
+            ]
+            await _run_ffmpeg(
+                denoise_command, context=f"preview denoise for {context_label}"
+            )
+            current = denoised
+
+        return current
 
     def _is_waveform_sidecar(path: Path) -> bool:
         suffixes = [suffix.lower() for suffix in path.suffixes]
@@ -4753,154 +4893,149 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     async def _serve_preview_audio(
         request: web.Request,
         source_path: Path,
-        filters: list[str],
+        processing: _PreviewProcessingSettings,
         *,
         download: bool,
     ) -> web.StreamResponse:
         log = logging.getLogger("web_streamer")
         if shutil.which("ffmpeg") is None:
-            log.warning("Preview processing requested for %s but ffmpeg is unavailable", source_path)
+            log.warning(
+                "Preview processing requested for %s but ffmpeg is unavailable",
+                source_path,
+            )
             return web.FileResponse(source_path)
 
-        suffix = source_path.suffix.lower()
-        if suffix == ".webm":
-            container_format = "webm"
-            content_type = "audio/webm"
-            temp_suffix = ".webm"
-        else:
-            container_format = "ogg"
-            content_type = "audio/ogg"
-            temp_suffix = ".ogg"
+        container_format, content_type, output_suffix = _preview_output_details(
+            source_path
+        )
 
-        with tempfile.NamedTemporaryFile(
-            prefix="preview_audio_",
-            suffix=temp_suffix,
-            delete=False,
-        ) as tmp_file:
-            tmp_path = Path(tmp_file.name)
+        with tempfile.TemporaryDirectory(prefix="preview_audio_") as tmp_name:
+            tmp_dir = Path(tmp_name)
 
-        try:
-            command = [
+            try:
+                processed_pcm = await _apply_preview_processing_to_pcm(
+                    source_path,
+                    processing=processing,
+                    work_dir=tmp_dir,
+                    log=log,
+                    context_label=str(source_path),
+                )
+            except web.HTTPException:
+                raise
+            except Exception as exc:
+                log.warning("Preview processing failed for %s: %s", source_path, exc)
+                raise web.HTTPInternalServerError(
+                    reason="preview processing failed"
+                ) from exc
+
+            output_path = tmp_dir / f"preview{output_suffix}"
+            encode_command = [
                 "ffmpeg",
                 "-hide_banner",
                 "-loglevel",
                 "error",
                 "-y",
                 "-i",
-                str(source_path),
+                str(processed_pcm),
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "48k",
+                "-vbr",
+                "on",
+                "-application",
+                "audio",
+                "-frame_duration",
+                "20",
+                "-f",
+                container_format,
+                str(output_path),
             ]
-            if filters:
-                command.extend(["-af", ",".join(filters)])
-            command.extend(
-                [
-                    "-ac",
-                    "1",
-                    "-ar",
-                    "48000",
-                    "-sample_fmt",
-                    "s16",
-                    "-c:a",
-                    "libopus",
-                    "-b:a",
-                    "48k",
-                    "-vbr",
-                    "on",
-                    "-application",
-                    "audio",
-                    "-frame_duration",
-                    "20",
-                    "-f",
-                    container_format,
-                    str(tmp_path),
-                ]
+            await _run_ffmpeg(
+                encode_command, context=f"audio preview encode for {source_path}"
             )
 
-            await _run_ffmpeg(command, context=f"audio preview for {source_path}")
-
-            try:
-                fd = os.open(tmp_path, os.O_RDONLY)
-            except OSError as exc:  # pragma: no cover - defensive safeguard
-                raise web.HTTPInternalServerError(reason="preview processing failed") from exc
-
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-
+            stat_result = output_path.stat()
             response = web.StreamResponse(status=200)
-            with os.fdopen(fd, "rb") as file_obj:
-                stat_result = os.fstat(file_obj.fileno())
-                response.headers["Content-Type"] = content_type
-                response.headers["Content-Length"] = str(stat_result.st_size)
-                response.headers.setdefault("Cache-Control", "no-store")
-                disposition = "attachment" if download else "inline"
-                response.headers["Content-Disposition"] = (
-                    f'{disposition}; filename="{source_path.name}"'
-                )
+            response.headers["Content-Type"] = content_type
+            response.headers["Content-Length"] = str(stat_result.st_size)
+            response.headers.setdefault("Cache-Control", "no-store")
+            disposition = "attachment" if download else "inline"
+            response.headers["Content-Disposition"] = (
+                f'{disposition}; filename="{source_path.with_suffix(output_suffix).name}"'
+            )
 
-                await response.prepare(request)
-
+            await response.prepare(request)
+            with output_path.open("rb") as file_obj:
                 while True:
                     chunk = file_obj.read(32768)
                     if not chunk:
                         break
                     await response.write(chunk)
-
-                await response.write_eof()
-
+            await response.write_eof()
             return response
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                tmp_path.unlink()
 
     async def _serve_preview_waveform(
         request: web.Request,
         waveform_path: Path,
         source_audio: Path,
-        filters: list[str],
+        processing: _PreviewProcessingSettings,
     ) -> web.StreamResponse:
         log = logging.getLogger("web_streamer")
         if shutil.which("ffmpeg") is None:
             log.warning(
-                "Preview waveform requested for %s but ffmpeg is unavailable", waveform_path
+                "Preview waveform requested for %s but ffmpeg is unavailable",
+                waveform_path,
             )
             return web.FileResponse(waveform_path)
 
         with tempfile.TemporaryDirectory(prefix="preview_waveform_") as tmp_name:
             tmp_dir = Path(tmp_name)
-            tmp_wav = tmp_dir / "preview.wav"
             tmp_json = tmp_dir / "preview.waveform.json"
 
-            command = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(source_audio),
-            ]
-            if filters:
-                command.extend(["-af", ",".join(filters)])
-            command.extend(["-ac", "1", "-ar", "48000", "-sample_fmt", "s16", str(tmp_wav)])
-
-            await _run_ffmpeg(command, context=f"waveform preview for {source_audio}")
+            try:
+                processed_pcm = await _apply_preview_processing_to_pcm(
+                    source_audio,
+                    processing=processing,
+                    work_dir=tmp_dir,
+                    log=log,
+                    context_label=str(source_audio),
+                )
+            except web.HTTPException:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "Preview waveform processing failed for %s: %s",
+                    waveform_path,
+                    exc,
+                )
+                raise web.HTTPInternalServerError(
+                    reason="preview waveform unavailable"
+                ) from exc
 
             loop = asyncio.get_running_loop()
 
             try:
-                await loop.run_in_executor(None, generate_waveform, tmp_wav, tmp_json)
+                await loop.run_in_executor(
+                    None, generate_waveform, processed_pcm, tmp_json
+                )
             except Exception as exc:
                 log.warning(
-                    "Preview waveform generation failed for %s: %s", waveform_path, exc
+                    "Preview waveform generation failed for %s: %s",
+                    waveform_path,
+                    exc,
                 )
-                raise web.HTTPInternalServerError(reason="preview waveform unavailable") from exc
+                raise web.HTTPInternalServerError(
+                    reason="preview waveform unavailable"
+                ) from exc
 
             try:
                 with tmp_json.open("r", encoding="utf-8") as handle:
                     payload = json.load(handle)
             except (OSError, json.JSONDecodeError) as exc:
-                raise web.HTTPInternalServerError(reason="preview waveform unavailable") from exc
+                raise web.HTTPInternalServerError(
+                    reason="preview waveform unavailable"
+                ) from exc
 
         response = web.json_response(payload)
         response.headers.setdefault("Cache-Control", "no-store")
@@ -4925,25 +5060,27 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         query = request.rel_url.query
         filter_enabled = _preview_param_enabled(query.get("preview_filter"))
         denoise_enabled = _preview_param_enabled(query.get("preview_denoise"))
-        filters = _preview_filter_chain(filter_enabled, denoise_enabled)
+        processing = _preview_processing_settings(filter_enabled, denoise_enabled)
 
         if _path_is_partial(resolved):
             return await _stream_partial_file(request, resolved)
 
-        if filters and _is_waveform_sidecar(resolved):
+        if processing.requires_processing() and _is_waveform_sidecar(resolved):
             source_audio = _waveform_audio_source(resolved)
             if source_audio and source_audio.is_file():
-                return await _serve_preview_waveform(request, resolved, source_audio, filters)
+                return await _serve_preview_waveform(
+                    request, resolved, source_audio, processing
+                )
 
         if not resolved.is_file():
             raise web.HTTPNotFound()
 
-        if filters:
+        if processing.requires_processing():
             download_requested = query.get("download") == "1"
             return await _serve_preview_audio(
                 request,
                 resolved,
-                filters,
+                processing,
                 download=download_requested,
             )
 
