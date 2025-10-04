@@ -2168,9 +2168,8 @@ class TimelineRecorder:
                 )
 
             parallel_started_in_time = bool(
-                self._parallel_encoder_started_at
-                and self.event_started_epoch
-                and self._parallel_encoder_started_at <= self.event_started_epoch
+                self._parallel_encoder_started_at is not None
+                and self._parallel_encoder_has_full_head
                 and not self._parallel_encoder_started_after_first_frame
             )
 
