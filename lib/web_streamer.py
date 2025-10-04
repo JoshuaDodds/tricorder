@@ -4825,12 +4825,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             try:
                 await loop.run_in_executor(
                     None,
-                    _apply_filter_chain_to_wav,
-                    current,
-                    filtered,
-                    chain=processing.chain,
-                    sample_rate=processing.sample_rate,
-                    frame_ms=processing.frame_ms,
+                    functools.partial(
+                        _apply_filter_chain_to_wav,
+                        current,
+                        filtered,
+                        chain=processing.chain,
+                        sample_rate=processing.sample_rate,
+                        frame_ms=processing.frame_ms,
+                    ),
                 )
             except Exception as exc:
                 log.warning("Preview filter chain failed for %s: %s", context_label, exc)
