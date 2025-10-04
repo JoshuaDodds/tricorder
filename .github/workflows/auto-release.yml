@@ -11,6 +11,8 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check merge source
         id: check
@@ -31,18 +33,17 @@ jobs:
               const comparison = await github.rest.repos.compareCommitsWithBasehead({
                 owner,
                 repo,
-                base: sha,
-                head: integrationBranch,
+                base: integrationBranch,
+                head: sha,
               });
 
-              const mergeBaseSha = comparison.data.merge_base_commit?.sha;
-              const eligible = mergeBaseSha === sha;
+              const status = comparison.data.status;
+              const eligible = status === 'behind' || status === 'identical';
 
               if (!eligible) {
-                const status = comparison.data.status;
                 core.info(
-                  `Head commit ${sha} is not contained in ${integrationBranch}. ` +
-                  `Comparison status: ${status}. Merge base: ${mergeBaseSha}`
+                  `Head commit ${sha} is not fully reachable from ${integrationBranch}. ` +
+                  `Comparison status: ${status}.`
                 );
               }
 
