@@ -6,23 +6,52 @@
 
 ## For Automated AI/LLM Agents
 IMPORTANT:
-Before starting to work and after checking out code:
-1. Ensure the `origin` remote exists and points to the GitHub repo. Do not remove it! You will need it later. If it was removed, re-add it.
-
 Naming discipline when tickets are referenced:
-- If any instruction, attachment, or asset mentions a ticket identifier in the format `TR-<int>`, always create the working branch and the eventual PR title with that ticket identifier prepended (e.g., `TR-1234-description`). This reminder applies across the repo.
+- Detect Jira keys in the format `<PROJECT>-<int>` using regex `\b[A-Z][A-Z0-9]+-\d+\b` across instructions, attachments, or assets.
+- If a key is present, immediately transition the Jira issue from **To Do** to **In Progress**, comment “Agent started work on this ticket.”, and (optionally) log setup time.
+- If no key is present, request one or have it added to scope before proceeding.
+- When a key exists, always create the working branch and PR title prefixed with that identifier (e.g., `TR-1234-description`); recommended branch format: `tr-<num>-<short-slug>`.
 
-Before pushing:
-1. Run: git fetch origin && git rebase origin/<base-branch>
-   - If rebase fails, discard local changes and re-run the implementation against the updated branch.
-2. Run tests (export DEV=1 && pytest -q). All tests must pass.
-3. Push back to the same branch on origin with:
-   git push origin HEAD:<branch-name>
+Smart commit policy:
+- All commit messages must include the Jira key(s) and smart commit tags.
+- Format: `git commit -m "<PROJECT>-<int> <imperative summary> #comment <concise what/why> #time <duration you spent working since the last commit was made> #transition In Review"`.
+- The summary must be ≤72 chars and describe the outcome.
+- `#comment` is a one-line reviewer-friendly note describing what changed and why.
+- `#time` logs the actual duration you spent working rounded to the neared minute (for example, `12m`, `45m`, `1h 30m`).
+- On your very last commit before you stop the task and wait for permission to push the change your final commit muct include `#transition In Review`; keep intermediate commits in **In Progress**.
+- Multiple tickets can be referenced by listing each key once (e.g., `TR-101 AUDIO-202 ...`).
+- Ensure the Git author email matches a Jira user for smart-commit linkage.
 
-If you are review another Agent's PR:
+Ticket lifecycle expectations (Board: To Do → In Progress → In Review):
+1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket, add the startup comment, optionally log initial time.
+2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates to add time tracking information between commits.
+3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, total time logged, current status (**In Review**), and links back to the task run and PR/commit diff. Do **not** move to Done.
+4. **Failures** – if transitions fail, comment the error, retry with backoff (3 attempts), and proceed with manual follow-up instructions.
+5. **Fallback** – if Smart Commit automations are unavailable (permissions/workflow), explicitly post Jira comments, worklogs, and transitions using the Jira API.
+
+Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` is available to you and they are preconfigured for codex agents in their work environments already; derive the base URL as `https://mfisbv.atlassian.net` each run instead of reading a `JIRA_BASE_URL` variable. Read tokens from the environment only, redact PAT values in logs, and scope credentials minimally (issue read/write, worklog, transitions). Resolve transition IDs dynamically by name (“In Progress”, “In Review”), and verify capabilities (`/myself`, read issue, list transitions, add comment/worklog) before first use. Remember that Jira ticket keys already embed the project prefix (`ABC-123` ⇒ project key `ABC`, `TR-456` ⇒ project key `TR`). Perform a self-check at startup to confirm transitions map correctly and permissions allow commenting/worklogging. On closeout, ensure total time logged and final status are reported in Jira comments.
+You are expected to strictly adhere to Jira API usage guidelines and not make any changes to the Jira UI. You are expected to send Jira API regularly to keep your work tracked.
+The ENV vars mentioned above are already configured for you. 
+
+Regarding time, we want actual duration between commits rouded to the minute and not an estimate of what it would have taken a human to complete the task.
+
+Before final commit with smart commit messages pushing:
+1. Run tests (export DEV=0 && pytest -q). All tests must pass.
+2. Empty Commit (Fallback)
+If no files are changed and no doc is needed:
+3. Push Workflow
+At the end of the run, the orchestration system should reattach `origin` with credentials and push the `work` branch.  
+    git commit --allow-empty -m "TR-52 Finalization #comment trigger pipeline #time 2m #transition In Review"
+
+Pull request hygiene:
+- PR titles must begin with the Jira key (e.g., `TR-123: Fix …`, `AUDIO-45: Update mixer`).
+- Use the template sections: **What / Why**, **How (high-level)**, **Risk / Rollback**, **Links** (Jira issue, task run, preview URL).
+- Keep commits small and logically grouped; document test coverage changes in `#comment`.
+
+If you are reviewing another agent's PR:
 - Always leave a short review comment summarizing what you did, test results, and risk assessment.
-- If all tests pass and the PR is safe to merge, submit a formal GitHub PR review with "Approve" status (not just a 👍 reaction).
-- If there are issues or risks, submit a "Comment" or "Request changes" review instead, explaining why.
+- If all tests pass and the PR is safe to merge, submit a formal GitHub PR review with “Approve” status (not just a 👍 reaction).
+- If there are issues or risks, submit a “Comment” or “Request changes” review instead, explaining why.
 - Reactions (👍) alone are not sufficient; every PR must have a visible comment and, when ready, a formal approval.
 
 ---
@@ -92,7 +121,7 @@ When modifying architecture or adding features, preserve these qualities: keep m
 ---
 
 ## Testing and validation
-- Run `pytest -q` before submitting changes. If making a targeted change, run the specific module tests as well as the full suite.
+- Run `export DEV=0; pytest -q` before submitting changes. If making a targeted change, run the specific module tests as well as the full suite.
 - If changes affect installation/uninstallation, run `pytest tests/test_00_install.py` and/or `pytest tests/test_50_uninstall.py`.
 - If touching shell scripts/systemd, prefer a dry run on a Raspberry Pi or document why that isn’t feasible.
 - When adding features, add tests in `tests/` and document their intent in `README.md` and `tests/README.md`.
