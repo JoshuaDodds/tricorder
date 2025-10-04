@@ -1784,6 +1784,13 @@ class TimelineRecorder:
                     flush=True,
                 )
 
+            parallel_started_in_time = bool(
+                self._parallel_encoder_started_at
+                and self.event_started_epoch
+                and self._parallel_encoder_started_at <= self.event_started_epoch
+                and not self._parallel_encoder_started_after_first_frame
+            )
+
             if (
                 reuse_mode is None
                 and parallel_result
@@ -1792,6 +1799,7 @@ class TimelineRecorder:
                 and not parallel_head_missing
                 and parallel_partial_path
                 and os.path.exists(parallel_partial_path)
+                and parallel_started_in_time
             ):
                 try:
                     _safe_replace(parallel_partial_path, final_opus_path)
