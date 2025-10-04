@@ -10,11 +10,13 @@ import subprocess
 import wave
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 import threading
 import queue
 import warnings
 from collections.abc import Callable
 from pathlib import Path
+from collections.abc import Callable, Iterable
 from typing import Optional
 import array
 warnings.filterwarnings(
@@ -326,6 +328,249 @@ FILTER_CHAIN_LOG_THROTTLE_SEC = float(
 # buffered writes
 FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
 MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
+
+
+@dataclass
+class StartupRecoveryReport:
+    """Summary of recovery actions performed during startup."""
+
+    requeued: list[str]
+    removed_wavs: list[str]
+    removed_artifacts: list[str]
+
+    def any_actions(self) -> bool:
+        return bool(self.requeued or self.removed_wavs or self.removed_artifacts)
+
+
+def _log_recovery(message: str) -> None:
+    print(f"[recovery] {message}", flush=True)
+
+
+def _estimate_rms_from_file(path: Path) -> int:
+    total = 0
+    count = 0
+    chunk_frames = max(1, FRAME_BYTES // SAMPLE_WIDTH)
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            while True:
+                chunk = wav_file.readframes(chunk_frames)
+                if not chunk:
+                    break
+                samples = array.array("h")
+                samples.frombytes(chunk)
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                count += len(samples)
+                for sample in samples:
+                    total += sample * sample
+    except (OSError, wave.Error):
+        return 0
+    if count <= 0:
+        return 0
+    mean_square = total / count
+    return int(math.sqrt(mean_square))
+
+
+def _derive_final_base(wav_path: Path, rms_value: int) -> str:
+    base = wav_path.stem
+    parts = base.split("_")
+    if len(parts) >= 3:
+        event_ts = parts[0]
+        event_count = parts[-1]
+        event_label = "_".join(parts[1:-1])
+    elif len(parts) == 2:
+        event_ts, event_count = parts
+        event_label = "event"
+    else:
+        event_ts = parts[0] if parts else datetime.now().strftime("%H-%M-%S")
+        event_count = "1"
+        event_label = "event"
+    if not event_count.isdigit():
+        event_count = "1"
+    safe_label = _sanitize_event_tag(event_label or "event") or "event"
+    rms_component = max(0, int(rms_value))
+    return f"{event_ts}_{safe_label}_RMS-{rms_component}_{event_count}"
+
+
+def _collect_streaming_artifacts(
+    day_dir: Path,
+    original_base: str,
+    final_bases: Iterable[str],
+) -> list[Path]:
+    artifacts: list[Path] = []
+    if day_dir.exists():
+        partial_name = f"{original_base}{STREAMING_PARTIAL_SUFFIX}" if STREAMING_PARTIAL_SUFFIX else ""
+        if partial_name:
+            partial_path = day_dir / partial_name
+            artifacts.append(partial_path)
+            artifacts.append(partial_path.with_name(partial_path.name + ".waveform.json"))
+            artifacts.append(partial_path.with_name(partial_path.name + ".transcript.json"))
+        for base in set(final_bases):
+            artifacts.extend(day_dir.glob(f".{base}.filtered*"))
+    return [p for p in artifacts if p.exists()]
+
+
+def _parse_event_identity(stem: str) -> tuple[str | None, str | None]:
+    parts = stem.split("_")
+    if not parts:
+        return None, None
+    event_ts = parts[0] or None
+    event_count = parts[-1] if len(parts) > 1 and parts[-1].isdigit() else None
+    return event_ts, event_count
+
+
+def _find_existing_final_bases(
+    recordings_dir: Path,
+    preferred_day_dir: Path,
+    event_ts: str | None,
+    event_count: str | None,
+    final_extension: str,
+) -> list[str]:
+    if not event_ts:
+        return []
+
+    if not final_extension.startswith("."):
+        final_extension = f".{final_extension}"
+
+    count_pattern = re.escape(event_count) if event_count else r"\d+"
+    pattern = re.compile(
+        rf"^{re.escape(event_ts)}_.+_RMS-\d+_{count_pattern}{re.escape(final_extension)}$"
+    )
+
+    matches: list[str] = []
+    search_dirs: list[Path] = []
+    if preferred_day_dir.exists():
+        search_dirs.append(preferred_day_dir)
+    if recordings_dir.exists():
+        for candidate_day in recordings_dir.iterdir():
+            if not candidate_day.is_dir():
+                continue
+            if candidate_day in search_dirs:
+                continue
+            search_dirs.append(candidate_day)
+
+    for day_dir in search_dirs:
+        for candidate in day_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            if candidate.suffix != final_extension:
+                continue
+            if pattern.match(candidate.name):
+                matches.append(candidate.stem)
+    return matches
+
+
+def _remove_file(path: Path, report: StartupRecoveryReport, *, category: str) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        print(f"[recovery] WARN: failed to remove {category} {path}: {exc!r}", flush=True)
+        return
+    if category == "wav":
+        report.removed_wavs.append(str(path))
+    else:
+        report.removed_artifacts.append(str(path))
+    _log_recovery(f"Removed {category} {path}")
+
+
+def _cleanup_orphan_partials(
+    recordings_dir: Path,
+    handled_stems: set[str],
+    active_final_bases: set[str],
+    report: StartupRecoveryReport,
+) -> None:
+    if not recordings_dir.exists():
+        return
+    partial_suffix = STREAMING_PARTIAL_SUFFIX
+    for day_dir in recordings_dir.iterdir():
+        if not day_dir.is_dir():
+            continue
+        if partial_suffix:
+            for partial in day_dir.glob(f"*{partial_suffix}"):
+                base_name = partial.name[: -len(partial_suffix)]
+                if base_name in handled_stems:
+                    continue
+                _remove_file(partial, report, category="artifact")
+                for extra in (".waveform.json", ".transcript.json"):
+                    aux = partial.with_name(partial.name + extra)
+                    _remove_file(aux, report, category="artifact")
+        for leftover in day_dir.glob(".*.filtered*"):
+            leftover_base = leftover.name[1:].split(".filtered", 1)[0]
+            if leftover_base and leftover_base in active_final_bases:
+                continue
+            _remove_file(leftover, report, category="artifact")
+
+
+def perform_startup_recovery() -> StartupRecoveryReport:
+    """Scan for incomplete recordings and re-queue encode jobs after a crash."""
+
+    report = StartupRecoveryReport(requeued=[], removed_wavs=[], removed_artifacts=[])
+    tmp_root = Path(TMP_DIR)
+    rec_root = Path(REC_DIR)
+    if not tmp_root.exists():
+        return report
+
+    final_extension = STREAMING_EXTENSION if STREAMING_EXTENSION.startswith(".") else f".{STREAMING_EXTENSION}"
+    handled_stems: set[str] = set()
+    active_final_bases: set[str] = set()
+
+    for wav_path in sorted(tmp_root.glob("*.wav")):
+        if not wav_path.is_file():
+            continue
+        handled_stems.add(wav_path.stem)
+        try:
+            stat = wav_path.stat()
+        except OSError as exc:
+            print(f"[recovery] WARN: failed to stat {wav_path}: {exc!r}", flush=True)
+            continue
+
+        if stat.st_size <= 0:
+            _remove_file(wav_path, report, category="wav")
+            continue
+
+        day_dir = rec_root / datetime.fromtimestamp(stat.st_mtime).strftime("%Y%m%d")
+
+        event_ts, event_count = _parse_event_identity(wav_path.stem)
+        existing_final_bases = _find_existing_final_bases(
+            rec_root,
+            day_dir,
+            event_ts,
+            event_count,
+            final_extension,
+        )
+
+        artifact_bases: list[str] = list(existing_final_bases)
+        final_base: str | None = None
+        if not existing_final_bases:
+            rms_value = _estimate_rms_from_file(wav_path)
+            final_base = _derive_final_base(wav_path, rms_value)
+            artifact_bases.append(final_base)
+
+        for artifact in _collect_streaming_artifacts(day_dir, wav_path.stem, artifact_bases):
+            _remove_file(artifact, report, category="artifact")
+
+        if existing_final_bases:
+            _remove_file(wav_path, report, category="wav")
+            continue
+
+        day_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            assert final_base is not None
+            _enqueue_encode_job(str(wav_path), final_base, source="recovery")
+        except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
+            print(
+                f"[recovery] WARN: failed to enqueue encode job for {final_base}: {exc!r}",
+                flush=True,
+            )
+            continue
+        report.requeued.append(final_base)
+        active_final_bases.add(final_base)
+        _log_recovery(f"Requeued encode for {final_base}")
+
+    _cleanup_orphan_partials(rec_root, handled_stems, active_final_bases, report)
+    return report
 
 # Debug logging gate (DEV=1 or logging.dev_mode)
 DEBUG_VERBOSE = (cfg["logging"]["dev_mode"])

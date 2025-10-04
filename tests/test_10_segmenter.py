@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 import pytest
 
 import collections
+import os
+from datetime import datetime
 from pathlib import Path
+import wave
 
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 import lib.segmenter as segmenter
@@ -226,6 +229,16 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
 
     assert "existing_opus_path" in captured
     assert captured.get("existing_opus_path") is None, "fallback encode should not reuse streaming output"
+
+
+def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(segmenter.SAMPLE_WIDTH)
+        wav_file.setframerate(segmenter.SAMPLE_RATE)
+        sample_bytes = sample.to_bytes(2, "little", signed=True)
+        wav_file.writeframes(sample_bytes * frames)
 
 
 def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
