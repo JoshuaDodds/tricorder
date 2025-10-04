@@ -3,6 +3,7 @@ import builtins
 import json
 import re
 
+import datetime as real_datetime
 import os
 import pytest
 
@@ -96,6 +97,10 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
                     return "12-34-56"
 
             return _Stamp()
+
+        @classmethod
+        def fromtimestamp(cls, ts, tz=None):
+            return real_datetime.datetime.fromtimestamp(ts, tz)
 
     monkeypatch.setattr(segmenter, "datetime", _FakeDatetime)
 

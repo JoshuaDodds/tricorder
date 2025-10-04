@@ -994,6 +994,7 @@ class TimelineRecorder:
         self._parallel_encoder: StreamingOpusEncoder | None = None
         self._parallel_partial_path: str | None = None
         self._parallel_encoder_started_at: float | None = None
+        self._parallel_encoder_started_after_first_frame: bool = False
         self._parallel_encoder_drops: int = 0
         self._parallel_last_check: float = 0.0
 
@@ -1397,6 +1398,7 @@ class TimelineRecorder:
         self._parallel_encoder = encoder
         self._parallel_partial_path = partial_path
         self._parallel_encoder_started_at = time.time()
+        self._parallel_encoder_started_after_first_frame = self.frames_written > 0
         self._parallel_encoder_drops = 0
         print(
             f"[segmenter] Parallel encode started for {self.base_name}",
@@ -1758,6 +1760,13 @@ class TimelineRecorder:
                     flush=True,
                 )
 
+            parallel_started_in_time = bool(
+                self._parallel_encoder_started_at
+                and self.event_started_epoch
+                and self._parallel_encoder_started_at <= self.event_started_epoch
+                and not self._parallel_encoder_started_after_first_frame
+            )
+
             if (
                 reuse_mode is None
                 and parallel_result
@@ -1765,6 +1774,7 @@ class TimelineRecorder:
                 and not parallel_drop_detected
                 and parallel_partial_path
                 and os.path.exists(parallel_partial_path)
+                and parallel_started_in_time
             ):
                 try:
                     _safe_replace(parallel_partial_path, final_opus_path)
@@ -1925,6 +1935,7 @@ class TimelineRecorder:
         self._parallel_partial_path = None
         self._parallel_encoder_drops = 0
         self._parallel_encoder_started_at = None
+        self._parallel_encoder_started_after_first_frame = False
         self._parallel_last_check = 0.0
         self.active = False
         self.post_count = 0
