@@ -75,7 +75,7 @@ say "Install/Update into $BASE"
 
 if [[ "${DEV:-0}" != "1" ]]; then
   # system packages (only if missing)
-  PKGS=(ffmpeg alsa-utils python3-venv python3-pip)
+  PKGS=(ffmpeg alsa-utils python3-venv python3-pip certbot)
   MISSING=()
   for p in "${PKGS[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || MISSING+=("$p"); done
   if ((${#MISSING[@]})); then
