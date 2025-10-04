@@ -11,6 +11,7 @@ Naming discipline when tickets are referenced:
 - If a key is present, immediately transition the Jira issue from **To Do** to **In Progress**, comment “Agent started work on this ticket.”, and (optionally) log setup time.
 - If no key is present, request one or have it added to scope before proceeding.
 - When a key exists, always create the working branch and PR title prefixed with that identifier (e.g., `TR-1234-description`); recommended branch format: `tr-<num>-<short-slug>`.
+- When a key exists always use the Jira key in the PR title and your own Task name in the CODEX web ui task list.  
 
 Smart commit policy:
 - All commit messages must include the Jira key(s) and smart commit tags.
