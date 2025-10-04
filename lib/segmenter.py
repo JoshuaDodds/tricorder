@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import errno
 import json
 import math
 import os
 import re
 import sys
 import time
+import shutil
 import collections
 import subprocess
 import wave
@@ -61,6 +63,17 @@ def _sanitize_event_tag(tag: str) -> str:
     sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
     sanitized = sanitized.strip("_-")
     return sanitized or "event"
+
+
+def _safe_replace(src: str, dst: str) -> None:
+    """Move a file to ``dst``, tolerating cross-filesystem boundaries."""
+
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.move(src, dst)
 
 
 @dataclass(frozen=True)
@@ -1727,7 +1740,7 @@ class TimelineRecorder:
                 and os.path.exists(partial_stream_path)
             ):
                 try:
-                    os.replace(partial_stream_path, final_opus_path)
+                    _safe_replace(partial_stream_path, final_opus_path)
                     reuse_mode = "streaming"
                     final_stream_path = final_opus_path
                     print(
@@ -1754,7 +1767,7 @@ class TimelineRecorder:
                 and os.path.exists(parallel_partial_path)
             ):
                 try:
-                    os.replace(parallel_partial_path, final_opus_path)
+                    _safe_replace(parallel_partial_path, final_opus_path)
                     reuse_mode = "parallel"
                     final_stream_path = final_opus_path
                     print(
