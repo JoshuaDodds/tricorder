@@ -51,19 +51,24 @@ jobs:
 
               const parentShas = commit.data.parents.map((parent) => parent.sha);
 
-              let eligible = parentShas.includes(stagingSha);
+              let eligible = false;
 
-              if (!eligible) {
+              if (parentShas.length >= 2) {
                 for (const parentSha of parentShas) {
+                  if (parentSha === stagingSha) {
+                    eligible = true;
+                    break;
+                  }
+
                   try {
-                    const parentComparison = await github.rest.repos.compareCommitsWithBasehead({
+                    const comparison = await github.rest.repos.compareCommitsWithBasehead({
                       owner,
                       repo,
                       basehead: `${parentSha}...${integrationBranch}`,
                     });
 
-                    const { status, behind_by: behindBy } = parentComparison.data;
-                    const parentReachable = behindBy === 0 && (status === 'ahead' || status === 'identical');
+                    const { status, behind_by: behindBy } = comparison.data;
+                    const parentReachable = behindBy === 0 && status !== 'diverged';
 
                     if (parentReachable) {
                       eligible = true;
@@ -75,13 +80,15 @@ jobs:
                     );
                   }
                 }
-              }
 
-              if (!eligible) {
+                if (!eligible) {
+                  core.info(
+                    `Head commit ${sha} parents ${parentShas.join(', ')} are not reachable from ${integrationBranch}.`
+                  );
+                }
+              } else {
                 core.info(
-                  `Head commit ${sha} is not a merge of ${integrationBranch}. ` +
-                    `Staging head: ${stagingSha}. ` +
-                    `Parent commits: ${parentShas.length ? parentShas.join(', ') : 'none'}.`
+                  `Head commit ${sha} is not a merge commit (parents: ${parentShas.length}). Skipping release.`
                 );
               }
 
