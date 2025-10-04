@@ -30,20 +30,58 @@ jobs:
             }
 
             try {
-              const comparison = await github.rest.repos.compareCommitsWithBasehead({
+              const branch = await github.rest.repos.getBranch({
                 owner,
                 repo,
-                basehead: `${integrationBranch}...${sha}`,
+                branch: integrationBranch,
               });
 
-              const { status, behind_by: behindBy, ahead_by: aheadBy } = comparison.data;
-              const eligible = (status === 'ahead' || status === 'identical') && behindBy === 0;
+              const stagingSha = branch.data.commit.sha;
+
+              if (sha === stagingSha) {
+                core.setOutput('eligible', 'true');
+                return;
+              }
+
+              const commit = await github.rest.repos.getCommit({
+                owner,
+                repo,
+                ref: sha,
+              });
+
+              const parentShas = commit.data.parents.map((parent) => parent.sha);
+
+              let eligible = parentShas.includes(stagingSha);
+
+              if (!eligible) {
+                for (const parentSha of parentShas) {
+                  try {
+                    const parentComparison = await github.rest.repos.compareCommitsWithBasehead({
+                      owner,
+                      repo,
+                      basehead: `${parentSha}...${integrationBranch}`,
+                    });
+
+                    const { status, behind_by: behindBy } = parentComparison.data;
+                    const parentReachable = (status === 'ahead' || status === 'identical') && behindBy === 0;
+
+                    if (parentReachable) {
+                      eligible = true;
+                      break;
+                    }
+                  } catch (compareError) {
+                    core.info(
+                      `Failed to compare ${integrationBranch} with parent ${parentSha}: ${compareError.message}`
+                    );
+                  }
+                }
+              }
 
               if (!eligible) {
                 core.info(
-                  `Head commit ${sha} is not fully reachable from ${integrationBranch}. ` +
-                  `Comparison status: ${status}. ` +
-                  `behind_by=${behindBy}, ahead_by=${aheadBy}.`
+                  `Head commit ${sha} is not a merge of ${integrationBranch}. ` +
+                    `Staging head: ${stagingSha}. ` +
+                    `Parent commits: ${parentShas.length ? parentShas.join(', ') : 'none'}.`
                 );
               }
 
