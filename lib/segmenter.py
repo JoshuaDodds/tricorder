@@ -995,6 +995,7 @@ class TimelineRecorder:
         self._parallel_partial_path: str | None = None
         self._parallel_encoder_started_at: float | None = None
         self._parallel_encoder_started_frame: int | None = None
+        self._parallel_encoder_started_after_first_frame: bool = False
         self._parallel_encoder_has_full_head: bool = False
         self._parallel_encoder_drops: int = 0
         self._parallel_last_check: float = 0.0
@@ -1401,6 +1402,7 @@ class TimelineRecorder:
         self._parallel_partial_path = partial_path
         self._parallel_encoder_started_at = time.time()
         self._parallel_encoder_started_frame = frames_before_start
+        self._parallel_encoder_started_after_first_frame = frames_before_start > 0
         self._parallel_encoder_has_full_head = frames_before_start == 0
         self._parallel_encoder_drops = 0
         print(
@@ -1961,6 +1963,7 @@ class TimelineRecorder:
         self._parallel_encoder_drops = 0
         self._parallel_encoder_started_at = None
         self._parallel_encoder_started_frame = None
+        self._parallel_encoder_started_after_first_frame = False
         self._parallel_encoder_has_full_head = False
         self._parallel_last_check = 0.0
         self.active = False
