@@ -327,6 +327,68 @@ def test_resolve_web_server_runtime_requires_manual_paths():
 
 
 @pytest.mark.asyncio
+async def test_web_server_update_triggers_streamer_restart(monkeypatch, aiohttp_client):
+    base_cfg = copy.deepcopy(web_streamer.get_cfg())
+    base_cfg.setdefault("web_server", web_streamer._web_server_defaults())
+
+    def fake_get_cfg():
+        return copy.deepcopy(base_cfg)
+
+    monkeypatch.setattr(web_streamer, "get_cfg", fake_get_cfg, raising=False)
+    monkeypatch.setattr(web_streamer, "reload_cfg", fake_get_cfg, raising=False)
+
+    recorded: dict[str, object] = {}
+
+    def fake_update(settings):
+        recorded["settings"] = copy.deepcopy(settings)
+        base_cfg.setdefault("web_server", {}).update(settings)
+        return base_cfg["web_server"]
+
+    monkeypatch.setattr(web_streamer, "update_web_server_settings", fake_update)
+
+    async def fake_restart(units):
+        recorded["restart_units"] = list(units)
+        return [
+            {
+                "unit": unit,
+                "ok": True,
+                "stdout": "",
+                "stderr": "",
+                "message": "",
+                "returncode": 0,
+            }
+            for unit in units
+        ]
+
+    monkeypatch.setattr(web_streamer, "_restart_units", fake_restart)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.post(
+        "/api/config/web-server",
+        json={
+            "mode": "https",
+            "listen_host": "0.0.0.0",
+            "listen_port": 9443,
+            "tls_provider": "letsencrypt",
+            "lets_encrypt": {
+                "enabled": True,
+                "email": "ops@example.com",
+                "domains": ["recorder.local"],
+                "http_port": 8080,
+                "renew_before_days": 15,
+            },
+        },
+    )
+
+    payload = await response.json()
+    assert response.status == 200, payload
+    assert recorded.get("restart_units") == ["web-streamer.service"]
+    restart_units = [entry.get("unit") for entry in payload.get("restart_results", [])]
+    assert "web-streamer.service" in restart_units
+
+
+@pytest.mark.asyncio
 async def test_lets_encrypt_renewal_reloads_ssl_context(monkeypatch, tmp_path):
     cert_path = tmp_path / "fullchain.pem"
     key_path = tmp_path / "privkey.pem"

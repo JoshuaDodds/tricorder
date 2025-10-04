@@ -4734,16 +4734,18 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload = _archival_response_payload(refreshed)
         return web.json_response(payload)
 
+    recorder_unit = "voice-recorder.service"
+    web_streamer_unit = "web-streamer.service"
     section_restart_units: dict[str, Sequence[str]] = {
-        "audio": ["voice-recorder.service"],
-        "segmenter": ["voice-recorder.service"],
-        "adaptive_rms": ["voice-recorder.service"],
+        "audio": [recorder_unit],
+        "segmenter": [recorder_unit],
+        "adaptive_rms": [recorder_unit],
         "ingest": ["dropbox.path", "dropbox.service"],
-        "transcription": ["voice-recorder.service"],
-        "logging": ["voice-recorder.service"],
-        "streaming": ["voice-recorder.service", "web-streamer.service"],
-        "dashboard": ["web-streamer.service"],
-        "web_server": ["web-streamer.service"],
+        "transcription": [recorder_unit],
+        "logging": [recorder_unit],
+        "streaming": [recorder_unit, web_streamer_unit],
+        "dashboard": [web_streamer_unit],
+        "web_server": [web_streamer_unit],
     }
 
     async def _settings_get(
