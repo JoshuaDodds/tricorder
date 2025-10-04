@@ -1349,14 +1349,17 @@ class TimelineRecorder:
         normalized = load1 / max(1, cpus)
         return normalized <= PARALLEL_ENCODE_LOAD_THRESHOLD
 
-    def _maybe_start_parallel_encode(self, *, force: bool = False) -> None:
+    def _maybe_start_parallel_encode(
+        self, *, force: bool = False, pending_frames: int = 0
+    ) -> None:
         if not self._parallel_encode_allowed:
             return
         if self._parallel_encoder is not None:
             return
         if not self.base_name or not self.tmp_wav_path:
             return
-        if self.frames_written < PARALLEL_ENCODE_MIN_FRAMES:
+        total_frames = self.frames_written + max(0, pending_frames)
+        if total_frames < PARALLEL_ENCODE_MIN_FRAMES:
             return
         now = time.monotonic()
         if not force and (now - self._parallel_last_check) < PARALLEL_ENCODE_CHECK_INTERVAL:
@@ -1523,6 +1526,10 @@ class TimelineRecorder:
                         self._streaming_encoder = None
                         self._streaming_day_dir = None
 
+                prebuf_frames = len(self.prebuf)
+                self._maybe_start_parallel_encode(
+                    force=True, pending_frames=prebuf_frames
+                )
                 if self.prebuf:
                     for f in self.prebuf:
                         self._q_send(bytes(f))
