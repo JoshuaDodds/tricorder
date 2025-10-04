@@ -743,6 +743,16 @@
               Recently removed recordings are staged here until you restore them.
             </p>
           </div>
+          <div class="stat stat-counts recycle-bin-counts" role="status" aria-live="polite">
+            <div class="stat-count-row">
+              <span class="label">Recordings</span>
+              <span class="value" id="recycle-bin-total-count">0</span>
+            </div>
+            <div class="stat-count-row">
+              <span class="label">Selected</span>
+              <span class="value" id="recycle-bin-selected-count">0</span>
+            </div>
+          </div>
           <div class="recycle-bin-header-actions">
             <button id="recycle-bin-refresh" class="ghost-button small" type="button">Refresh</button>
             <button id="recycle-bin-restore" class="primary-button small" type="button" disabled>

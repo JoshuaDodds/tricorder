@@ -670,7 +670,7 @@ body[data-theme="light"] .app-menu-toggle {
   gap: 1rem;
 }
 
-.status-bar .stat {
+.stat {
   background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 1rem;
@@ -681,19 +681,19 @@ body[data-theme="light"] .app-menu-toggle {
   gap: 0.25rem;
 }
 
-.status-bar .label {
+.stat .label {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
 }
 
-.status-bar .value {
+.stat .value {
   font-size: 1.5rem;
   font-weight: 600;
 }
 
-.status-bar .stat-counts {
+.stat.stat-counts {
   gap: 0.75rem;
 }
 
@@ -704,8 +704,8 @@ body[data-theme="light"] .app-menu-toggle {
   gap: 0.75rem;
 }
 
-.status-bar .stat-counts .value,
-.status-bar .stat-resource .value {
+.stat.stat-counts .value,
+.stat.stat-resource .value {
   font-size: 1.3rem;
 }
 
@@ -2021,7 +2021,17 @@ body[data-scroll-locked="true"] {
 
 .recycle-bin-header {
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: 1rem;
+}
+
+.recycle-bin-header .card-heading {
+  flex: 1 1 220px;
+}
+
+.recycle-bin-counts {
+  min-width: 180px;
+  flex: 0 0 auto;
 }
 
 .recycle-bin-header-actions {
