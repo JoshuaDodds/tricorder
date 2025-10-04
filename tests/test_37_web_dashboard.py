@@ -143,6 +143,58 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
     asyncio.run(runner())
 
 
+def test_recording_preview_processing_generates_filtered_outputs(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240111"
+        day_dir.mkdir()
+
+        audio_path = day_dir / "tone.wav"
+        _create_silent_wav(audio_path, duration=0.5)
+        waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+        _write_waveform_stub(waveform_path, duration=0.5)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            rel_audio = f"{day_dir.name}/{audio_path.name}"
+
+            base_resp = await client.get(f"/recordings/{rel_audio}")
+            assert base_resp.status == 200
+            original_bytes = await base_resp.read()
+            assert original_bytes == audio_path.read_bytes()
+
+            filter_resp = await client.get(f"/recordings/{rel_audio}?preview_filter=1")
+            assert filter_resp.status == 200
+            filtered_bytes = await filter_resp.read()
+            assert filtered_bytes.startswith(b"OggS"), "expected libopus container"
+            assert filtered_bytes != original_bytes
+
+            denoise_resp = await client.get(f"/recordings/{rel_audio}?preview_denoise=1")
+            assert denoise_resp.status == 200
+            denoised_bytes = await denoise_resp.read()
+            assert denoised_bytes.startswith(b"OggS")
+            assert denoised_bytes != original_bytes
+
+            waveform_path.unlink()
+
+            preview_waveform = await client.get(
+                f"/recordings/{rel_audio}.waveform.json?preview_filter=1"
+            )
+            assert preview_waveform.status == 200
+            waveform_payload = await preview_waveform.json()
+            assert waveform_payload.get("duration_seconds") == pytest.approx(0.5, rel=0.05)
+            assert isinstance(waveform_payload.get("peaks"), list)
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_search_matches_transcripts(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240103"
