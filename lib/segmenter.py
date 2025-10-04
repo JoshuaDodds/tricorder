@@ -994,7 +994,8 @@ class TimelineRecorder:
         self._parallel_encoder: StreamingOpusEncoder | None = None
         self._parallel_partial_path: str | None = None
         self._parallel_encoder_started_at: float | None = None
-        self._parallel_encoder_started_after_first_frame: bool = False
+        self._parallel_encoder_started_frame: int | None = None
+        self._parallel_encoder_has_full_head: bool = False
         self._parallel_encoder_drops: int = 0
         self._parallel_last_check: float = 0.0
 
@@ -1395,15 +1396,25 @@ class TimelineRecorder:
                 flush=True,
             )
             return
+        frames_before_start = max(0, self.frames_written - max(0, pending_frames))
         self._parallel_encoder = encoder
         self._parallel_partial_path = partial_path
         self._parallel_encoder_started_at = time.time()
-        self._parallel_encoder_started_after_first_frame = self.frames_written > 0
+        self._parallel_encoder_started_frame = frames_before_start
+        self._parallel_encoder_has_full_head = frames_before_start == 0
         self._parallel_encoder_drops = 0
         print(
             f"[segmenter] Parallel encode started for {self.base_name}",
             flush=True,
         )
+        if frames_before_start > 0:
+            print(
+                (
+                    "[segmenter] WARN: parallel encoder started after "
+                    f"{frames_before_start} frames; reuse will be skipped"
+                ),
+                flush=True,
+            )
 
     def _q_send(self, item):
         try:
@@ -1624,6 +1635,7 @@ class TimelineRecorder:
         final_stream_path: str | None = None
         streaming_drop_detected = False
         parallel_drop_detected = False
+        parallel_head_missing = False
         day_dir = self._streaming_day_dir
         if self._streaming_encoder:
             try:
@@ -1688,6 +1700,18 @@ class TimelineRecorder:
             parallel_partial_path = parallel_result.partial_path
             if parallel_result.dropped_chunks or self._parallel_encoder_drops:
                 parallel_drop_detected = True
+            elif not self._parallel_encoder_has_full_head:
+                parallel_head_missing = True
+                missing_frames = self._parallel_encoder_started_frame or 0
+                missing_ms = missing_frames * FRAME_MS
+                print(
+                    (
+                        "[segmenter] WARN: parallel encoder started after event "
+                        f"began (~{missing_frames} frames / {missing_ms}ms); "
+                        "falling back to offline encode"
+                    ),
+                    flush=True,
+                )
 
         if parallel_drop_detected and parallel_result:
             detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
@@ -1772,6 +1796,7 @@ class TimelineRecorder:
                 and parallel_result
                 and parallel_result.success
                 and not parallel_drop_detected
+                and not parallel_head_missing
                 and parallel_partial_path
                 and os.path.exists(parallel_partial_path)
                 and parallel_started_in_time
@@ -1935,7 +1960,8 @@ class TimelineRecorder:
         self._parallel_partial_path = None
         self._parallel_encoder_drops = 0
         self._parallel_encoder_started_at = None
-        self._parallel_encoder_started_after_first_frame = False
+        self._parallel_encoder_started_frame = None
+        self._parallel_encoder_has_full_head = False
         self._parallel_last_check = 0.0
         self.active = False
         self.post_count = 0
