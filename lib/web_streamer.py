@@ -1846,6 +1846,27 @@ def _resolve_start_metadata(
 def _scan_recordings_worker(
     recordings_root: Path, allowed_ext: tuple[str, ...]
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
+    log = logging.getLogger("web_streamer")
+
+    def _iter_candidate_files() -> Iterable[Path]:
+        def _on_error(error: OSError) -> None:
+            location = getattr(error, "filename", None) or recordings_root
+            log.warning(
+                "recordings scan: unable to access %s (%s)",
+                location,
+                error,
+            )
+
+        for dirpath, dirnames, filenames in os.walk(
+            recordings_root, onerror=_on_error
+        ):
+            dir_path = Path(dirpath)
+            if RECYCLE_BIN_DIRNAME in dir_path.parts:
+                continue
+            dirnames[:] = [name for name in dirnames if name != RECYCLE_BIN_DIRNAME]
+            for filename in filenames:
+                yield dir_path / filename
+
     entries: list[dict[str, object]] = []
     day_set: set[str] = set()
     ext_set: set[str] = set()
@@ -1853,10 +1874,16 @@ def _scan_recordings_worker(
     if not recordings_root.exists():
         return entries, [], [], 0
 
-    for path in recordings_root.rglob("*"):
-        if RECYCLE_BIN_DIRNAME in path.parts:
-            continue
-        if not path.is_file():
+    for path in _iter_candidate_files():
+        try:
+            if not path.is_file():
+                continue
+        except OSError as error:
+            log.warning(
+                "recordings scan: unable to stat candidate %s (%s)",
+                path,
+                error,
+            )
             continue
         suffix = path.suffix.lower()
         if allowed_ext and suffix not in allowed_ext:
