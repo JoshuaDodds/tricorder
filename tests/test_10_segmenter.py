@@ -3,6 +3,7 @@ import builtins
 import json
 import re
 
+import os
 import pytest
 
 import collections
@@ -62,6 +63,100 @@ def test_flush_does_not_block_on_encode(monkeypatch):
     job_id, timeout = observed["call"]
     assert job_id > 0
     assert timeout == segmenter.SHUTDOWN_ENCODE_START_TIMEOUT
+
+
+def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", True)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_CHECK_INTERVAL", 0.0)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_LOAD_THRESHOLD", 1.0)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt: "20240102")
+    monkeypatch.setattr(segmenter.os, "getloadavg", lambda: (0.1, 0.1, 0.1))
+    monkeypatch.setattr(segmenter.os, "cpu_count", lambda: 4)
+
+    class _FakeDatetime:
+        @classmethod
+        def now(cls):
+            class _Stamp:
+                def strftime(self, fmt: str) -> str:
+                    return "12-34-56"
+
+            return _Stamp()
+
+    monkeypatch.setattr(segmenter, "datetime", _FakeDatetime)
+
+    captured_encoder: dict[str, object] = {}
+
+    class FakeStreamingEncoder:
+        def __init__(self, partial_path: str, *, container_format: str = "opus") -> None:
+            self.partial_path = partial_path
+            self.container_format = container_format
+            self.started = False
+            self.feed_chunks: list[bytes] = []
+            captured_encoder["instance"] = self
+
+        def start(self, command: list[str] | None = None) -> None:
+            self.started = True
+
+        def feed(self, chunk: bytes) -> bool:
+            self.feed_chunks.append(bytes(chunk))
+            return True
+
+        def close(self, *, timeout: float | None = None) -> segmenter.StreamingEncoderResult:
+            path = Path(self.partial_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"parallel-data")
+            return segmenter.StreamingEncoderResult(
+                partial_path=self.partial_path,
+                success=True,
+                returncode=0,
+                error=None,
+                stderr=None,
+                bytes_sent=sum(len(chunk) for chunk in self.feed_chunks),
+                dropped_chunks=0,
+            )
+
+    monkeypatch.setattr(segmenter, "StreamingOpusEncoder", FakeStreamingEncoder)
+
+    captured_job: dict[str, object] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
+        captured_job["base"] = base_name
+        captured_job["existing"] = existing_opus_path
+        captured_job["source"] = source
+        return 42
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
+
+    rec = TimelineRecorder()
+    for idx in range(4):
+        rec.ingest(make_frame(2000), idx)
+
+    rec.flush(10)
+
+    encoder = captured_encoder.get("instance")
+    assert encoder is not None and getattr(encoder, "started", False)
+
+    existing_path = captured_job.get("existing")
+    assert existing_path, "expected parallel output to be reused"
+    assert Path(existing_path).exists()
+    assert existing_path.endswith(segmenter.STREAMING_EXTENSION)
+    assert Path(existing_path).parent == rec_dir / "20240102"
 
 
 def test_adaptive_threshold_updates(monkeypatch):

@@ -147,6 +147,27 @@ STREAMING_CONTAINER_FORMAT = _STREAMING_FORMAT
 STREAMING_EXTENSION = ".opus" if STREAMING_CONTAINER_FORMAT == "opus" else ".webm"
 STREAMING_PARTIAL_SUFFIX = f".partial{STREAMING_EXTENSION}"
 
+_PARALLEL_CFG = cfg["segmenter"].get("parallel_encode", {})
+PARALLEL_ENCODE_ENABLED = bool(_PARALLEL_CFG.get("enabled", True))
+PARALLEL_ENCODE_LOAD_THRESHOLD = float(
+    _PARALLEL_CFG.get("load_avg_per_cpu", 0.75)
+)
+PARALLEL_ENCODE_CHECK_INTERVAL = max(
+    0.0, float(_PARALLEL_CFG.get("cpu_check_interval_sec", 1.0))
+)
+PARALLEL_ENCODE_MIN_SECONDS = max(
+    0.0, float(_PARALLEL_CFG.get("min_event_seconds", 1.0))
+)
+if PARALLEL_ENCODE_MIN_SECONDS <= 0.0:
+    PARALLEL_ENCODE_MIN_FRAMES = 1
+else:
+    PARALLEL_ENCODE_MIN_FRAMES = max(
+        1, int(round((PARALLEL_ENCODE_MIN_SECONDS * 1000.0) / FRAME_MS))
+    )
+PARALLEL_ENCODE_SUFFIX = f".parallel{STREAMING_EXTENSION}"
+PARALLEL_PARTIAL_SUFFIX = f"{PARALLEL_ENCODE_SUFFIX}.partial"
+PARALLEL_TMP_DIR = os.path.join(TMP_DIR, "parallel")
+
 # PRE_PAD / POST_PAD
 PRE_PAD = int(cfg["segmenter"]["pre_pad_ms"])
 POST_PAD = int(cfg["segmenter"]["post_pad_ms"])
@@ -954,6 +975,15 @@ class TimelineRecorder:
         self._streaming_encoder: StreamingOpusEncoder | None = None
         self._streaming_day_dir: str | None = None
 
+        self._parallel_encode_allowed = bool(
+            PARALLEL_ENCODE_ENABLED and not self._streaming_enabled
+        )
+        self._parallel_encoder: StreamingOpusEncoder | None = None
+        self._parallel_partial_path: str | None = None
+        self._parallel_encoder_started_at: float | None = None
+        self._parallel_encoder_drops: int = 0
+        self._parallel_last_check: float = 0.0
+
         self._adaptive = AdaptiveRmsController(
             frame_ms=FRAME_MS,
             initial_linear_threshold=STATIC_RMS_THRESH,
@@ -1169,6 +1199,24 @@ class TimelineRecorder:
         except OSError:
             return None
 
+    def _current_partial_path(self, capturing: bool) -> str | None:
+        if not capturing:
+            return None
+        if self._streaming_encoder:
+            return self._streaming_encoder.partial_path
+        if self._parallel_encoder and self._parallel_partial_path:
+            return self._parallel_partial_path
+        return None
+
+    def _current_partial_format(self, capturing: bool) -> str | None:
+        if not capturing:
+            return None
+        if self._streaming_encoder:
+            return STREAMING_CONTAINER_FORMAT
+        if self._parallel_encoder:
+            return "opus"
+        return None
+
     def _maybe_update_live_metrics(self, rms_value: int) -> None:
         if self._status_mode != "live":
             return
@@ -1201,14 +1249,8 @@ class TimelineRecorder:
                     else None
                 ),
                 "event_size_bytes": self._current_event_size() if capturing else None,
-                "partial_recording_path": (
-                    self._streaming_encoder.partial_path
-                    if capturing and self._streaming_encoder
-                    else None
-                ),
-                "streaming_container_format": (
-                    STREAMING_CONTAINER_FORMAT if capturing and self._streaming_encoder else None
-                ),
+                "partial_recording_path": self._current_partial_path(capturing),
+                "streaming_container_format": self._current_partial_format(capturing),
                 "filter_chain_avg_ms": round(self._filter_avg_ms, 3),
                 "filter_chain_peak_ms": round(self._filter_peak_ms, 3),
                 "filter_chain_avg_budget_ms": FILTER_CHAIN_AVG_BUDGET_MS,
@@ -1295,6 +1337,55 @@ class TimelineRecorder:
             }
             print(json.dumps(payload), flush=True)
             self._filter_last_log_ts = now
+
+    def _parallel_cpu_ready(self) -> bool:
+        if PARALLEL_ENCODE_LOAD_THRESHOLD <= 0.0:
+            return True
+        try:
+            load1, _, _ = os.getloadavg()
+        except (AttributeError, OSError):
+            return True
+        cpus = os.cpu_count() or 1
+        normalized = load1 / max(1, cpus)
+        return normalized <= PARALLEL_ENCODE_LOAD_THRESHOLD
+
+    def _maybe_start_parallel_encode(self, *, force: bool = False) -> None:
+        if not self._parallel_encode_allowed:
+            return
+        if self._parallel_encoder is not None:
+            return
+        if not self.base_name or not self.tmp_wav_path:
+            return
+        if self.frames_written < PARALLEL_ENCODE_MIN_FRAMES:
+            return
+        now = time.monotonic()
+        if not force and (now - self._parallel_last_check) < PARALLEL_ENCODE_CHECK_INTERVAL:
+            return
+        self._parallel_last_check = now
+        if not self._parallel_cpu_ready():
+            return
+        partial_path = os.path.join(PARALLEL_TMP_DIR, f"{self.base_name}{PARALLEL_PARTIAL_SUFFIX}")
+        try:
+            os.makedirs(os.path.dirname(partial_path), exist_ok=True)
+        except OSError:
+            pass
+        encoder = StreamingOpusEncoder(partial_path, container_format="opus")
+        try:
+            encoder.start()
+        except Exception as exc:
+            print(
+                f"[segmenter] WARN: failed to start parallel encoder: {exc!r}",
+                flush=True,
+            )
+            return
+        self._parallel_encoder = encoder
+        self._parallel_partial_path = partial_path
+        self._parallel_encoder_started_at = time.time()
+        self._parallel_encoder_drops = 0
+        print(
+            f"[segmenter] Parallel encode started for {self.base_name}",
+            flush=True,
+        )
 
     def _q_send(self, item):
         try:
@@ -1437,6 +1528,8 @@ class TimelineRecorder:
                         self._q_send(bytes(f))
                         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(f)):
                             self.queue_drops += 1
+                        if self._parallel_encoder and not self._parallel_encoder.feed(bytes(f)):
+                            self._parallel_encoder_drops += 1
                         self.frames_written += 1
                         self.sum_rms += rms(f)
                 self.prebuf.clear()
@@ -1446,6 +1539,7 @@ class TimelineRecorder:
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
+                self._maybe_start_parallel_encode(force=True)
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
                     f"(trigger={'RMS' if loud else 'VAD'}>{current_threshold} (rms={rms_val}))",
@@ -1458,25 +1552,35 @@ class TimelineRecorder:
                     "trigger_rms": self.trigger_rms,
                 }
                 if self._status_mode == "live":
-                    if self._streaming_encoder:
+                    if self._streaming_encoder or self._parallel_encoder:
                         event_status = dict(event_status)
                         event_status["in_progress"] = True
-                        event_status["partial_recording_path"] = (
-                            self._streaming_encoder.partial_path
-                        )
-                        event_status["streaming_container_format"] = (
-                            STREAMING_CONTAINER_FORMAT
-                        )
+                        if self._streaming_encoder:
+                            event_status["partial_recording_path"] = (
+                                self._streaming_encoder.partial_path
+                            )
+                            event_status["streaming_container_format"] = (
+                                STREAMING_CONTAINER_FORMAT
+                            )
+                        elif self._parallel_encoder and self._parallel_partial_path:
+                            event_status["partial_recording_path"] = (
+                                self._parallel_partial_path
+                            )
+                            event_status["streaming_container_format"] = "opus"
                     self._update_capture_status(True, event=event_status)
             return
 
         self._q_send(bytes(buf))
         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
             self.queue_drops += 1
+        if self._parallel_encoder and not self._parallel_encoder.feed(bytes(buf)):
+            self._parallel_encoder_drops += 1
         self.frames_written += 1
         self.sum_rms += rms(proc_for_analysis)
         self.saw_voiced = voiced or self.saw_voiced
         self.saw_loud = loud or self.saw_loud
+
+        self._maybe_start_parallel_encode()
 
         if sum(self.recent_active) >= KEEP_CONSECUTIVE:
             self.post_count = POST_PAD_FRAMES
@@ -1492,9 +1596,12 @@ class TimelineRecorder:
             return
 
         streaming_result: StreamingEncoderResult | None = None
+        parallel_result: StreamingEncoderResult | None = None
         partial_stream_path: str | None = None
+        parallel_partial_path: str | None = None
         final_stream_path: str | None = None
         streaming_drop_detected = False
+        parallel_drop_detected = False
         day_dir = self._streaming_day_dir
         if self._streaming_encoder:
             try:
@@ -1536,6 +1643,37 @@ class TimelineRecorder:
                 flush=True,
             )
 
+        if self._parallel_encoder:
+            try:
+                parallel_result = self._parallel_encoder.close(timeout=5.0)
+            except Exception as exc:
+                print(
+                    f"[segmenter] WARN: parallel encoder close failed: {exc!r}",
+                    flush=True,
+                )
+                parallel_result = StreamingEncoderResult(
+                    partial_path=self._parallel_partial_path,
+                    success=False,
+                    returncode=None,
+                    error=exc,
+                    stderr=None,
+                    bytes_sent=0,
+                    dropped_chunks=self._parallel_encoder_drops,
+                )
+            finally:
+                self._parallel_encoder = None
+        if parallel_result:
+            parallel_partial_path = parallel_result.partial_path
+            if parallel_result.dropped_chunks or self._parallel_encoder_drops:
+                parallel_drop_detected = True
+
+        if parallel_drop_detected and parallel_result:
+            detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
+            print(
+                f"[segmenter] WARN: parallel encoder dropped chunks ({detail}); will fall back to offline encode",
+                flush=True,
+            )
+
         if self.saw_voiced and self.saw_loud:
             etype_label = EVENT_TAGS["both"]
         elif self.saw_voiced:
@@ -1570,7 +1708,7 @@ class TimelineRecorder:
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             safe_etype = _sanitize_event_tag(etype_label)
             final_base = f"{event_ts}_{safe_etype}_RMS-{trigger_rms}_{event_count}"
-            streaming_succeeded = False
+            reuse_mode: str | None = None
             target_day_dir = day_dir or os.path.join(REC_DIR, day)
             os.makedirs(target_day_dir, exist_ok=True)
             final_opus_path = os.path.join(target_day_dir, f"{final_base}{STREAMING_EXTENSION}")
@@ -1583,7 +1721,7 @@ class TimelineRecorder:
             ):
                 try:
                     os.replace(partial_stream_path, final_opus_path)
-                    streaming_succeeded = True
+                    reuse_mode = "streaming"
                     final_stream_path = final_opus_path
                     print(
                         f"[segmenter] Streaming encode finalized at {final_opus_path}",
@@ -1594,16 +1732,51 @@ class TimelineRecorder:
                         f"[segmenter] WARN: failed to finalize streaming output: {exc!r}",
                         flush=True,
                     )
-                    streaming_succeeded = False
-            elif streaming_result and not streaming_result.success:
-                if streaming_result.stderr:
+            elif streaming_result and not streaming_result.success and streaming_result.stderr:
+                print(
+                    f"[segmenter] WARN: streaming encoder stderr: {streaming_result.stderr.strip()}",
+                    flush=True,
+                )
+
+            if (
+                reuse_mode is None
+                and parallel_result
+                and parallel_result.success
+                and not parallel_drop_detected
+                and parallel_partial_path
+                and os.path.exists(parallel_partial_path)
+            ):
+                try:
+                    os.replace(parallel_partial_path, final_opus_path)
+                    reuse_mode = "parallel"
+                    final_stream_path = final_opus_path
                     print(
-                        f"[segmenter] WARN: streaming encoder stderr: {streaming_result.stderr.strip()}",
+                        f"[segmenter] Parallel encode finalized at {final_opus_path}",
                         flush=True,
                     )
-            if not streaming_succeeded and partial_stream_path and os.path.exists(partial_stream_path):
+                except Exception as exc:
+                    print(
+                        f"[segmenter] WARN: failed to finalize parallel output: {exc!r}",
+                        flush=True,
+                    )
+            elif (
+                parallel_result
+                and not parallel_result.success
+                and parallel_result.stderr
+            ):
+                print(
+                    f"[segmenter] WARN: parallel encoder stderr: {parallel_result.stderr.strip()}",
+                    flush=True,
+                )
+
+            if reuse_mode != "streaming" and partial_stream_path and os.path.exists(partial_stream_path):
                 try:
                     os.unlink(partial_stream_path)
+                except OSError:
+                    pass
+            if reuse_mode != "parallel" and parallel_partial_path and os.path.exists(parallel_partial_path):
+                try:
+                    os.unlink(parallel_partial_path)
                 except OSError:
                     pass
 
@@ -1611,7 +1784,7 @@ class TimelineRecorder:
                 tmp_wav_path,
                 final_base,
                 source=self._recording_source,
-                existing_opus_path=final_stream_path if streaming_succeeded else None,
+                existing_opus_path=final_stream_path if reuse_mode else None,
             )
             if job_id is not None:
                 self._encode_jobs.append(job_id)
@@ -1625,6 +1798,11 @@ class TimelineRecorder:
                         ),
                         flush=True,
                     )
+            if reuse_mode is None:
+                print(
+                    f"[segmenter] Offline encode scheduled for {final_base}",
+                    flush=True,
+                )
         self._streaming_day_dir = None
 
         if tmp_wav_path and base:
@@ -1699,6 +1877,35 @@ class TimelineRecorder:
                     pass
         self._streaming_encoder = None
         self._streaming_day_dir = None
+        if self._parallel_encoder:
+            result: StreamingEncoderResult | None = None
+            try:
+                result = self._parallel_encoder.close(timeout=1.0)
+            except Exception:
+                result = StreamingEncoderResult(
+                    partial_path=self._parallel_partial_path,
+                    success=False,
+                    returncode=None,
+                    error=None,
+                    stderr=None,
+                    bytes_sent=0,
+                    dropped_chunks=self._parallel_encoder_drops,
+                )
+            if result and result.partial_path and os.path.exists(result.partial_path):
+                try:
+                    os.unlink(result.partial_path)
+                except OSError:
+                    pass
+        if self._parallel_partial_path and os.path.exists(self._parallel_partial_path):
+            try:
+                os.unlink(self._parallel_partial_path)
+            except OSError:
+                pass
+        self._parallel_encoder = None
+        self._parallel_partial_path = None
+        self._parallel_encoder_drops = 0
+        self._parallel_encoder_started_at = None
+        self._parallel_last_check = 0.0
         self.active = False
         self.post_count = 0
         self.recent_active.clear()

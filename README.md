@@ -370,7 +370,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, emitting a `.parallel.opus` artifact in tmpfs so the post-event encoder can jump straight to waveform/transcription work instead of re-encoding the entire WAV.
 - Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
