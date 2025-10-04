@@ -995,6 +995,7 @@ class TimelineRecorder:
             self._load_status_cache_from_disk()
         ENCODING_STATUS.register_listener(self._handle_encoding_status_change)
         self.event_started_epoch: float | None = None
+        self.event_day: str | None = None
         self._metrics_interval = 0.5
         self._last_metrics_update = 0.0
         self._last_metrics_value: int | None = None
@@ -1385,10 +1386,16 @@ class TimelineRecorder:
                     hint_counter = self._ingest_hint.event_counter
                     self._ingest_hint_used = True
 
+                prebuf_frames = len(self.prebuf)
+                prebuf_seconds = max(prebuf_frames - 1, 0) * (FRAME_MS / 1000.0)
+                trigger_epoch = time.time()
+
                 if hint_timestamp:
                     start_time = hint_timestamp
+                    start_epoch = trigger_epoch
                 else:
-                    start_time = datetime.now().strftime("%H-%M-%S")
+                    start_epoch = max(0.0, trigger_epoch - prebuf_seconds)
+                    start_time = datetime.fromtimestamp(start_epoch).strftime("%H-%M-%S")
 
                 if hint_counter is not None and hint_timestamp:
                     existing = TimelineRecorder.event_counters[start_time]
@@ -1406,12 +1413,14 @@ class TimelineRecorder:
                 self.trigger_rms = int(rms_val)
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
+                self.event_started_epoch = start_epoch
+                self.event_day = time.strftime("%Y%m%d", time.localtime(start_epoch))
 
                 self._q_send(('open', self.base_name, self.tmp_wav_path))
 
                 if self._streaming_enabled:
                     try:
-                        day = time.strftime("%Y%m%d")
+                        day = self.event_day or time.strftime("%Y%m%d")
                         day_dir = os.path.join(REC_DIR, day)
                         os.makedirs(day_dir, exist_ok=True)
                         partial_path = os.path.join(
@@ -1442,7 +1451,6 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
-                self.event_started_epoch = time.time()
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
@@ -1564,7 +1572,7 @@ class TimelineRecorder:
 
         job_id: int | None = None
         if tmp_wav_path and base:
-            day = time.strftime("%Y%m%d")
+            day = self.event_day or time.strftime("%Y%m%d")
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
             event_ts = self.event_timestamp or base.split("_", 1)[0]
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
@@ -1715,6 +1723,7 @@ class TimelineRecorder:
         self.event_counter = None
         self.trigger_rms = None
         self.event_started_epoch = None
+        self.event_day = None
         self._ingest_hint = None
         self._ingest_hint_used = True
 
