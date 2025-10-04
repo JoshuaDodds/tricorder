@@ -1653,6 +1653,7 @@ async def _restart_units(units: Iterable[str]) -> list[dict[str, Any]]:
     return results
 
 from aiohttp import web, web_fileresponse
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.web import AppKey
 
 # aiohttp's sendfile() path sometimes times out on slow or lossy networks when
@@ -4965,14 +4966,47 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 f'{disposition}; filename="{source_path.with_suffix(output_suffix).name}"'
             )
 
-            await response.prepare(request)
-            with output_path.open("rb") as file_obj:
-                while True:
-                    chunk = file_obj.read(32768)
-                    if not chunk:
-                        break
-                    await response.write(chunk)
-            await response.write_eof()
+            prepared = False
+            try:
+                await response.prepare(request)
+                prepared = True
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                asyncio.CancelledError,
+                ClientConnectionResetError,
+            ):
+                log.debug(
+                    "Preview client disconnected before streaming %s", source_path
+                )
+                return response
+
+            try:
+                with output_path.open("rb") as file_obj:
+                    while True:
+                        chunk = file_obj.read(32768)
+                        if not chunk:
+                            break
+                        await response.write(chunk)
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                asyncio.CancelledError,
+                ClientConnectionResetError,
+            ):
+                log.debug(
+                    "Preview client disconnected during stream for %s", source_path
+                )
+            if prepared:
+                try:
+                    await response.write_eof()
+                except (
+                    ConnectionResetError,
+                    BrokenPipeError,
+                    asyncio.CancelledError,
+                    ClientConnectionResetError,
+                ):
+                    pass
             return response
 
     async def _serve_preview_waveform(
