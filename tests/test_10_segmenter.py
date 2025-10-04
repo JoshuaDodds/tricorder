@@ -1,7 +1,11 @@
 # tests/test_10_segmenter.py
 import builtins
 import json
+import os
 import re
+import time
+import wave
+from datetime import datetime, timezone
 
 import pytest
 
@@ -23,6 +27,16 @@ def make_frame(value: int = 1000):
 def read_sample(buf: bytes, idx: int = 0) -> int:
     start = idx * 2
     return int.from_bytes(buf[start:start + 2], 'little', signed=True)
+
+
+def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(segmenter.SAMPLE_WIDTH)
+        wav_file.setframerate(segmenter.SAMPLE_RATE)
+        sample_bytes = sample.to_bytes(2, "little", signed=True)
+        wav_file.writeframes(sample_bytes * frames)
 
 
 def test_event_trigger_and_flush(tmp_path, monkeypatch):
@@ -314,6 +328,44 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     assert not calls, "final recording already exists so no encode job expected"
     assert not wav_path.exists()
     assert str(wav_path) in report.removed_wavs
+
+
+def test_event_base_name_uses_prepad(monkeypatch, tmp_path):
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "NOTIFIER", None)
+    rec_dir = tmp_path / "rec"
+    tmp_dir = tmp_path / "tmp"
+    rec_dir.mkdir()
+    tmp_dir.mkdir()
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 75, raising=False)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", lambda *args, **kwargs: None)
+
+    fake_now = datetime(2024, 1, 2, 0, 0, 1, 200000, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(segmenter.time, "time", lambda: fake_now)
+
+    rec = TimelineRecorder()
+
+    for i in range(74):
+        rec.ingest(make_frame(0), i)
+
+    rec.ingest(make_frame(2000), 74)
+
+    prebuf_seconds = (75 - 1) * (segmenter.FRAME_MS / 1000.0)
+    expected_epoch = fake_now - prebuf_seconds
+    expected_time = datetime.fromtimestamp(expected_epoch).strftime("%H-%M-%S")
+    expected_day = time.strftime("%Y%m%d", time.localtime(expected_epoch))
+
+    assert rec.base_name.startswith(expected_time)
+    assert rec.event_timestamp == expected_time
+    assert rec.event_started_epoch == pytest.approx(expected_epoch)
+    assert rec.event_day == expected_day
+
+    rec.flush(200)
 
 
 def test_adaptive_threshold_recovery(monkeypatch):

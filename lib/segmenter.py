@@ -14,6 +14,8 @@ from pathlib import Path
 import threading
 import queue
 import warnings
+from collections.abc import Callable
+from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Optional
 import array
@@ -86,6 +88,13 @@ class AdaptiveRmsObservation:
     voiced: bool
 
 
+@dataclass(frozen=True)
+class StartupRecoveryReport:
+    requeued: list[str]
+    removed_artifacts: list[str]
+    removed_wavs: list[str]
+
+
 def pcm16_rms(buf: bytes) -> int:
     """Compute RMS amplitude for signed 16-bit little-endian PCM data."""
     if not buf:
@@ -131,6 +140,126 @@ def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
     if sys.byteorder != 'little':
         samples.byteswap()
     return samples.tobytes()
+
+
+def _estimate_rms_from_file(path: str | os.PathLike[str]) -> int:
+    wav_path = Path(path)
+    try:
+        with wave.open(os.fspath(wav_path), "rb") as wav_file:
+            frames = wav_file.getnframes()
+            if frames <= 0:
+                return 0
+            data = wav_file.readframes(frames)
+    except (FileNotFoundError, OSError, wave.Error):
+        return 0
+    return pcm16_rms(data)
+
+
+def _derive_final_base(path: str | os.PathLike[str], rms_value: int) -> str:
+    wav_path = Path(path)
+    base_name = wav_path.stem
+    parts = base_name.split("_")
+    event_ts = parts[0] if parts else time.strftime("%H-%M-%S", time.localtime())
+    if len(parts) >= 3:
+        event_label = parts[1]
+        event_counter = parts[2]
+    elif len(parts) == 2:
+        event_label = parts[1]
+        event_counter = "1"
+    else:
+        event_label = EVENT_TAGS["other"]
+        event_counter = "1"
+    if not isinstance(event_label, str) or not event_label:
+        event_label = EVENT_TAGS["other"]
+    safe_label = _sanitize_event_tag(event_label)
+    try:
+        counter_int = int(event_counter)
+        event_counter = str(counter_int)
+    except (TypeError, ValueError):
+        event_counter = "1"
+    try:
+        rms_int = int(rms_value)
+    except (TypeError, ValueError):
+        rms_int = 0
+    if rms_int < 0:
+        rms_int = 0
+    return f"{event_ts}_{safe_label}_RMS-{rms_int}_{event_counter}"
+
+
+def perform_startup_recovery() -> StartupRecoveryReport:
+    requeued: list[str] = []
+    removed_artifacts: list[str] = []
+    removed_wavs: list[str] = []
+
+    tmp_dir = Path(TMP_DIR)
+    rec_dir = Path(REC_DIR)
+    final_extension = (
+        STREAMING_EXTENSION
+        if STREAMING_EXTENSION.startswith(".")
+        else f".{STREAMING_EXTENSION}"
+    )
+
+    if not tmp_dir.exists():
+        return StartupRecoveryReport(requeued, removed_artifacts, removed_wavs)
+
+    for wav_path in sorted(tmp_dir.glob("*.wav")):
+        if not wav_path.is_file():
+            continue
+        try:
+            mtime = wav_path.stat().st_mtime
+        except OSError:
+            continue
+        day_dir = rec_dir / time.strftime("%Y%m%d", time.localtime(mtime))
+        rms_value = _estimate_rms_from_file(wav_path)
+        final_base = _derive_final_base(wav_path, rms_value)
+        final_path = day_dir / f"{final_base}{final_extension}"
+
+        if final_path.exists():
+            try:
+                wav_path.unlink()
+                removed_wavs.append(str(wav_path))
+            except OSError:
+                pass
+            continue
+
+        os.makedirs(day_dir, exist_ok=True)
+
+        base_name = wav_path.stem
+        partial_path = day_dir / f"{base_name}{STREAMING_PARTIAL_SUFFIX}"
+        artifacts = [
+            partial_path,
+            partial_path.with_name(partial_path.name + ".waveform.json"),
+        ]
+        for artifact in artifacts:
+            if artifact.exists():
+                try:
+                    artifact.unlink()
+                except OSError:
+                    pass
+                else:
+                    removed_artifacts.append(str(artifact))
+
+        filtered_pattern = f".{final_base}.filtered*"
+        if day_dir.exists():
+            for filtered in day_dir.glob(filtered_pattern):
+                if not filtered.is_file():
+                    continue
+                try:
+                    filtered.unlink()
+                except OSError:
+                    pass
+                else:
+                    removed_artifacts.append(str(filtered))
+
+        _enqueue_encode_job(
+            str(wav_path),
+            final_base,
+            source="recovery",
+            existing_opus_path=None,
+        )
+        requeued.append(final_base)
+
+    return StartupRecoveryReport(requeued, removed_artifacts, removed_wavs)
 
 TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
@@ -1239,6 +1368,7 @@ class TimelineRecorder:
             self._load_status_cache_from_disk()
         ENCODING_STATUS.register_listener(self._handle_encoding_status_change)
         self.event_started_epoch: float | None = None
+        self.event_day: str | None = None
         self._metrics_interval = 0.5
         self._last_metrics_update = 0.0
         self._last_metrics_value: int | None = None
@@ -1629,10 +1759,16 @@ class TimelineRecorder:
                     hint_counter = self._ingest_hint.event_counter
                     self._ingest_hint_used = True
 
+                prebuf_frames = len(self.prebuf)
+                prebuf_seconds = max(prebuf_frames - 1, 0) * (FRAME_MS / 1000.0)
+                trigger_epoch = time.time()
+
                 if hint_timestamp:
                     start_time = hint_timestamp
+                    start_epoch = trigger_epoch
                 else:
-                    start_time = datetime.now().strftime("%H-%M-%S")
+                    start_epoch = max(0.0, trigger_epoch - prebuf_seconds)
+                    start_time = datetime.fromtimestamp(start_epoch).strftime("%H-%M-%S")
 
                 if hint_counter is not None and hint_timestamp:
                     existing = TimelineRecorder.event_counters[start_time]
@@ -1650,12 +1786,14 @@ class TimelineRecorder:
                 self.trigger_rms = int(rms_val)
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
+                self.event_started_epoch = start_epoch
+                self.event_day = time.strftime("%Y%m%d", time.localtime(start_epoch))
 
                 self._q_send(('open', self.base_name, self.tmp_wav_path))
 
                 if self._streaming_enabled:
                     try:
-                        day = time.strftime("%Y%m%d")
+                        day = self.event_day or time.strftime("%Y%m%d")
                         day_dir = os.path.join(REC_DIR, day)
                         os.makedirs(day_dir, exist_ok=True)
                         partial_path = os.path.join(
@@ -1686,7 +1824,6 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
-                self.event_started_epoch = time.time()
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
@@ -1808,7 +1945,7 @@ class TimelineRecorder:
 
         job_id: int | None = None
         if tmp_wav_path and base:
-            day = time.strftime("%Y%m%d")
+            day = self.event_day or time.strftime("%Y%m%d")
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
             event_ts = self.event_timestamp or base.split("_", 1)[0]
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
@@ -1959,6 +2096,7 @@ class TimelineRecorder:
         self.event_counter = None
         self.trigger_rms = None
         self.event_started_epoch = None
+        self.event_day = None
         self._ingest_hint = None
         self._ingest_hint_used = True
 
