@@ -36,13 +36,14 @@ jobs:
                 basehead: `${integrationBranch}...${sha}`,
               });
 
-              const status = comparison.data.status;
-              const eligible = status === 'ahead' || status === 'identical';
+              const { status, behind_by: behindBy, ahead_by: aheadBy } = comparison.data;
+              const eligible = (status === 'ahead' || status === 'identical') && behindBy === 0;
 
               if (!eligible) {
                 core.info(
                   `Head commit ${sha} is not fully reachable from ${integrationBranch}. ` +
-                  `Comparison status: ${status}.`
+                  `Comparison status: ${status}. ` +
+                  `behind_by=${behindBy}, ahead_by=${aheadBy}.`
                 );
               }
 
