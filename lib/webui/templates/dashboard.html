@@ -372,6 +372,23 @@
           <div class="waveform-section" id="waveform-section">
             <div class="waveform-header">
               <span>Waveform</span>
+              <div
+                class="waveform-controls"
+                id="waveform-controls"
+                aria-label="Preview processing toggles"
+                role="group"
+              >
+                <label class="waveform-toggle" id="waveform-filter-toggle-label">
+                  <input id="waveform-filter-toggle" type="checkbox" checked />
+                  <span class="waveform-toggle-slider" aria-hidden="true"></span>
+                  <span class="waveform-toggle-text">Filter</span>
+                </label>
+                <label class="waveform-toggle" id="waveform-denoise-toggle-label">
+                  <input id="waveform-denoise-toggle" type="checkbox" checked />
+                  <span class="waveform-toggle-slider" aria-hidden="true"></span>
+                  <span class="waveform-toggle-text">Denoise</span>
+                </label>
+              </div>
               <span class="waveform-status" id="waveform-status"></span>
             </div>
             <div class="waveform-clock-row" data-active="false">
