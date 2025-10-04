@@ -8,6 +8,8 @@ import os
 from fractions import Fraction
 from typing import Dict, Optional, TYPE_CHECKING
 
+from . import aioice_patches  # noqa: F401
+
 try:
     from aiortc import (
         RTCConfiguration as _RTCConfiguration,

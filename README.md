@@ -42,7 +42,16 @@ graph TD
 
     LS -->|frames| C["TimelineRecorder (segmenter.py)"];
     C -->|tmp WAV| D[encode_and_store.sh];
-    D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"];
+    C -->|event metadata| N["Notification dispatcher\n(lib.notifications)"];
+    N -->|webhooks / email| OUT[Operators];
+    D -->|Opus files| E["recordings dir (/apps/tricorder/recordings)"];
+    D -->|waveform JSON| WF[lib.waveform_cache];
+    WF --> E;
+    D -->|transcript JSON| TR[lib.transcription];
+    TR --> E;
+    D -->|archival uploads| ARCH[lib.archival backends];
+    ARCH --> REMOTE[Remote archives];
+    D -.->|on failure| FH[lib.fault_handler];
 
     subgraph "Live streaming outputs"
         LS -->|frames| H["HLSTee (hls_mux.py)"];
@@ -67,7 +76,9 @@ graph TD
         SM_dropbox[dropbox.path + dropbox.service] --> G;
         SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E;
         SM_updater[tricorder-auto-update.timer + service] --> D;
-        SM_sd_monitor[sd-card-monitor.service] --> J;
+        SM_sd_monitor[sd-card-monitor.service] --> SDM[sd_card_monitor.py];
+        SDM -->|persist health| HEALTH[sd_card_health.py];
+        HEALTH --> J;
     end
 ```
 
@@ -76,9 +87,9 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 1. **Capture guardrails** – `live_stream_daemon.py` restarts `arecord` on failure and preserves frame ordering so downstream queues never see duplicates.
 2. **Filter offload** – `FilterPipeline` ships frames to a helper process that runs the configured `AudioFilterChain`. This keeps DSP work off the capture loop while still surfacing filter failures back to the supervisor.
 3. **Fan-out hub** – the daemon forwards filtered frames to two destinations:
-   - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, and coordination with `bin/encode_and_store.sh`.
+   - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, notification dispatch, and coordination with `bin/encode_and_store.sh`.
    - `HLSTee` / `WebRTCBufferWriter` so live listeners can attach without disturbing capture cadence.
-4. **Encoding + storage** – the encoder script writes Opus, waveform JSON, and optional transcript sidecars into `/apps/tricorder/recordings`.
+4. **Encoding + storage** – the encoder script writes Opus files, waveform JSON, and transcript sidecars into `/apps/tricorder/recordings`, kicks off post-encode archival backends via `lib.archival`, and relies on `lib.fault_handler` to triage any encoding failures.
 
 `lib.hls_controller` brokers HLS encoder lifecycles on behalf of the dashboard, while the WebRTC branch keeps a bounded history buffer that the browser drains when establishing a peer connection. Dropbox ingest feeds the same timeline recorder, guaranteeing that external files experience identical filtering, encoding, waveform generation, and transcription steps.
 

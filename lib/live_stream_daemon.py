@@ -8,7 +8,7 @@ import time
 from collections import deque
 from queue import Empty
 from typing import Any, Optional, Tuple
-from lib.segmenter import TimelineRecorder
+from lib.segmenter import TimelineRecorder, perform_startup_recovery
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
@@ -297,6 +297,18 @@ def main():
     stop_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
+
+    try:
+        recovery_report = perform_startup_recovery()
+        if recovery_report.any_actions():
+            cleaned_count = len(recovery_report.removed_wavs) + len(recovery_report.removed_artifacts)
+            print(
+                "[live] startup recovery queued"
+                f" {len(recovery_report.requeued)} encode job(s) and removed {cleaned_count} stale file(s)",
+                flush=True,
+            )
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        print(f"[live] WARN: startup recovery failed: {exc!r}", flush=True)
 
     publish_frame = None
     hls = None
