@@ -1,8 +1,10 @@
 # tests/test_10_segmenter.py
 import builtins
 import json
+import os
 import re
 import time
+import wave
 from datetime import datetime, timezone
 
 import pytest
@@ -22,6 +24,16 @@ def make_frame(value: int = 1000):
 def read_sample(buf: bytes, idx: int = 0) -> int:
     start = idx * 2
     return int.from_bytes(buf[start:start + 2], 'little', signed=True)
+
+
+def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(segmenter.SAMPLE_WIDTH)
+        wav_file.setframerate(segmenter.SAMPLE_RATE)
+        sample_bytes = sample.to_bytes(2, "little", signed=True)
+        wav_file.writeframes(sample_bytes * frames)
 
 
 def test_event_trigger_and_flush(tmp_path, monkeypatch):
@@ -214,6 +226,95 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
 
     assert "existing_opus_path" in captured
     assert captured.get("existing_opus_path") is None, "fallback encode should not reuse streaming output"
+
+
+def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "rec"
+    tmp_dir = tmp_path / "tmp"
+    rec_dir.mkdir()
+    tmp_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+
+    calls: list[tuple[str, str, str, str | None]] = []
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path))
+        return len(calls)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    wav_path = tmp_dir / "12-00-00_Both_1.wav"
+    _write_constant_wav(wav_path, sample=1000, frames=segmenter.SAMPLE_RATE // 10)
+    ts = datetime(2025, 1, 1, 12, 0, 0).timestamp()
+    os.utime(wav_path, (ts, ts))
+
+    day_dir = rec_dir / "20250101"
+    day_dir.mkdir()
+    partial_path = day_dir / "12-00-00_Both_1.partial.opus"
+    partial_path.write_bytes(b"partial")
+    partial_waveform = partial_path.with_name(partial_path.name + ".waveform.json")
+    partial_waveform.write_text("{}", encoding="utf-8")
+
+    rms_value = segmenter._estimate_rms_from_file(wav_path)
+    expected_final_base = segmenter._derive_final_base(wav_path, rms_value)
+    filtered_path = day_dir / f".{expected_final_base}.filtered.12345.opus"
+    filtered_path.write_bytes(b"tmp")
+
+    report = segmenter.perform_startup_recovery()
+
+    assert calls, "expected encode job to be requeued"
+    tmp_arg, base_arg, source_arg, existing_arg = calls[0]
+    assert tmp_arg == str(wav_path)
+    assert base_arg == expected_final_base
+    assert source_arg == "recovery"
+    assert existing_arg is None
+
+    assert report.requeued == [expected_final_base]
+    assert not partial_path.exists()
+    assert not partial_waveform.exists()
+    assert not filtered_path.exists()
+    assert wav_path.exists()
+    assert any(str(partial_path) == entry for entry in report.removed_artifacts)
+    assert report.removed_wavs == []
+
+
+def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "rec"
+    tmp_dir = tmp_path / "tmp"
+    rec_dir.mkdir()
+    tmp_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+
+    calls: list[tuple[str, str, str, str | None]] = []
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path))
+        return len(calls)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    wav_path = tmp_dir / "13-00-00_Both_2.wav"
+    _write_constant_wav(wav_path, sample=500, frames=segmenter.SAMPLE_RATE // 10)
+    ts = datetime(2025, 1, 2, 13, 0, 0).timestamp()
+    os.utime(wav_path, (ts, ts))
+
+    day_dir = rec_dir / "20250102"
+    day_dir.mkdir()
+    rms_value = segmenter._estimate_rms_from_file(wav_path)
+    expected_final_base = segmenter._derive_final_base(wav_path, rms_value)
+    final_extension = segmenter.STREAMING_EXTENSION if segmenter.STREAMING_EXTENSION.startswith(".") else f".{segmenter.STREAMING_EXTENSION}"
+    final_path = day_dir / f"{expected_final_base}{final_extension}"
+    final_path.write_bytes(b"final")
+
+    report = segmenter.perform_startup_recovery()
+
+    assert not calls, "final recording already exists so no encode job expected"
+    assert not wav_path.exists()
+    assert str(wav_path) in report.removed_wavs
 
 
 def test_event_base_name_uses_prepad(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@ import threading
 import queue
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import Optional
 import array
 warnings.filterwarnings(
@@ -85,6 +86,13 @@ class AdaptiveRmsObservation:
     voiced: bool
 
 
+@dataclass(frozen=True)
+class StartupRecoveryReport:
+    requeued: list[str]
+    removed_artifacts: list[str]
+    removed_wavs: list[str]
+
+
 def pcm16_rms(buf: bytes) -> int:
     """Compute RMS amplitude for signed 16-bit little-endian PCM data."""
     if not buf:
@@ -130,6 +138,126 @@ def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
     if sys.byteorder != 'little':
         samples.byteswap()
     return samples.tobytes()
+
+
+def _estimate_rms_from_file(path: str | os.PathLike[str]) -> int:
+    wav_path = Path(path)
+    try:
+        with wave.open(os.fspath(wav_path), "rb") as wav_file:
+            frames = wav_file.getnframes()
+            if frames <= 0:
+                return 0
+            data = wav_file.readframes(frames)
+    except (FileNotFoundError, OSError, wave.Error):
+        return 0
+    return pcm16_rms(data)
+
+
+def _derive_final_base(path: str | os.PathLike[str], rms_value: int) -> str:
+    wav_path = Path(path)
+    base_name = wav_path.stem
+    parts = base_name.split("_")
+    event_ts = parts[0] if parts else time.strftime("%H-%M-%S", time.localtime())
+    if len(parts) >= 3:
+        event_label = parts[1]
+        event_counter = parts[2]
+    elif len(parts) == 2:
+        event_label = parts[1]
+        event_counter = "1"
+    else:
+        event_label = EVENT_TAGS["other"]
+        event_counter = "1"
+    if not isinstance(event_label, str) or not event_label:
+        event_label = EVENT_TAGS["other"]
+    safe_label = _sanitize_event_tag(event_label)
+    try:
+        counter_int = int(event_counter)
+        event_counter = str(counter_int)
+    except (TypeError, ValueError):
+        event_counter = "1"
+    try:
+        rms_int = int(rms_value)
+    except (TypeError, ValueError):
+        rms_int = 0
+    if rms_int < 0:
+        rms_int = 0
+    return f"{event_ts}_{safe_label}_RMS-{rms_int}_{event_counter}"
+
+
+def perform_startup_recovery() -> StartupRecoveryReport:
+    requeued: list[str] = []
+    removed_artifacts: list[str] = []
+    removed_wavs: list[str] = []
+
+    tmp_dir = Path(TMP_DIR)
+    rec_dir = Path(REC_DIR)
+    final_extension = (
+        STREAMING_EXTENSION
+        if STREAMING_EXTENSION.startswith(".")
+        else f".{STREAMING_EXTENSION}"
+    )
+
+    if not tmp_dir.exists():
+        return StartupRecoveryReport(requeued, removed_artifacts, removed_wavs)
+
+    for wav_path in sorted(tmp_dir.glob("*.wav")):
+        if not wav_path.is_file():
+            continue
+        try:
+            mtime = wav_path.stat().st_mtime
+        except OSError:
+            continue
+        day_dir = rec_dir / time.strftime("%Y%m%d", time.localtime(mtime))
+        rms_value = _estimate_rms_from_file(wav_path)
+        final_base = _derive_final_base(wav_path, rms_value)
+        final_path = day_dir / f"{final_base}{final_extension}"
+
+        if final_path.exists():
+            try:
+                wav_path.unlink()
+                removed_wavs.append(str(wav_path))
+            except OSError:
+                pass
+            continue
+
+        os.makedirs(day_dir, exist_ok=True)
+
+        base_name = wav_path.stem
+        partial_path = day_dir / f"{base_name}{STREAMING_PARTIAL_SUFFIX}"
+        artifacts = [
+            partial_path,
+            partial_path.with_name(partial_path.name + ".waveform.json"),
+        ]
+        for artifact in artifacts:
+            if artifact.exists():
+                try:
+                    artifact.unlink()
+                except OSError:
+                    pass
+                else:
+                    removed_artifacts.append(str(artifact))
+
+        filtered_pattern = f".{final_base}.filtered*"
+        if day_dir.exists():
+            for filtered in day_dir.glob(filtered_pattern):
+                if not filtered.is_file():
+                    continue
+                try:
+                    filtered.unlink()
+                except OSError:
+                    pass
+                else:
+                    removed_artifacts.append(str(filtered))
+
+        _enqueue_encode_job(
+            str(wav_path),
+            final_base,
+            source="recovery",
+            existing_opus_path=None,
+        )
+        requeued.append(final_base)
+
+    return StartupRecoveryReport(requeued, removed_artifacts, removed_wavs)
 
 TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
