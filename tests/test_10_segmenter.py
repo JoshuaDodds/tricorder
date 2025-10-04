@@ -85,18 +85,14 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
     monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
     monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
-    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt: "20240102")
+    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt, t=None: "20240102")
     monkeypatch.setattr(segmenter.os, "getloadavg", lambda: (0.1, 0.1, 0.1))
     monkeypatch.setattr(segmenter.os, "cpu_count", lambda: 4)
 
-    class _FakeDatetime:
+    class _FakeDatetime(real_datetime.datetime):
         @classmethod
-        def now(cls):
-            class _Stamp:
-                def strftime(self, fmt: str) -> str:
-                    return "12-34-56"
-
-            return _Stamp()
+        def now(cls, tz=None):
+            return real_datetime.datetime(2024, 1, 2, 12, 34, 56, tzinfo=tz)
 
         @classmethod
         def fromtimestamp(cls, ts, tz=None):
