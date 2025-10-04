@@ -151,6 +151,24 @@ _DEFAULTS: Dict[str, Any] = {
         ],
         "web_service": "web-streamer.service",
     },
+    "web_server": {
+        "mode": "http",
+        "listen_host": "0.0.0.0",
+        "listen_port": 8080,
+        "tls_provider": "letsencrypt",
+        "certificate_path": "",
+        "private_key_path": "",
+        "lets_encrypt": {
+            "enabled": False,
+            "email": "",
+            "domains": [],
+            "cache_dir": "/apps/tricorder/letsencrypt",
+            "staging": False,
+            "certbot_path": "certbot",
+            "http_port": 80,
+            "renew_before_days": 30,
+        },
+    },
     "notifications": {
         "enabled": False,
         "allowed_event_types": [],
@@ -964,3 +982,7 @@ def update_streaming_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 def update_dashboard_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("dashboard", settings, merge=True)
+
+
+def update_web_server_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("web_server", settings, merge=True)

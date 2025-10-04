@@ -346,4 +346,34 @@ dashboard:
   # the dashboard to keep the management interface reachable.
   web_service: "web-streamer.service"
 
+web_server:
+  # Web UI listener configuration. Set mode to "http" to expose an unsecured
+  # dashboard (recommended port 80) or "https" to enable TLS (recommended port
+  # 443). The port value applies to both modes so switching between 80 and 443
+  # only requires updating this field.
+  mode: "http"
+  listen_host: "0.0.0.0"
+  listen_port: 8080
+
+  # TLS provider controls how HTTPS certificates are sourced. "letsencrypt"
+  # issues and renews certificates automatically. "manual" expects
+  # certificate_path/private_key_path to reference existing PEM files.
+  tls_provider: "letsencrypt"
+  certificate_path: ""
+  private_key_path: ""
+
+  lets_encrypt:
+    # Enable Let's Encrypt automation when TLS is active. Domains must resolve
+    # to this device and the HTTP challenge port must be reachable from the
+    # public internet for certificate issuance to succeed.
+    enabled: false
+    email: ""
+    # List of domains included in the certificate (one per entry).
+    domains: []
+    cache_dir: "/apps/tricorder/letsencrypt"
+    staging: false
+    certbot_path: "certbot"
+    http_port: 80
+    renew_before_days: 30
+
 """
