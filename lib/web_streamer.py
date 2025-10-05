@@ -1663,6 +1663,7 @@ from lib.hls_controller import controller
 from lib import webui, sd_card_health
 from lib.config import (
     ConfigPersistenceError,
+    apply_config_migrations,
     get_cfg,
     primary_config_path,
     reload_cfg,
@@ -2494,6 +2495,7 @@ def _kick_auto_restart_units(
 
 def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.Application:
     log = logging.getLogger("web_streamer")
+    apply_config_migrations(logger=log)
     cfg = get_cfg()
     dashboard_cfg = cfg.get("dashboard", {})
     api_base_raw = dashboard_cfg.get("api_base", "")
@@ -5601,6 +5603,7 @@ def cli_main():
     )
     log = logging.getLogger("web_streamer")
 
+    apply_config_migrations(logger=log)
     cfg = reload_cfg()
     try:
         host_cfg, port_cfg, ssl_ctx, le_manager = _resolve_web_server_runtime(cfg, logger=log)
