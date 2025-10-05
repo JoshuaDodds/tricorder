@@ -69,6 +69,31 @@ def _sanitize_event_tag(tag: str) -> str:
     return sanitized or "event"
 
 
+def _set_single_core_affinity() -> None:
+    """Pin the current process to the lowest-numbered available CPU."""
+
+    try:
+        if hasattr(os, "sched_getaffinity"):
+            try:
+                available = os.sched_getaffinity(0)
+            except OSError:
+                available = None
+        else:
+            available = None
+
+        target_cpu = 0
+        if available:
+            try:
+                target_cpu = min(int(cpu) for cpu in available)
+            except (TypeError, ValueError):
+                target_cpu = 0
+
+        if hasattr(os, "sched_setaffinity"):
+            os.sched_setaffinity(0, {int(target_cpu)})
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def _normalized_load() -> float | None:
     try:
         load1, _, _ = os.getloadavg()
@@ -1407,8 +1432,18 @@ class _EncoderWorker(threading.Thread):
                 env = os.environ.copy()
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
+                preexec: Callable[[], None] | None = None
+                if os.name == "posix":
+                    preexec = _set_single_core_affinity
                 try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+                    subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        env=env,
+                        preexec_fn=preexec,
+                    )
                 except subprocess.CalledProcessError as exc:
                     print(f"[encoder] FAIL {exc.returncode}", flush=True)
                     if exc.stdout:

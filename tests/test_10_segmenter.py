@@ -2,10 +2,14 @@
 import builtins
 import json
 import os
+import queue
 import re
+import subprocess
+import sys
 import time
 import wave
 from datetime import datetime, timezone
+from pathlib import Path
 
 import os
 import pytest
@@ -1002,3 +1006,71 @@ def test_filter_chain_metrics_emit_structured_logs(monkeypatch, tmp_path):
     assert latest["filter_chain_avg_ms"] >= 5.0
     assert latest["filter_chain_avg_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_AVG_BUDGET_MS)
     assert latest["filter_chain_peak_budget_ms"] == pytest.approx(segmenter.FILTER_CHAIN_PEAK_BUDGET_MS)
+
+
+def test_encoder_worker_pins_affinity(monkeypatch):
+    calls: dict[str, object] = {}
+
+    def fake_run(cmd, *, capture_output, text, check, env, preexec_fn):  # noqa: D401 - signature matches subprocess
+        calls["cmd"] = cmd
+        calls["preexec_fn"] = preexec_fn
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(segmenter.subprocess, "run", fake_run)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+
+    job_queue: queue.Queue = queue.Queue()
+    worker = segmenter._EncoderWorker(job_queue)
+    worker.start()
+    job_queue.put((123, "/tmp/sample.wav", "sample", None))
+    job_queue.put(None)
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive(), "worker should exit after sentinel"
+    assert calls["cmd"][0] == "/bin/true"
+    assert calls["preexec_fn"] is segmenter._set_single_core_affinity
+
+
+def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "bin" / "encode_and_store.sh"
+
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+
+    ffmpeg_stub = stub_bin / "ffmpeg"
+    ffmpeg_stub.write_text("#!/usr/bin/env bash\nexit 42\n", encoding="utf-8")
+    ffmpeg_stub.chmod(0o755)
+
+    systemd_stub = stub_bin / "systemd-cat"
+    systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    systemd_stub.chmod(0o755)
+
+    existing_opus = tmp_path / "stream.opus"
+    existing_opus.write_bytes(b"opus")
+    waveform = existing_opus.with_suffix(existing_opus.suffix + ".waveform.json")
+    waveform.write_text("{}", encoding="utf-8")
+    transcript = existing_opus.with_suffix(existing_opus.suffix + ".transcript.json")
+    transcript.write_text("{}", encoding="utf-8")
+    wav_path = tmp_path / "capture.wav"
+    wav_path.write_bytes(b"wavdata")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}:{env['PATH']}"
+    env["PYTHONPATH"] = str(repo_root)
+    env["ENCODER_PYTHON"] = sys.executable
+    env["DENOISE"] = "0"
+    env["STREAMING_CONTAINER_FORMAT"] = "opus"
+    env["STREAMING_EXTENSION"] = ".opus"
+    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+
+    result = subprocess.run(
+        [str(script_path), str(wav_path), "sample", str(existing_opus)],
+        env=env,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not wav_path.exists(), "temporary WAV should be removed"
