@@ -179,6 +179,13 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     assert Path(existing_path).exists()
     assert existing_path.endswith(segmenter.STREAMING_EXTENSION)
     assert Path(existing_path).parent == rec_dir / "20240102"
+    waveform_path = Path(f"{existing_path}.waveform.json")
+    assert waveform_path.exists()
+    payload = json.loads(waveform_path.read_text(encoding="utf-8"))
+    assert payload.get("frame_count", 0) > 0
+    assert not Path(encoder.partial_path).exists()
+    partial_waveform = Path(f"{encoder.partial_path}.waveform.json")
+    assert not partial_waveform.exists()
 
 
 def test_live_waveform_updates_status(tmp_path, monkeypatch):
