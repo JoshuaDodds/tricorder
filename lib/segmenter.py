@@ -2265,6 +2265,7 @@ class TimelineRecorder:
         partial_stream_path: str | None = None
         parallel_partial_path: str | None = None
         final_stream_path: str | None = None
+        persisted_waveform: tuple[str, str | None] | None = None
         streaming_drop_detected = False
         parallel_drop_detected = False
         day_dir = self._streaming_day_dir
@@ -2377,6 +2378,8 @@ class TimelineRecorder:
             target_day_dir = day_dir or os.path.join(REC_DIR, day)
             os.makedirs(target_day_dir, exist_ok=True)
             final_opus_path = os.path.join(target_day_dir, f"{final_base}{STREAMING_EXTENSION}")
+            final_waveform_path = f"{final_opus_path}.waveform.json"
+            persisted_waveform = self._persist_live_waveform(final_waveform_path)
             if (
                 streaming_result
                 and streaming_result.success
@@ -2498,6 +2501,11 @@ class TimelineRecorder:
         if final_stream_path:
             last_event_status["recording_path"] = final_stream_path
             last_event_status["streaming_container_format"] = STREAMING_CONTAINER_FORMAT
+        if persisted_waveform:
+            waveform_path, waveform_rel = persisted_waveform
+            last_event_status["waveform_path"] = waveform_path
+            if waveform_rel:
+                last_event_status["waveform_rel_path"] = waveform_rel
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
@@ -2522,6 +2530,45 @@ class TimelineRecorder:
                 )
         self._cleanup_live_waveform()
         self._reset_event_state()
+
+    def _persist_live_waveform(
+        self, final_destination: str | None
+    ) -> tuple[str, str | None] | None:
+        if not final_destination:
+            return None
+        writer = self._live_waveform
+        if writer:
+            try:
+                writer.finalize()
+            except Exception:
+                pass
+        source = self._live_waveform_path
+        if not source or not os.path.exists(source):
+            return None
+        try:
+            os.makedirs(os.path.dirname(final_destination), exist_ok=True)
+        except OSError:
+            pass
+        try:
+            os.replace(source, final_destination)
+        except Exception as exc:
+            print(
+                (
+                    "[segmenter] WARN: failed to persist live waveform "
+                    f"{source} -> {final_destination}: {exc!r}"
+                ),
+                flush=True,
+            )
+            return None
+        rel_path = self._relative_recordings_path(final_destination)
+        print(
+            f"[segmenter] Live waveform finalized at {final_destination}",
+            flush=True,
+        )
+        self._live_waveform = None
+        self._live_waveform_path = None
+        self._live_waveform_rel_path = None
+        return final_destination, rel_path
 
     def _cleanup_live_waveform(self) -> None:
         writer = self._live_waveform
