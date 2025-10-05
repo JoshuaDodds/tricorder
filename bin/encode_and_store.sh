@@ -43,6 +43,10 @@ else
 fi
 mkdir -p "$(dirname "$outfile")"
 waveform_file="${outfile}.waveform.json"
+reuse_waveform=0
+if [[ -f "$waveform_file" ]]; then
+  reuse_waveform=1
+fi
 
 # Optional denoise filter chain
 FILTERS=()
@@ -103,19 +107,22 @@ else
   fi
 fi
 
-if ! "$VENV/bin/python" -m lib.waveform_cache "$in_wav" "$waveform_file"; then
-  echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
-  rm -f "$outfile"
-  rm -f "$in_wav"
-  exit 1
+if [[ "$reuse_waveform" -eq 1 ]]; then
+  echo "[encode] Reused waveform $waveform_file"
+else
+  if ! "$VENV/bin/python" -m lib.waveform_cache "$in_wav" "$waveform_file"; then
+    echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
+    rm -f "$outfile"
+    rm -f "$in_wav"
+    exit 1
+  fi
+  echo "[encode] Wrote waveform $waveform_file"
 fi
 
 transcript_file="${outfile}.transcript.json"
 if ! "$VENV/bin/python" -m lib.transcription "$in_wav" "$transcript_file" "$base"; then
   echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
 fi
-
-echo "[encode] Wrote waveform $waveform_file"
 
 rm -f "$in_wav"
 

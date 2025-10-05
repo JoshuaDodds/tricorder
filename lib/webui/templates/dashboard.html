@@ -243,6 +243,9 @@
             >
               Toggle theme
             </button>
+            <button id="split-event-trigger" class="ghost-button" type="button">
+              Split Event
+            </button>
             <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
           </div>
           <div class="header-status-group">
@@ -1278,6 +1281,14 @@
                 <label for="adaptive-release">Release percentile</label>
                 <input id="adaptive-release" type="number" min="0.05" max="1" step="0.01" />
                 <p class="field-description">Percentile of the noise distribution used when relaxing the threshold.</p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-voiced-hold">Voiced fallback delay (s)</label>
+                <input id="adaptive-voiced-hold" type="number" min="0" max="300" step="0.5" />
+                <p class="field-description">
+                  After this many seconds without unvoiced frames the controller treats voiced frames as
+                  background so long recordings triggered by misclassified noise can wind down.
+                </p>
               </div>
               <div class="settings-section-footer">
                 <div id="adaptive-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>

@@ -211,6 +211,11 @@ adaptive_rms:
   # Smaller values release faster once the room quiets; higher values stay conservative.
   release_percentile: 0.5
 
+  # When adaptive RMS is running but no unvoiced frames arrive for this long (seconds),
+  # fall back to treating voiced frames as background so the threshold can escape
+  # runaway recordings caused by misclassified noise beds.
+  voiced_hold_sec: 6.0
+
 ingest:
   # Number of consecutive size-stability checks required before accepting a file.
   # Prevents racing with partial/incomplete files.

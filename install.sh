@@ -164,6 +164,29 @@ for f in *.yaml; do
     fi
 done
 
+if [[ -f "$BASE/config.yaml" ]]; then
+  say "Applying configuration migrations"
+  TRICORDER_CONFIG="$BASE/config.yaml" PYTHONPATH="$BASE" "$VENV/bin/python" - <<'PY'
+import sys
+
+try:
+    from lib import config as config_module
+except Exception as exc:  # pragma: no cover - defensive logging during install
+    print(f"[Tricorder] WARNING: unable to import config module for migrations: {exc}")
+    sys.exit(0)
+
+try:
+    changed = config_module.apply_config_migrations()
+except Exception as exc:  # pragma: no cover - install-time guard
+    print(f"[Tricorder] WARNING: config migrations failed: {exc}")
+else:
+    if changed:
+        print("[Tricorder] Configuration updated with new defaults")
+    else:
+        print("[Tricorder] Configuration already up to date")
+PY
+fi
+
 for unit in systemd/*; do
   [ -f "$unit" ] || continue
   fname=$(basename "$unit")

@@ -7,6 +7,7 @@ import time
 import wave
 from datetime import datetime, timezone
 
+import os
 import pytest
 
 import collections
@@ -79,6 +80,287 @@ def test_flush_does_not_block_on_encode(monkeypatch):
     job_id, timeout = observed["call"]
     assert job_id > 0
     assert timeout == segmenter.SHUTDOWN_ENCODE_START_TIMEOUT
+
+
+def test_manual_split_starts_new_event(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    def fake_strftime(fmt: str, *_args: object) -> str:
+        if fmt == "%Y%m%d":
+            return "20240102"
+        if fmt == "%H-%M-%S":
+            return "12-34-56"
+        return "12-34-56"
+
+    monkeypatch.setattr(segmenter.time, "strftime", fake_strftime)
+    monkeypatch.setattr(segmenter.time, "time", lambda: 1_700_000_000.0)
+
+    original_counters = segmenter.TimelineRecorder.event_counters
+    segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
+
+    captured_jobs: list[tuple[str, str, str, str | None]] = []
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
+        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path))
+        return len(captured_jobs)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+
+    try:
+        for idx in range(3):
+            rec.ingest(make_frame(4000), idx)
+
+        assert rec.active
+        first_base = rec.base_name
+        assert first_base
+
+        assert rec.request_manual_split() is True
+        rec.ingest(make_frame(4000), 3)
+
+        assert captured_jobs, "expected encode job for manual split"
+
+        assert rec.active
+        assert rec.base_name
+        assert rec.base_name != first_base
+        assert rec.base_name.endswith("_Both_2")
+    finally:
+        rec.flush(10)
+        segmenter.TimelineRecorder.event_counters = original_counters
+
+
+def test_manual_split_no_active_event(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+
+    rec = TimelineRecorder()
+    try:
+        assert rec.request_manual_split() is False
+    finally:
+        rec.flush(0)
+
+
+def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", True)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_CHECK_INTERVAL", 0.0)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_LOAD_THRESHOLD", 1.0)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt, *args: "20240102")
+    monkeypatch.setattr(segmenter.os, "getloadavg", lambda: (0.1, 0.1, 0.1))
+    monkeypatch.setattr(segmenter.os, "cpu_count", lambda: 4)
+
+    class _FakeDatetime:
+        class _Stamp:
+            @staticmethod
+            def strftime(fmt: str) -> str:
+                return "12-34-56"
+
+        @classmethod
+        def now(cls):
+            return cls._Stamp()
+
+        @classmethod
+        def fromtimestamp(cls, ts: float):
+            return cls._Stamp()
+
+    monkeypatch.setattr(segmenter, "datetime", _FakeDatetime)
+
+    captured_encoder: dict[str, object] = {}
+
+    class FakeStreamingEncoder:
+        def __init__(self, partial_path: str, *, container_format: str = "opus") -> None:
+            self.partial_path = partial_path
+            self.container_format = container_format
+            self.started = False
+            self.feed_chunks: list[bytes] = []
+            captured_encoder["instance"] = self
+
+        def start(self, command: list[str] | None = None) -> None:
+            self.started = True
+
+        def feed(self, chunk: bytes) -> bool:
+            self.feed_chunks.append(bytes(chunk))
+            return True
+
+        def close(self, *, timeout: float | None = None) -> segmenter.StreamingEncoderResult:
+            path = Path(self.partial_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"parallel-data")
+            return segmenter.StreamingEncoderResult(
+                partial_path=self.partial_path,
+                success=True,
+                returncode=0,
+                error=None,
+                stderr=None,
+                bytes_sent=sum(len(chunk) for chunk in self.feed_chunks),
+                dropped_chunks=0,
+            )
+
+    monkeypatch.setattr(segmenter, "StreamingOpusEncoder", FakeStreamingEncoder)
+
+    captured_job: dict[str, object] = {}
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
+        captured_job["base"] = base_name
+        captured_job["existing"] = existing_opus_path
+        captured_job["source"] = source
+        return 42
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+    monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
+
+    rec = TimelineRecorder()
+    for idx in range(4):
+        rec.ingest(make_frame(2000), idx)
+
+    rec.writer_queue_drops = 3
+    rec.streaming_queue_drops = 0
+
+    rec.flush(10)
+
+    encoder = captured_encoder.get("instance")
+    assert encoder is not None and getattr(encoder, "started", False)
+
+    existing_path = captured_job.get("existing")
+    assert existing_path, "expected parallel output to be reused"
+    assert Path(existing_path).exists()
+    assert existing_path.endswith(segmenter.STREAMING_EXTENSION)
+    assert Path(existing_path).parent == rec_dir / "20240102"
+    waveform_path = Path(f"{existing_path}.waveform.json")
+    assert waveform_path.exists()
+    payload = json.loads(waveform_path.read_text(encoding="utf-8"))
+    assert payload.get("frame_count", 0) > 0
+    assert not Path(encoder.partial_path).exists()
+    partial_waveform = Path(f"{encoder.partial_path}.waveform.json")
+    assert not partial_waveform.exists()
+
+
+def test_live_waveform_updates_status(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", True)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_CHECK_INTERVAL", 0.0)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_LOAD_THRESHOLD", 1.0)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "LIVE_WAVEFORM_UPDATE_INTERVAL", 0.0)
+    monkeypatch.setattr(segmenter, "LIVE_WAVEFORM_BUCKET_COUNT", 4)
+    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt, *args: "20240108")
+    monkeypatch.setattr(segmenter.os, "getloadavg", lambda: (0.1, 0.1, 0.1))
+    monkeypatch.setattr(segmenter.os, "cpu_count", lambda: 4)
+
+    monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
+
+    class _FakeDatetime:
+        class _Stamp:
+            @staticmethod
+            def strftime(fmt: str) -> str:
+                return "12-34-56"
+
+        @classmethod
+        def now(cls):
+            return cls._Stamp()
+
+        @classmethod
+        def fromtimestamp(cls, ts: float):
+            return cls._Stamp()
+
+    monkeypatch.setattr(segmenter, "datetime", _FakeDatetime)
+
+    class DummyEncoder:
+        def __init__(self, partial_path: str, *, container_format: str = "opus") -> None:
+            self.partial_path = partial_path
+            self.container_format = container_format
+            self.started = False
+            self.feed_chunks: list[bytes] = []
+
+        def start(self, command: list[str] | None = None) -> None:
+            self.started = True
+
+        def feed(self, chunk: bytes) -> bool:
+            self.feed_chunks.append(bytes(chunk))
+            return True
+
+        def close(self, *, timeout: float | None = None):
+            Path(self.partial_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.partial_path).write_bytes(b"parallel")
+            return segmenter.StreamingEncoderResult(
+                partial_path=self.partial_path,
+                success=True,
+                returncode=0,
+                error=None,
+                stderr=None,
+                bytes_sent=sum(len(chunk) for chunk in self.feed_chunks),
+                dropped_chunks=0,
+            )
+
+    monkeypatch.setattr(segmenter, "StreamingOpusEncoder", DummyEncoder)
+
+    rec = TimelineRecorder()
+    for idx in range(6):
+        rec.ingest(make_frame(2000), idx)
+
+    assert rec._live_waveform_path is not None
+    waveform_file = Path(rec._live_waveform_path)
+    assert waveform_file.exists()
+    payload = json.loads(waveform_file.read_text(encoding="utf-8"))
+    assert payload["peaks"], "expected waveform peaks"
+
+    status_path = Path(segmenter.TMP_DIR) / "segmenter_status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    event_status = status.get("event", {})
+    assert event_status.get("partial_waveform_path", "").endswith(".waveform.json")
+
+    rec.flush(10)
 
 
 def test_adaptive_threshold_updates(monkeypatch):
@@ -282,14 +564,19 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
-    assert existing_arg is None
+    expected_extension = segmenter.STREAMING_EXTENSION
+    if not expected_extension.startswith("."):
+        expected_extension = f".{expected_extension}"
+    expected_opus = day_dir / f"{expected_final_base}{expected_extension}"
+    assert existing_arg == str(expected_opus)
 
     assert report.requeued == [expected_final_base]
     assert not partial_path.exists()
     assert not partial_waveform.exists()
     assert not filtered_path.exists()
     assert wav_path.exists()
-    assert any(str(partial_path) == entry for entry in report.removed_artifacts)
+    assert str(partial_path) not in report.removed_artifacts
+    assert str(partial_waveform) not in report.removed_artifacts
     assert report.removed_wavs == []
 
 
@@ -532,9 +819,97 @@ def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
             unique_thresholds.append(threshold)
     assert len(unique_thresholds) == len(observation_logs)
 
+
+def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp_path):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    def perf_counter():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+    monkeypatch.setattr(segmenter.time, "perf_counter", perf_counter)
+
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "enabled", True)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "update_interval_sec", 0.05)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "window_sec", 0.1)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "hysteresis_tolerance", 0.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "margin", 1.05)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "voiced_hold_sec", 0.1)
+
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 2)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 4)
+    monkeypatch.setattr(segmenter, "POST_PAD", 40, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 2, raising=False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 0, raising=False)
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(segmenter, "_normalized_load", lambda: 0.0)
+
+    class DummyWaveform:
+        def __init__(self, *_, **__):
+            pass
+
+        def add_frame(self, *_):
+            pass
+
+        def close(self):  # pragma: no cover - exercised indirectly
+            pass
+
+    monkeypatch.setattr(segmenter, "LiveWaveformWriter", DummyWaveform)
+    monkeypatch.setattr(segmenter, "is_voice", lambda *_: True)
+
+    rec = TimelineRecorder()
+    initial_threshold = rec._adaptive.threshold_linear
+
+    frame = make_frame(1200)
+    for idx in range(25):
+        rec.ingest(frame, idx)
+        fake_time[0] += 0.02
+
+    assert rec._adaptive.threshold_linear > initial_threshold
+    assert rec.active is False
+
+    rec.audio_q.put(None)
+    rec.writer.join(timeout=1)
+
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)
     assert segmenter.rms(buf) == 1200
+
+
+def test_live_waveform_writer_preserves_start_and_trigger(tmp_path):
+    destination = tmp_path / "waveform.json"
+    writer = segmenter.LiveWaveformWriter(
+        str(destination),
+        bucket_count=8,
+        update_interval=0.0,
+        start_epoch=123.456,
+        trigger_rms=789,
+    )
+    writer.add_frame(make_frame(1000))
+    writer.finalize()
+
+    with destination.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    assert payload["start_epoch"] == pytest.approx(123.456, rel=0, abs=1e-6)
+    assert payload["trigger_rms"] == 789
 
 
 def test_apply_gain_scales_and_clips(monkeypatch):

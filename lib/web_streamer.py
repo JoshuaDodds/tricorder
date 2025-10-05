@@ -47,6 +47,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import types
 import wave
 import zipfile
 from datetime import datetime, timezone
@@ -77,11 +78,87 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
 ]
 
+VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
+
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
+
+
+def _noop_callback(*_args, **_kwargs) -> None:
+    """Fallback callable used when defensive guards replace invalid callbacks."""
+
+
+_HANDLE_RUN_GUARD_INSTALLED = False
+
+
+def _install_loop_callback_guard(
+    loop: asyncio.AbstractEventLoop, log: logging.Logger
+) -> None:
+    """Prevent asyncio from executing ``None`` callbacks by swapping in a no-op."""
+
+    if getattr(loop, "_tricorder_none_callback_guard", False):  # pragma: no cover - guard
+        return
+
+    _install_handle_run_guard()
+
+    def _wrap(method_name: str) -> None:
+        original = getattr(loop, method_name, None)
+        if original is None:
+            return
+
+        reported = False
+
+        def safe(self, callback, *args, **kwargs):
+            nonlocal reported
+            if callback is None:
+                if not reported:
+                    log.error(
+                        "Ignored %s(None) scheduling attempt; replacing with no-op.",
+                        method_name,
+                        stack_info=True,
+                    )
+                    reported = True
+                else:
+                    log.error(
+                        "Ignored %s(None) scheduling attempt; replacing with no-op.",
+                        method_name,
+                    )
+                callback = _noop_callback
+            return original(callback, *args, **kwargs)
+
+        setattr(loop, method_name, types.MethodType(safe, loop))
+
+    _wrap("call_soon")
+    _wrap("call_soon_threadsafe")
+    loop._tricorder_none_callback_guard = True  # type: ignore[attr-defined]
+
+
+def _install_handle_run_guard() -> None:
+    global _HANDLE_RUN_GUARD_INSTALLED
+    if _HANDLE_RUN_GUARD_INSTALLED:  # pragma: no cover - defensive guard
+        return
+
+    handle_run = getattr(asyncio.Handle, "_run", None)
+    if handle_run is None:  # pragma: no cover - older asyncio fallbacks
+        return
+
+    asyncio_log = logging.getLogger("asyncio")
+
+    @functools.wraps(handle_run)
+    def safe_run(self: asyncio.Handle) -> None:  # type: ignore[name-defined]
+        if self._callback is None:
+            asyncio_log.error(
+                "Discarded asyncio handle with None callback; args=%r", self._args, stack_info=True
+            )
+            self._callback = _noop_callback
+            self._args = ()
+        return handle_run(self)
+
+    setattr(asyncio.Handle, "_run", safe_run)
+    _HANDLE_RUN_GUARD_INSTALLED = True
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
@@ -471,6 +548,7 @@ def _adaptive_rms_defaults() -> dict[str, Any]:
         "window_sec": 10.0,
         "hysteresis_tolerance": 0.1,
         "release_percentile": 0.5,
+        "voiced_hold_sec": 6.0,
     }
 
 
@@ -676,6 +754,7 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_sec",
             "hysteresis_tolerance",
             "release_percentile",
+            "voiced_hold_sec",
         ):
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1285,6 +1364,16 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     )
     if percentile is not None:
         normalized["release_percentile"] = percentile
+
+    voiced_hold = _coerce_float(
+        payload.get("voiced_hold_sec"),
+        "voiced_hold_sec",
+        errors,
+        min_value=0.0,
+        max_value=600.0,
+    )
+    if voiced_hold is not None:
+        normalized["voiced_hold_sec"] = voiced_hold
 
     if normalized["max_thresh"] < normalized["min_thresh"]:
         errors.append("max_thresh must be greater than or equal to min_thresh")
@@ -3349,6 +3438,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     event["partial_recording_path"] = normalized_path
                 if rel_path:
                     event["partial_recording_rel_path"] = rel_path
+            waveform_path = event_payload.get("partial_waveform_path")
+            if isinstance(waveform_path, str) and waveform_path:
+                normalized_waveform, rel_waveform = _normalize_partial_path(waveform_path)
+                if normalized_waveform:
+                    event["partial_waveform_path"] = normalized_waveform
+                if rel_waveform:
+                    event["partial_waveform_rel_path"] = rel_waveform
             in_progress = event_payload.get("in_progress")
             if isinstance(in_progress, bool):
                 event["in_progress"] = in_progress
@@ -3449,6 +3545,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             if rel_path:
                 status["partial_recording_rel_path"] = rel_path
 
+        partial_waveform_path = raw.get("partial_waveform_path")
+        if isinstance(partial_waveform_path, str) and partial_waveform_path:
+            normalized_waveform, rel_waveform = _normalize_partial_path(partial_waveform_path)
+            if normalized_waveform:
+                status["partial_waveform_path"] = normalized_waveform
+            if rel_waveform:
+                status["partial_waveform_rel_path"] = rel_waveform
+
         streaming_format = raw.get("streaming_container_format")
         if isinstance(streaming_format, str) and streaming_format:
             status["streaming_container_format"] = streaming_format
@@ -3499,32 +3603,40 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         pending_entries.append(entry)
             encoding["pending"] = pending_entries
 
+            active_entries: list[dict[str, object]] = []
             active_raw = encoding_raw.get("active")
-            if isinstance(active_raw, dict):
+            raw_candidates: list[dict[str, object]] = []
+            if isinstance(active_raw, list):
+                raw_candidates = [item for item in active_raw if isinstance(item, dict)]
+            elif isinstance(active_raw, dict):
+                raw_candidates = [active_raw]
+            for item in raw_candidates:
                 active_entry: dict[str, object] = {}
-                base_name = active_raw.get("base_name")
+                base_name = item.get("base_name")
                 if isinstance(base_name, str) and base_name:
                     active_entry["base_name"] = base_name
-                source = active_raw.get("source")
+                source = item.get("source")
                 if isinstance(source, str) and source:
                     active_entry["source"] = source
-                job_id = active_raw.get("id")
+                job_id = item.get("id")
                 if isinstance(job_id, (int, float)) and math.isfinite(job_id):
                     active_entry["id"] = int(job_id)
-                queued_at = active_raw.get("queued_at")
+                queued_at = item.get("queued_at")
                 if isinstance(queued_at, (int, float)) and math.isfinite(queued_at):
                     active_entry["queued_at"] = float(queued_at)
-                started_at = active_raw.get("started_at")
+                started_at = item.get("started_at")
                 if isinstance(started_at, (int, float)) and math.isfinite(started_at):
                     active_entry["started_at"] = float(started_at)
-                duration_value = active_raw.get("duration_seconds")
+                duration_value = item.get("duration_seconds")
                 if isinstance(duration_value, (int, float)) and math.isfinite(duration_value):
                     active_entry["duration_seconds"] = max(0.0, float(duration_value))
-                status_value = active_raw.get("status")
+                status_value = item.get("status")
                 if isinstance(status_value, str) and status_value:
                     active_entry["status"] = status_value
                 if active_entry:
-                    encoding["active"] = active_entry
+                    active_entries.append(active_entry)
+            if active_entries:
+                encoding["active"] = active_entries
 
             if encoding.get("pending") or encoding.get("active"):
                 status["encoding"] = encoding
@@ -4689,6 +4801,26 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         return response
 
+    async def _serve_partial_json(
+        request: web.Request, resolved: Path
+    ) -> web.StreamResponse:
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, resolved.read_bytes)
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound() from exc
+        except OSError as exc:
+            raise web.HTTPServiceUnavailable(text=str(exc)) from exc
+
+        response = web.Response(body=data)
+        response.content_type = "application/json"
+        response.charset = "utf-8"
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="{resolved.name}"'
+        )
+        return response
+
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
         if not rel:
@@ -4706,6 +4838,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             raise web.HTTPNotFound()
 
         if _path_is_partial(resolved):
+            if resolved.suffix.lower() == ".json":
+                return await _serve_partial_json(request, resolved)
             return await _stream_partial_file(request, resolved)
 
         if not resolved.is_file():
@@ -4763,7 +4897,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload = _archival_response_payload(refreshed)
         return web.json_response(payload)
 
-    recorder_unit = "voice-recorder.service"
+    recorder_unit = VOICE_RECORDER_SERVICE_UNIT
     web_streamer_unit = "web-streamer.service"
     section_restart_units: dict[str, Sequence[str]] = {
         "audio": [recorder_unit],
@@ -5185,6 +5319,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         response["status"] = status
         return web.json_response(response)
 
+    async def capture_split(_: web.Request) -> web.Response:
+        code, stdout_text, stderr_text = await _run_systemctl(
+            ["kill", "--signal=USR1", VOICE_RECORDER_SERVICE_UNIT]
+        )
+        if code != 0:
+            message = stderr_text.strip() or stdout_text.strip() or f"systemctl exited with {code}"
+            return web.json_response({"ok": False, "error": message}, status=502)
+        return web.json_response({"ok": True})
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -5325,6 +5468,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
+    app.router.add_post("/api/capture/split", capture_split)
 
     if stream_mode == "hls":
         app.router.add_get("/hls/start", hls_start)
@@ -5534,6 +5678,7 @@ def start_web_streamer_in_thread(
 
     def _run():
         asyncio.set_event_loop(loop)
+        _install_loop_callback_guard(loop, log)
         app = build_app(lets_encrypt_manager=lets_encrypt_manager)
         if ssl_context is not None:
             app[SSL_CONTEXT_KEY] = ssl_context
