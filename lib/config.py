@@ -14,10 +14,11 @@ Environment variables override file values when present.
 """
 from __future__ import annotations
 import copy
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Dict, Mapping, MutableMapping, MutableSequence, Sequence
 
 try:
     from ruamel.yaml import YAML
@@ -858,6 +859,268 @@ def _dump_yaml(path: Path, payload: MutableMapping[str, Any] | Dict[str, Any]) -
                 )
     except Exception as exc:
         raise ConfigPersistenceError(f"Unable to write configuration: {exc}") from exc
+
+
+_ConfigMigration = Callable[[MutableMapping[str, Any]], bool]
+
+
+def _migration_info(logger: logging.Logger | None, message: str) -> None:
+    if logger is not None:
+        logger.info(message)
+    else:
+        print(f"[config] {message}", flush=True)
+
+
+def _migration_warning(logger: logging.Logger | None, message: str) -> None:
+    if logger is not None:
+        logger.warning(message)
+    else:
+        print(f"[config] WARNING: {message}", flush=True)
+
+
+def _normalize_string_list(container: MutableMapping[str, Any], key: str) -> bool:
+    if key not in container:
+        container[key] = _convert_to_round_trip([])
+        return True
+
+    value = container.get(key)
+
+    if isinstance(value, str):
+        normalized = [chunk.strip() for chunk in value.split(",") if chunk.strip()]
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+    elif value is None:
+        normalized = []
+    else:
+        text = str(value).strip()
+        normalized = [text] if text else []
+
+    current: list[str]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        current = [str(item).strip() for item in value if str(item).strip()]
+    elif isinstance(value, str):
+        current = [chunk.strip() for chunk in value.split(",") if chunk.strip()]
+    elif value is None:
+        current = []
+    else:
+        text = str(value).strip()
+        current = [text] if text else []
+
+    if current == normalized and isinstance(value, MutableSequence):
+        return False
+
+    container[key] = _convert_to_round_trip(normalized)
+    return True
+
+
+def _migrate_archival_rsync_lists(cfg: MutableMapping[str, Any]) -> bool:
+    archival = cfg.get("archival")
+    if not isinstance(archival, MutableMapping):
+        return False
+
+    rsync = archival.get("rsync")
+    if not isinstance(rsync, MutableMapping):
+        return False
+
+    changed = False
+    changed |= _normalize_string_list(rsync, "options")
+    changed |= _normalize_string_list(rsync, "ssh_options")
+    return changed
+
+
+_SECTION_FALLBACKS: Dict[str, Any] = {
+    "streaming": {
+        "mode": "hls",
+        "webrtc_history_seconds": 8.0,
+        "webrtc_ice_servers": [
+            {
+                "urls": [
+                    "stun:stun.cloudflare.com:3478",
+                    "stun:stun.l.google.com:19302",
+                ]
+            }
+        ],
+    },
+    "dashboard": {
+        "api_base": "",
+        "services": [
+            {
+                "unit": "voice-recorder.service",
+                "label": "Recorder",
+                "description": "Segments microphone input into individual events.",
+            },
+            {
+                "unit": "web-streamer.service",
+                "label": "Web UI",
+                "description": "Serves the dashboard and live stream.",
+            },
+            {
+                "unit": "dropbox.service",
+                "label": "Dropbox ingest",
+                "description": "Monitors dropbox_dir for externally provided audio files.",
+            },
+            {
+                "unit": "tricorder-auto-update.service",
+                "label": "Auto updater",
+                "description": "Applies updates staged by the project updater.",
+            },
+            {
+                "unit": "tmpfs-guard.service",
+                "label": "Tmpfs guard",
+                "description": "Ensures tmpfs usage stays within configured limits.",
+            },
+        ],
+        "web_service": "web-streamer.service",
+    },
+    "web_server": {
+        "mode": "http",
+        "listen_host": "0.0.0.0",
+        "listen_port": 8080,
+        "tls_provider": "letsencrypt",
+        "certificate_path": "",
+        "private_key_path": "",
+        "lets_encrypt": {
+            "enabled": False,
+            "email": "",
+            "domains": [],
+            "cache_dir": "/apps/tricorder/letsencrypt",
+            "staging": False,
+            "certbot_path": "certbot",
+            "http_port": 80,
+            "renew_before_days": 30,
+        },
+    },
+}
+
+
+def _clone_config_value(value: Any) -> Any:
+    return copy.deepcopy(value)
+
+
+def _template_section_default(section: str) -> Any:
+    template = _load_comment_template()
+    if template is not None:
+        candidate = template.get(section)
+        if candidate is not None:
+            return _clone_config_value(candidate)
+    fallback = _SECTION_FALLBACKS.get(section)
+    if fallback is None:
+        return {}
+    return _clone_config_value(fallback)
+
+
+def _seed_new_config_sections(
+    cfg: MutableMapping[str, Any], *, had_comments: bool
+) -> bool:
+    changed = False
+    added_section = False
+    for section in ("streaming", "dashboard", "web_server"):
+        existing = cfg.get(section)
+        if isinstance(existing, MutableMapping):
+            continue
+        if isinstance(existing, Mapping):
+            converted = _convert_to_round_trip(existing)
+            if isinstance(converted, MutableMapping):
+                cfg[section] = converted
+                changed = True
+                continue
+        if existing is not None and section in cfg:
+            # Respect non-mapping overrides (e.g., explicit null/false).
+            continue
+        cfg[section] = _template_section_default(section)
+        changed = True
+        added_section = True
+
+    if added_section and not had_comments:
+        template_doc = _template_with_values(cfg)
+        if isinstance(template_doc, MutableMapping):
+            try:
+                cfg.clear()
+            except Exception:
+                pass
+            else:
+                for key, value in template_doc.items():
+                    cfg[key] = _clone_config_value(value)
+                changed = True
+    return changed
+
+
+_CONFIG_MIGRATIONS: tuple[tuple[str, _ConfigMigration], ...] = (
+    ("20241005_normalize_archival_rsync_lists", _migrate_archival_rsync_lists),
+)
+
+
+def apply_config_migrations(*, logger: logging.Logger | None = None) -> bool:
+    try:
+        this_dir = Path(__file__).resolve().parent
+        project_root = this_dir.parent
+    except Exception:
+        project_root = Path.cwd()
+
+    try:
+        script_dir = Path(sys.argv[0]).resolve().parent
+    except Exception:
+        script_dir = Path.cwd()
+
+    search = _candidate_search_paths(project_root, script_dir)
+    active: Path | None = None
+    for candidate in search:
+        try:
+            if candidate.exists():
+                active = candidate
+                break
+        except OSError:
+            continue
+
+    primary = _resolve_primary_path(search, active)
+    if not primary.exists():
+        return False
+
+    try:
+        document = _load_yaml_for_update(primary)
+    except ConfigPersistenceError as exc:
+        _migration_warning(logger, f"Unable to read configuration for migrations: {exc}")
+        return False
+
+    if not document:
+        # Empty configuration means nothing to migrate; avoid creating files with defaults.
+        return False
+
+    had_comments = _file_has_comments(primary)
+
+    changed = False
+    try:
+        if _seed_new_config_sections(document, had_comments=had_comments):
+            changed = True
+            _migration_info(
+                logger,
+                "Applied config migration 20241012_seed_dashboard_and_streaming_sections",
+            )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        _migration_warning(
+            logger,
+            f"Migration 20241012_seed_dashboard_and_streaming_sections failed: {exc}",
+        )
+
+    for name, migration in _CONFIG_MIGRATIONS:
+        try:
+            if migration(document):
+                changed = True
+                _migration_info(logger, f"Applied config migration {name}")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            _migration_warning(logger, f"Migration {name} failed: {exc}")
+
+    if not changed:
+        return False
+
+    try:
+        _dump_yaml(primary, document)
+    except ConfigPersistenceError as exc:
+        _migration_warning(logger, f"Unable to persist configuration after migrations: {exc}")
+        return False
+
+    reload_cfg()
+    return True
 
 
 def _persist_settings_section(

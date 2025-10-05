@@ -206,11 +206,13 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             "event": {"base_name": "alpha"},
             "encoding": {
                 "pending": [{"base_name": "queued", "source": "ingest"}],
-                "active": {
-                    "base_name": "active",
-                    "source": "live",
-                    "duration_seconds": 12.0,
-                },
+                "active": [
+                    {
+                        "base_name": "active",
+                        "source": "live",
+                        "duration_seconds": 12.0,
+                    }
+                ],
             },
         }
         status_path.write_text(json.dumps(status_payload), encoding="utf-8")
@@ -293,6 +295,8 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
         day_dir.mkdir()
         partial_path = day_dir / "alpha.partial.opus"
         partial_path.write_bytes(b"header")
+        waveform_path = day_dir / "alpha.partial.opus.waveform.json"
+        waveform_path.write_text("{}", encoding="utf-8")
 
         payload = {
             "capturing": True,
@@ -301,6 +305,7 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             "event_size_bytes": 5120,
             "event_duration_seconds": 4.0,
             "partial_recording_path": str(partial_path),
+            "partial_waveform_path": str(waveform_path),
             "streaming_container_format": "opus",
             "event": {
                 "base_name": "alpha",
@@ -308,6 +313,7 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
                 "started_epoch": now - 2,
                 "started_at": "12-00-00",
                 "partial_recording_path": str(partial_path),
+                "partial_waveform_path": str(waveform_path),
                 "streaming_container_format": "opus",
             },
         }
@@ -323,9 +329,12 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             capture_status = data.get("capture_status", {})
             rel_path = capture_status.get("partial_recording_rel_path")
             assert rel_path == "20240105/alpha.partial.opus"
+            waveform_rel = capture_status.get("partial_waveform_rel_path")
+            assert waveform_rel == "20240105/alpha.partial.opus.waveform.json"
             event = capture_status.get("event", {})
             assert event.get("partial_recording_rel_path") == rel_path
             assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
+            assert event.get("partial_waveform_rel_path") == waveform_rel
         finally:
             await client.close()
             await server.close()
@@ -364,6 +373,45 @@ def test_recordings_streams_partial_until_finalized(dashboard_env):
             await append_task
             assert body == b"HEADBODY1BODY2"
             assert resp.headers.get("Content-Type") == "audio/ogg"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_returns_partial_waveform_snapshot(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240107"
+        day_dir.mkdir()
+        waveform_path = day_dir / "gamma.partial.opus.waveform.json"
+        payload = {
+            "version": 1,
+            "channels": 1,
+            "sample_rate": 48000,
+            "frame_count": 48000,
+            "duration_seconds": 1.0,
+            "peak_scale": 32767,
+            "peaks": [1, -1],
+            "rms_values": [1],
+        }
+        waveform_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            rel = waveform_path.relative_to(dashboard_env).as_posix()
+            resp = await client.get(f"/recordings/{rel}")
+            assert resp.status == 200
+            content_type = resp.headers.get("Content-Type")
+            assert content_type is not None
+            assert content_type.startswith("application/json")
+            assert resp.headers.get("Cache-Control") == "no-store"
+            body = await resp.text()
+            data = json.loads(body)
+            assert data.get("peaks") == payload["peaks"]
+            assert data.get("duration_seconds") == pytest.approx(payload["duration_seconds"])
         finally:
             await client.close()
             await server.close()
@@ -2070,6 +2118,55 @@ def test_recordings_rename_endpoint(dashboard_env):
                 },
             )
             assert conflict_resp.status == 409
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_split_endpoint(monkeypatch, dashboard_env):
+    async def runner():
+        calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            calls.append(list(args))
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/split")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("ok") is True
+            assert ["kill", "--signal=USR1", "voice-recorder.service"] in calls
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_split_failure(monkeypatch, dashboard_env):
+    async def runner():
+        async def fake_systemctl(_args):
+            return 1, "", "boom"
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/split")
+            assert resp.status == 502
+            payload = await resp.json()
+            assert payload.get("ok") is False
+            assert payload.get("error") == "boom"
         finally:
             await client.close()
             await server.close()

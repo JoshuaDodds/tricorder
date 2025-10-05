@@ -442,7 +442,6 @@ def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
     jobs = [job_id for job_id in job_ids if isinstance(job_id, int)]
     if not jobs:
         return
-
     for job_id in jobs:
         while True:
             try:
@@ -461,6 +460,52 @@ def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
                 f"[dropbox] Waiting for encode job {job_id} to finish...",
                 flush=True,
             )
+
+    while True:
+        snapshot = ENCODING_STATUS.snapshot()
+        if not snapshot:
+            break
+
+        def _format(entry: dict[str, object], status: str) -> str:
+            job_id = entry.get("id")
+            base = entry.get("base_name") or ""
+            prefix = f"{job_id}" if isinstance(job_id, int) else "?"
+            base_str = f" {base}" if isinstance(base, str) and base else ""
+            return f"{prefix}{base_str} ({status})"
+
+        outstanding = [
+            _format(entry, "active")
+            for entry in snapshot.get("active", [])
+            if isinstance(entry, dict)
+        ]
+        outstanding.extend(
+            _format(entry, "pending")
+            for entry in snapshot.get("pending", [])
+            if isinstance(entry, dict)
+        )
+
+        if not outstanding:
+            break
+
+        print(
+            "[dropbox] Waiting for outstanding encode jobs: "
+            + ", ".join(outstanding),
+            flush=True,
+        )
+
+        try:
+            finished = ENCODING_STATUS.wait_for_all(timeout=10.0)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            print(
+                f"[dropbox] WARN: failed waiting for outstanding encode jobs: {exc}",
+                flush=True,
+            )
+            break
+
+        if finished:
+            break
 
 
 def process_file(path):

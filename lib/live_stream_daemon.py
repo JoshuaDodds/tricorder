@@ -7,8 +7,8 @@ import sys
 import time
 from collections import deque
 from queue import Empty
-from typing import Any, Optional, Tuple
-from lib.segmenter import TimelineRecorder
+from typing import Any, Iterable, Optional, Tuple
+from lib.segmenter import ENCODING_STATUS, TimelineRecorder, perform_startup_recovery
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
@@ -66,10 +66,82 @@ ARECORD_CMD = [
 ]
 
 stop_requested = False
+split_requested = False
 p = None
 
+
+def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
+    jobs = [job_id for job_id in job_ids if isinstance(job_id, int)]
+    for job_id in jobs:
+        while True:
+            try:
+                finished = ENCODING_STATUS.wait_for_finish(job_id, timeout=10.0)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                print(
+                    f"[live] WARN: failed waiting for encode job {job_id}: {exc}",
+                    flush=True,
+                )
+                break
+            if finished:
+                break
+            print(
+                f"[live] Waiting for encode job {job_id} to finish...",
+                flush=True,
+            )
+
+    while True:
+        snapshot = ENCODING_STATUS.snapshot()
+        if not snapshot:
+            break
+
+        def _format(entry: dict[str, object], status: str) -> str:
+            job_id = entry.get("id")
+            base = entry.get("base_name") or ""
+            prefix = f"{job_id}" if isinstance(job_id, int) else "?"
+            base_str = f" {base}" if isinstance(base, str) and base else ""
+            return f"{prefix}{base_str} ({status})"
+
+        outstanding = [
+            _format(entry, "active")
+            for entry in snapshot.get("active", [])
+            if isinstance(entry, dict)
+        ]
+        outstanding.extend(
+            _format(entry, "pending")
+            for entry in snapshot.get("pending", [])
+            if isinstance(entry, dict)
+        )
+
+        if not outstanding:
+            break
+
+        print(
+            "[live] Waiting for outstanding encode jobs: "
+            + ", ".join(outstanding),
+            flush=True,
+        )
+
+        try:
+            finished = ENCODING_STATUS.wait_for_all(timeout=10.0)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            print(
+                f"[live] WARN: failed waiting for outstanding encode jobs: {exc}",
+                flush=True,
+            )
+            break
+
+        if finished:
+            break
+
 def handle_signal(signum, frame):  # noqa
-    global stop_requested, p
+    global stop_requested, p, split_requested
+    if signum == signal.SIGUSR1:
+        split_requested = True
+        return
     print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
     if p is not None and p.poll() is None:
@@ -80,6 +152,7 @@ def handle_signal(signum, frame):  # noqa
 
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGUSR1, handle_signal)
 
 def spawn_arecord():
     env = os.environ.copy()
@@ -293,10 +366,23 @@ class FilterPipeline:
         return FilterPipelineError(reason, fallback)
 
 def main():
-    global p, stop_requested
+    global p, stop_requested, split_requested
     stop_requested = False
+    split_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
+
+    try:
+        recovery_report = perform_startup_recovery()
+        if recovery_report.any_actions():
+            cleaned_count = len(recovery_report.removed_wavs) + len(recovery_report.removed_artifacts)
+            print(
+                "[live] startup recovery queued"
+                f" {len(recovery_report.requeued)} encode job(s) and removed {cleaned_count} stale file(s)",
+                flush=True,
+            )
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        print(f"[live] WARN: startup recovery failed: {exc!r}", flush=True)
 
     publish_frame = None
     hls = None
@@ -429,6 +515,14 @@ def main():
                     pass
 
             while not stop_requested:
+                if split_requested:
+                    if rec.request_manual_split():
+                        print("[live] manual split signal received", flush=True)
+                        split_requested = False
+                    else:
+                        print("[live] manual split requested but no active event", flush=True)
+                        split_requested = False
+
                 now = time.monotonic()
                 if STREAM_MODE == "hls" and now >= next_state_poll:
                     controller.refresh_from_state()
@@ -567,6 +661,8 @@ def main():
                         flush_processed(drained)
                 if 'rec' in locals():
                     rec.flush(frame_idx)
+                    if stop_requested:
+                        _wait_for_encode_completion(rec.encode_job_ids())
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 

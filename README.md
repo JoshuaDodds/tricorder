@@ -42,7 +42,16 @@ graph TD
 
     LS -->|frames| C["TimelineRecorder (segmenter.py)"];
     C -->|tmp WAV| D[encode_and_store.sh];
-    D -->|Opus + waveform JSON| E["recordings dir (/apps/tricorder/recordings)"];
+    C -->|event metadata| N["Notification dispatcher\n(lib.notifications)"];
+    N -->|webhooks / email| OUT[Operators];
+    D -->|Opus files| E["recordings dir (/apps/tricorder/recordings)"];
+    D -->|waveform JSON| WF[lib.waveform_cache];
+    WF --> E;
+    D -->|transcript JSON| TR[lib.transcription];
+    TR --> E;
+    D -->|archival uploads| ARCH[lib.archival backends];
+    ARCH --> REMOTE[Remote archives];
+    D -.->|on failure| FH[lib.fault_handler];
 
     subgraph "Live streaming outputs"
         LS -->|frames| H["HLSTee (hls_mux.py)"];
@@ -67,7 +76,9 @@ graph TD
         SM_dropbox[dropbox.path + dropbox.service] --> G;
         SM_tmpfs[tmpfs-guard.timer + tmpfs-guard.service] --> E;
         SM_updater[tricorder-auto-update.timer + service] --> D;
-        SM_sd_monitor[sd-card-monitor.service] --> J;
+        SM_sd_monitor[sd-card-monitor.service] --> SDM[sd_card_monitor.py];
+        SDM -->|persist health| HEALTH[sd_card_health.py];
+        HEALTH --> J;
     end
 ```
 
@@ -76,9 +87,9 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 1. **Capture guardrails** – `live_stream_daemon.py` restarts `arecord` on failure and preserves frame ordering so downstream queues never see duplicates.
 2. **Filter offload** – `FilterPipeline` ships frames to a helper process that runs the configured `AudioFilterChain`. This keeps DSP work off the capture loop while still surfacing filter failures back to the supervisor.
 3. **Fan-out hub** – the daemon forwards filtered frames to two destinations:
-   - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, and coordination with `bin/encode_and_store.sh`.
+   - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, notification dispatch, and coordination with `bin/encode_and_store.sh`.
    - `HLSTee` / `WebRTCBufferWriter` so live listeners can attach without disturbing capture cadence.
-4. **Encoding + storage** – the encoder script writes Opus, waveform JSON, and optional transcript sidecars into `/apps/tricorder/recordings`.
+4. **Encoding + storage** – the encoder script writes Opus files, waveform JSON, and transcript sidecars into `/apps/tricorder/recordings`, kicks off post-encode archival backends via `lib.archival`, and relies on `lib.fault_handler` to triage any encoding failures.
 
 `lib.hls_controller` brokers HLS encoder lifecycles on behalf of the dashboard, while the WebRTC branch keeps a bounded history buffer that the browser drains when establishing a peer connection. Dropbox ingest feeds the same timeline recorder, guaranteeing that external files experience identical filtering, encoding, waveform generation, and transcription steps.
 
@@ -131,9 +142,11 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 `lib/web_streamer.py` + `lib/webui` expose a dashboard at `/` with the following capabilities:
 
 - Live recorder status and listener counts with encoder start/stop controls.
+- Manual **Split Event** control to finalize the current recording and immediately begin a new segment without interrupting encoding.
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
+- Adjustable waveform amplitude zoom control for inspecting quiet or loud passages.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
@@ -370,11 +383,13 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain.
 - Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
     For example, set `max_rms: 250` to allow adaptive increases up to 250 and no higher.
+  - `voiced_hold_sec` lets the controller fall back to voiced frames after extended stretches without
+    background samples so misclassified noise beds cannot pin the threshold at stale values.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
 - `notifications` – optional webhook/email alerts when events finish recording.

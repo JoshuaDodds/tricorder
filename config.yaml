@@ -167,6 +167,29 @@ segmenter:
   # Container format for streaming output. Supported values: "opus" (default) or "webm".
   streaming_encode_container: "opus"
 
+  # Opportunistic parallel encoding mirrors audio frames into a background ffmpeg worker
+  # that writes a .parallel.opus file in tmpfs while the WAV is still growing. When the
+  # event finishes, the encoder job reuses the pre-built Opus container and only runs the
+  # waveform/transcription pipeline. Disable on systems that cannot spare a CPU core.
+  parallel_encode:
+    enabled: true
+    # Trigger when the 1-minute load average per CPU falls below this threshold.
+    load_avg_per_cpu: 0.75
+    # Minimum event duration (seconds) before the parallel encoder starts.
+    min_event_seconds: 1.0
+    # How often to poll load averages while waiting to start (seconds). Set 0 for every frame.
+    cpu_check_interval_sec: 1.0
+    # Maximum concurrent encode-and-store workers when the system has spare CPU.
+    offline_max_workers: 2
+    # Load threshold (1-minute average per CPU) that allows additional encode jobs to launch.
+    offline_load_avg_per_cpu: 0.75
+    # Polling interval while waiting for load to drop before starting another encode worker.
+    offline_cpu_check_interval_sec: 1.0
+    # Number of waveform buckets to publish for in-progress recordings (controls JSON size/resolution).
+    live_waveform_buckets: 1024
+    # Seconds between live waveform JSON refreshes while recording (lower = more frequent updates).
+    live_waveform_update_interval_sec: 1.0
+
   # Max queued frames before backpressure/drop (safety). With 20ms @ 48k mono: 512 ≈ 10.24s of audio.
   # Keep modest to avoid memory spikes. Typical: 256–1024.
   max_queue_frames: 512
@@ -209,6 +232,11 @@ adaptive_rms:
   # Percentile (0.0-1.0] used when lowering the threshold after noise subsides.
   # Smaller values release faster once the room quiets; higher values stay conservative.
   release_percentile: 0.5
+
+  # When adaptive RMS is running but no unvoiced frames arrive for this long (seconds),
+  # fall back to treating voiced frames as background so the threshold can escape
+  # runaway recordings caused by misclassified noise beds.
+  voiced_hold_sec: 6.0
 
 ingest:
   # Number of consecutive size-stability checks required before accepting a file.
