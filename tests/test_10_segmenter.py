@@ -101,18 +101,23 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
     monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
     monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
-    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt: "20240102")
+    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt, *args: "20240102")
     monkeypatch.setattr(segmenter.os, "getloadavg", lambda: (0.1, 0.1, 0.1))
     monkeypatch.setattr(segmenter.os, "cpu_count", lambda: 4)
 
     class _FakeDatetime:
+        class _Stamp:
+            @staticmethod
+            def strftime(fmt: str) -> str:
+                return "12-34-56"
+
         @classmethod
         def now(cls):
-            class _Stamp:
-                def strftime(self, fmt: str) -> str:
-                    return "12-34-56"
+            return cls._Stamp()
 
-            return _Stamp()
+        @classmethod
+        def fromtimestamp(cls, ts: float):
+            return cls._Stamp()
 
     monkeypatch.setattr(segmenter, "datetime", _FakeDatetime)
 
@@ -197,20 +202,25 @@ def test_live_waveform_updates_status(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
     monkeypatch.setattr(segmenter, "LIVE_WAVEFORM_UPDATE_INTERVAL", 0.0)
     monkeypatch.setattr(segmenter, "LIVE_WAVEFORM_BUCKET_COUNT", 4)
-    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt: "20240108")
+    monkeypatch.setattr(segmenter.time, "strftime", lambda fmt, *args: "20240108")
     monkeypatch.setattr(segmenter.os, "getloadavg", lambda: (0.1, 0.1, 0.1))
     monkeypatch.setattr(segmenter.os, "cpu_count", lambda: 4)
 
     monkeypatch.setattr(segmenter.TimelineRecorder, "event_counters", collections.defaultdict(int))
 
     class _FakeDatetime:
+        class _Stamp:
+            @staticmethod
+            def strftime(fmt: str) -> str:
+                return "12-34-56"
+
         @classmethod
         def now(cls):
-            class _Stamp:
-                def strftime(self, fmt: str) -> str:
-                    return "12-34-56"
+            return cls._Stamp()
 
-            return _Stamp()
+        @classmethod
+        def fromtimestamp(cls, ts: float):
+            return cls._Stamp()
 
     monkeypatch.setattr(segmenter, "datetime", _FakeDatetime)
 
