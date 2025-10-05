@@ -2045,6 +2045,7 @@ class TimelineRecorder:
 
         if self.queue_drops:
             streaming_drop_detected = True
+            parallel_drop_detected = True
 
         if streaming_drop_detected:
             drop_details = []
@@ -2096,10 +2097,21 @@ class TimelineRecorder:
                     flush=True,
                 )
 
-        if parallel_drop_detected and parallel_result:
-            detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
+        if parallel_drop_detected:
+            drop_details: list[str] = []
+            if parallel_result and (
+                parallel_result.dropped_chunks or self._parallel_encoder_drops
+            ):
+                detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
+                drop_details.append(f"encoder={detail}")
+            if self.queue_drops:
+                drop_details.append(f"queue={self.queue_drops}")
+            details = ", ".join(drop_details) if drop_details else "unknown"
             print(
-                f"[segmenter] WARN: parallel encoder dropped chunks ({detail}); will fall back to offline encode",
+                (
+                    "[segmenter] WARN: parallel encoder detected dropped chunks "
+                    f"({details}); will fall back to offline encode"
+                ),
                 flush=True,
             )
 
