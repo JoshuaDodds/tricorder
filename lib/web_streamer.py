@@ -4757,6 +4757,26 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         return response
 
+    async def _serve_partial_json(
+        request: web.Request, resolved: Path
+    ) -> web.StreamResponse:
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, resolved.read_bytes)
+        except FileNotFoundError as exc:
+            raise web.HTTPNotFound() from exc
+        except OSError as exc:
+            raise web.HTTPServiceUnavailable(text=str(exc)) from exc
+
+        response = web.Response(body=data)
+        response.content_type = "application/json"
+        response.charset = "utf-8"
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="{resolved.name}"'
+        )
+        return response
+
     async def recordings_file(request: web.Request) -> web.StreamResponse:
         rel = request.match_info.get("path", "").strip("/")
         if not rel:
@@ -4774,6 +4794,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             raise web.HTTPNotFound()
 
         if _path_is_partial(resolved):
+            if resolved.suffix.lower() == ".json":
+                return await _serve_partial_json(request, resolved)
             return await _stream_partial_file(request, resolved)
 
         if not resolved.is_file():

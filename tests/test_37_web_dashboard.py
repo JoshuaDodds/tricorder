@@ -380,6 +380,45 @@ def test_recordings_streams_partial_until_finalized(dashboard_env):
     asyncio.run(runner())
 
 
+def test_recordings_returns_partial_waveform_snapshot(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240107"
+        day_dir.mkdir()
+        waveform_path = day_dir / "gamma.partial.opus.waveform.json"
+        payload = {
+            "version": 1,
+            "channels": 1,
+            "sample_rate": 48000,
+            "frame_count": 48000,
+            "duration_seconds": 1.0,
+            "peak_scale": 32767,
+            "peaks": [1, -1],
+            "rms_values": [1],
+        }
+        waveform_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            rel = waveform_path.relative_to(dashboard_env).as_posix()
+            resp = await client.get(f"/recordings/{rel}")
+            assert resp.status == 200
+            content_type = resp.headers.get("Content-Type")
+            assert content_type is not None
+            assert content_type.startswith("application/json")
+            assert resp.headers.get("Cache-Control") == "no-store"
+            body = await resp.text()
+            data = json.loads(body)
+            assert data.get("peaks") == payload["peaks"]
+            assert data.get("duration_seconds") == pytest.approx(payload["duration_seconds"])
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_archival_settings_round_trip(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
