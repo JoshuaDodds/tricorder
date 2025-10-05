@@ -7,8 +7,8 @@ import sys
 import time
 from collections import deque
 from queue import Empty
-from typing import Any, Optional, Tuple
-from lib.segmenter import TimelineRecorder, perform_startup_recovery
+from typing import Any, Iterable, Optional, Tuple
+from lib.segmenter import ENCODING_STATUS, TimelineRecorder, perform_startup_recovery
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
@@ -67,6 +67,31 @@ ARECORD_CMD = [
 
 stop_requested = False
 p = None
+
+
+def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
+    jobs = [job_id for job_id in job_ids if isinstance(job_id, int)]
+    if not jobs:
+        return
+
+    for job_id in jobs:
+        while True:
+            try:
+                finished = ENCODING_STATUS.wait_for_finish(job_id, timeout=10.0)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                print(
+                    f"[live] WARN: failed waiting for encode job {job_id}: {exc}",
+                    flush=True,
+                )
+                break
+            if finished:
+                break
+            print(
+                f"[live] Waiting for encode job {job_id} to finish...",
+                flush=True,
+            )
 
 def handle_signal(signum, frame):  # noqa
     global stop_requested, p
@@ -579,6 +604,8 @@ def main():
                         flush_processed(drained)
                 if 'rec' in locals():
                     rec.flush(frame_idx)
+                    if stop_requested:
+                        _wait_for_encode_completion(rec.encode_job_ids())
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 

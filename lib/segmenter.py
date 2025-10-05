@@ -593,10 +593,60 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 
         artifact_bases: list[str] = list(existing_final_bases)
         final_base: str | None = None
+        existing_opus_path: str | None = None
+        final_opus_path: Path | None = None
         if not existing_final_bases:
             rms_value = _estimate_rms_from_file(wav_path)
             final_base = _derive_final_base(wav_path, rms_value)
             artifact_bases.append(final_base)
+            final_opus_path = day_dir / f"{final_base}{final_extension}"
+
+            partial_candidate: Path | None = None
+            if STREAMING_PARTIAL_SUFFIX:
+                candidate = day_dir / f"{wav_path.stem}{STREAMING_PARTIAL_SUFFIX}"
+                if candidate.exists():
+                    partial_candidate = candidate
+
+            if final_opus_path.exists():
+                existing_opus_path = str(final_opus_path)
+            elif partial_candidate is not None:
+                try:
+                    os.replace(partial_candidate, final_opus_path)
+                except Exception as exc:
+                    print(
+                        (
+                            "[recovery] WARN: failed to promote streaming partial "
+                            f"{partial_candidate} -> {final_opus_path}: {exc!r}"
+                        ),
+                        flush=True,
+                    )
+                    partial_candidate = None
+                else:
+                    existing_opus_path = str(final_opus_path)
+                    _log_recovery(
+                        f"Promoted streaming partial {partial_candidate.name} to {final_opus_path.name}"
+                    )
+
+            if partial_candidate is not None and existing_opus_path:
+                for suffix in (".waveform.json", ".transcript.json"):
+                    partial_sidecar = partial_candidate.with_name(partial_candidate.name + suffix)
+                    if not partial_sidecar.exists():
+                        continue
+                    destination = final_opus_path.with_suffix(final_opus_path.suffix + suffix)
+                    try:
+                        os.replace(partial_sidecar, destination)
+                    except Exception as exc:
+                        print(
+                            (
+                                "[recovery] WARN: failed to promote streaming sidecar "
+                                f"{partial_sidecar} -> {destination}: {exc!r}"
+                            ),
+                            flush=True,
+                        )
+                        continue
+                    _log_recovery(
+                        f"Promoted streaming sidecar {partial_sidecar.name} to {destination.name}"
+                    )
 
         for artifact in _collect_streaming_artifacts(day_dir, wav_path.stem, artifact_bases):
             _remove_file(artifact, report, category="artifact")
@@ -608,7 +658,12 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         day_dir.mkdir(parents=True, exist_ok=True)
         try:
             assert final_base is not None
-            _enqueue_encode_job(str(wav_path), final_base, source="recovery")
+            _enqueue_encode_job(
+                str(wav_path),
+                final_base,
+                source="recovery",
+                existing_opus_path=existing_opus_path,
+            )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
                 f"[recovery] WARN: failed to enqueue encode job for {final_base}: {exc!r}",

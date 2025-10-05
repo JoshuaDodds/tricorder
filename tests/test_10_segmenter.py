@@ -479,14 +479,19 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
-    assert existing_arg is None
+    expected_extension = segmenter.STREAMING_EXTENSION
+    if not expected_extension.startswith("."):
+        expected_extension = f".{expected_extension}"
+    expected_opus = day_dir / f"{expected_final_base}{expected_extension}"
+    assert existing_arg == str(expected_opus)
 
     assert report.requeued == [expected_final_base]
     assert not partial_path.exists()
     assert not partial_waveform.exists()
     assert not filtered_path.exists()
     assert wav_path.exists()
-    assert any(str(partial_path) == entry for entry in report.removed_artifacts)
+    assert str(partial_path) not in report.removed_artifacts
+    assert str(partial_waveform) not in report.removed_artifacts
     assert report.removed_wavs == []
 
 
