@@ -808,6 +808,25 @@ def test_rms_matches_constant_signal():
     assert segmenter.rms(buf) == 1200
 
 
+def test_live_waveform_writer_preserves_start_and_trigger(tmp_path):
+    destination = tmp_path / "waveform.json"
+    writer = segmenter.LiveWaveformWriter(
+        str(destination),
+        bucket_count=8,
+        update_interval=0.0,
+        start_epoch=123.456,
+        trigger_rms=789,
+    )
+    writer.add_frame(make_frame(1000))
+    writer.finalize()
+
+    with destination.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    assert payload["start_epoch"] == pytest.approx(123.456, rel=0, abs=1e-6)
+    assert payload["trigger_rms"] == 789
+
+
 def test_apply_gain_scales_and_clips(monkeypatch):
     buf = (32000).to_bytes(2, 'little', signed=True) * 2
     monkeypatch.setattr(segmenter, "GAIN", 0.5)
