@@ -2165,16 +2165,19 @@ class TimelineRecorder:
                     self._live_waveform_path = None
                     self._live_waveform_rel_path = None
 
+                prebuf_bytes: list[bytes] = []
                 if self.prebuf:
                     for f in self.prebuf:
-                        self._q_send(bytes(f))
-                        if self._streaming_encoder and not self._streaming_encoder.feed(bytes(f)):
+                        frame_bytes = bytes(f)
+                        prebuf_bytes.append(frame_bytes)
+                        self._q_send(frame_bytes)
+                        if self._streaming_encoder and not self._streaming_encoder.feed(frame_bytes):
                             self.queue_drops += 1
-                        if self._parallel_encoder and not self._parallel_encoder.feed(bytes(f)):
+                        if self._parallel_encoder and not self._parallel_encoder.feed(frame_bytes):
                             self._parallel_encoder_drops += 1
                         if self._live_waveform:
                             try:
-                                self._live_waveform.add_frame(bytes(f))
+                                self._live_waveform.add_frame(frame_bytes)
                             except Exception:
                                 pass
                         self.frames_written += 1
@@ -2185,7 +2188,12 @@ class TimelineRecorder:
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
+                parallel_was_missing = self._parallel_encoder is None
                 self._maybe_start_parallel_encode(force=True)
+                if parallel_was_missing and self._parallel_encoder and prebuf_bytes:
+                    for frame_bytes in prebuf_bytes:
+                        if not self._parallel_encoder.feed(frame_bytes):
+                            self._parallel_encoder_drops += 1
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
                     f"(trigger={'RMS' if loud else 'VAD'}>{current_threshold} (rms={rms_val}))",
