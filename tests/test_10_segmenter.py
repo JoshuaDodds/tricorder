@@ -169,6 +169,9 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     for idx in range(4):
         rec.ingest(make_frame(2000), idx)
 
+    rec.writer_queue_drops = 3
+    rec.streaming_queue_drops = 0
+
     rec.flush(10)
 
     encoder = captured_encoder.get("instance")
