@@ -82,6 +82,88 @@ def test_flush_does_not_block_on_encode(monkeypatch):
     assert timeout == segmenter.SHUTDOWN_ENCODE_START_TIMEOUT
 
 
+def test_manual_split_starts_new_event(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    def fake_strftime(fmt: str, *_args: object) -> str:
+        if fmt == "%Y%m%d":
+            return "20240102"
+        if fmt == "%H-%M-%S":
+            return "12-34-56"
+        return "12-34-56"
+
+    monkeypatch.setattr(segmenter.time, "strftime", fake_strftime)
+    monkeypatch.setattr(segmenter.time, "time", lambda: 1_700_000_000.0)
+
+    original_counters = segmenter.TimelineRecorder.event_counters
+    segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
+
+    captured_jobs: list[tuple[str, str, str, str | None]] = []
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
+        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path))
+        return len(captured_jobs)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+
+    try:
+        for idx in range(3):
+            rec.ingest(make_frame(4000), idx)
+
+        assert rec.active
+        first_base = rec.base_name
+        assert first_base
+
+        assert rec.request_manual_split() is True
+        rec.ingest(make_frame(4000), 3)
+
+        assert captured_jobs, "expected encode job for manual split"
+
+        assert rec.active
+        assert rec.base_name
+        assert rec.base_name != first_base
+        assert rec.base_name.endswith("_Both_2")
+    finally:
+        rec.flush(10)
+        segmenter.TimelineRecorder.event_counters = original_counters
+
+
+def test_manual_split_no_active_event(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+
+    rec = TimelineRecorder()
+    try:
+        assert rec.request_manual_split() is False
+    finally:
+        rec.flush(0)
+
+
 def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"

@@ -2125,6 +2125,55 @@ def test_recordings_rename_endpoint(dashboard_env):
     asyncio.run(runner())
 
 
+def test_capture_split_endpoint(monkeypatch, dashboard_env):
+    async def runner():
+        calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            calls.append(list(args))
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/split")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("ok") is True
+            assert ["kill", "--signal=USR1", "voice-recorder.service"] in calls
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_split_failure(monkeypatch, dashboard_env):
+    async def runner():
+        async def fake_systemctl(_args):
+            return 1, "", "boom"
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/split")
+            assert resp.status == 502
+            payload = await resp.json()
+            assert payload.get("ok") is False
+            assert payload.get("error") == "boom"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_bulk_download_includes_sidecars(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"

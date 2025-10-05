@@ -78,6 +78,8 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
 ]
 
+VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
+
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -4895,7 +4897,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload = _archival_response_payload(refreshed)
         return web.json_response(payload)
 
-    recorder_unit = "voice-recorder.service"
+    recorder_unit = VOICE_RECORDER_SERVICE_UNIT
     web_streamer_unit = "web-streamer.service"
     section_restart_units: dict[str, Sequence[str]] = {
         "audio": [recorder_unit],
@@ -5317,6 +5319,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         response["status"] = status
         return web.json_response(response)
 
+    async def capture_split(_: web.Request) -> web.Response:
+        code, stdout_text, stderr_text = await _run_systemctl(
+            ["kill", "--signal=USR1", VOICE_RECORDER_SERVICE_UNIT]
+        )
+        if code != 0:
+            message = stderr_text.strip() or stdout_text.strip() or f"systemctl exited with {code}"
+            return web.json_response({"ok": False, "error": message}, status=502)
+        return web.json_response({"ok": True})
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -5457,6 +5468,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
+    app.router.add_post("/api/capture/split", capture_split)
 
     if stream_mode == "hls":
         app.router.add_get("/hls/start", hls_start)
