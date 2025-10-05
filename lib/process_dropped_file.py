@@ -440,6 +440,8 @@ def scan_and_ingest() -> None:
 
 def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
     jobs = [job_id for job_id in job_ids if isinstance(job_id, int)]
+    if not jobs:
+        return
     for job_id in jobs:
         while True:
             try:
