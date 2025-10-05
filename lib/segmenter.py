@@ -1721,7 +1721,8 @@ class TimelineRecorder:
         self.event_timestamp: str | None = None
         self.event_counter: int | None = None
         self.trigger_rms: int | None = None
-        self.queue_drops = 0
+        self.writer_queue_drops = 0
+        self.streaming_queue_drops = 0
 
         self.frames_written = 0
         self.sum_rms = 0
@@ -2144,7 +2145,7 @@ class TimelineRecorder:
         try:
             self.audio_q.put_nowait(item)
         except queue.Full:
-            self.queue_drops += 1
+            self.writer_queue_drops += 1
 
     def ingest(self, buf: bytes, idx: int):
         start = time.perf_counter()
@@ -2320,7 +2321,7 @@ class TimelineRecorder:
                         prebuf_bytes.append(frame_bytes)
                         self._q_send(frame_bytes)
                         if self._streaming_encoder and not self._streaming_encoder.feed(frame_bytes):
-                            self.queue_drops += 1
+                            self.streaming_queue_drops += 1
                         if self._parallel_encoder and not self._parallel_encoder.feed(frame_bytes):
                             self._parallel_encoder_drops += 1
                         if self._live_waveform:
@@ -2380,7 +2381,7 @@ class TimelineRecorder:
 
         self._q_send(bytes(buf))
         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
-            self.queue_drops += 1
+            self.streaming_queue_drops += 1
         if self._parallel_encoder and not self._parallel_encoder.feed(bytes(buf)):
             self._parallel_encoder_drops += 1
         if self._live_waveform:
@@ -2440,7 +2441,7 @@ class TimelineRecorder:
             partial_stream_path = streaming_result.partial_path
             streaming_drop_detected = bool(streaming_result.dropped_chunks)
 
-        if self.queue_drops:
+        if self.streaming_queue_drops:
             streaming_drop_detected = True
 
         if streaming_drop_detected:
@@ -2449,8 +2450,10 @@ class TimelineRecorder:
                 drop_details.append(
                     f"encoder={streaming_result.dropped_chunks}"
                 )
-            if self.queue_drops:
-                drop_details.append(f"queue={self.queue_drops}")
+            if self.streaming_queue_drops:
+                drop_details.append(f"queue={self.streaming_queue_drops}")
+            if self.writer_queue_drops:
+                drop_details.append(f"writer={self.writer_queue_drops}")
             details = ", ".join(drop_details) if drop_details else "unknown"
             print(
                 f"[segmenter] WARN: streaming encoder dropped chunks ({details}); falling back to offline encode",
@@ -2508,9 +2511,10 @@ class TimelineRecorder:
         except queue.Empty:
             print("[segmenter] WARN: writer did not close file within 5s", flush=True)
 
+        total_queue_drops = self.writer_queue_drops + self.streaming_queue_drops
         print(
             f"[segmenter] Event ended ({reason}). type={etype_label}, avg_rms={avg_rms:.1f}, frames={self.frames_written}"
-            + (f", q_drops={self.queue_drops}" if self.queue_drops else ""),
+            + (f", q_drops={total_queue_drops}" if total_queue_drops else ""),
             flush=True
         )
 
@@ -2798,7 +2802,8 @@ class TimelineRecorder:
         self.saw_loud = False
         self.base_name = None
         self.tmp_wav_path = None
-        self.queue_drops = 0
+        self.writer_queue_drops = 0
+        self.streaming_queue_drops = 0
         self.event_timestamp = None
         self.event_counter = None
         self.trigger_rms = None
