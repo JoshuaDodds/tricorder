@@ -1305,6 +1305,28 @@ class EncodingStatus:
                     return False
                 self._cond.wait(remaining)
 
+    def wait_for_all(self, timeout: float | None = None) -> bool:
+        """Wait until all pending and active jobs have finished."""
+
+        deadline: float | None = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+
+        with self._cond:
+            while True:
+                if not self._active and not self._pending:
+                    return True
+
+                if timeout is None:
+                    self._cond.wait()
+                    continue
+
+                assert deadline is not None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+
 
 ENCODING_STATUS = EncodingStatus()
 
