@@ -1333,6 +1333,16 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     if percentile is not None:
         normalized["release_percentile"] = percentile
 
+    voiced_hold = _coerce_float(
+        payload.get("voiced_hold_sec"),
+        "voiced_hold_sec",
+        errors,
+        min_value=0.0,
+        max_value=600.0,
+    )
+    if voiced_hold is not None:
+        normalized["voiced_hold_sec"] = voiced_hold
+
     if normalized["max_thresh"] < normalized["min_thresh"]:
         errors.append("max_thresh must be greater than or equal to min_thresh")
 

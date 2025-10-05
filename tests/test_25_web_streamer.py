@@ -237,6 +237,41 @@ def test_normalize_webrtc_ice_servers_disable():
     assert web_streamer._normalize_webrtc_ice_servers([]) == []
 
 
+def _adaptive_payload_with(**overrides):
+    payload = {
+        "enabled": True,
+        "min_thresh": 0.02,
+        "max_thresh": 0.9,
+        "margin": 1.3,
+        "update_interval_sec": 5.0,
+        "window_sec": 10.0,
+        "hysteresis_tolerance": 0.1,
+        "release_percentile": 0.5,
+        "voiced_hold_sec": 6.0,
+        "max_rms": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_normalize_adaptive_rms_payload_voiced_hold():
+    normalized, errors = web_streamer._normalize_adaptive_rms_payload(
+        _adaptive_payload_with(voiced_hold_sec="2.75")
+    )
+
+    assert not errors
+    assert normalized["voiced_hold_sec"] == pytest.approx(2.75)
+
+
+def test_normalize_adaptive_rms_payload_voiced_hold_bounds():
+    normalized, errors = web_streamer._normalize_adaptive_rms_payload(
+        _adaptive_payload_with(voiced_hold_sec=-1)
+    )
+
+    assert any("voiced_hold_sec" in message for message in errors)
+    assert normalized["voiced_hold_sec"] == web_streamer._adaptive_rms_defaults()["voiced_hold_sec"]
+
+
 def test_resolve_web_server_runtime_http_defaults():
     cfg = {"web_server": {"mode": "http", "listen_host": "127.0.0.1", "listen_port": 9090}}
     host, port, ssl_ctx, manager = web_streamer._resolve_web_server_runtime(cfg)
