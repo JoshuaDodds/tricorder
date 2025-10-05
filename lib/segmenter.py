@@ -1732,6 +1732,7 @@ class TimelineRecorder:
         self._ingest_hint: Optional[RecorderIngestHint] = ingest_hint
         self._ingest_hint_used = False
         self._encode_jobs: list[int] = []
+        self._manual_split_requested = False
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -2148,6 +2149,17 @@ class TimelineRecorder:
             self.writer_queue_drops += 1
 
     def ingest(self, buf: bytes, idx: int):
+        force_restart = False
+        if self._manual_split_requested:
+            if self.active:
+                print("[segmenter] Manual split requested; finalizing current event", flush=True)
+                self._manual_split_requested = False
+                self._finalize_event(reason="manual split")
+                self.prebuf.clear()
+                force_restart = True
+            else:
+                self._manual_split_requested = False
+
         start = time.perf_counter()
         buf = self._apply_gain(buf)
         if DENOISE_BEFORE_VAD:
@@ -2162,6 +2174,10 @@ class TimelineRecorder:
         current_threshold = self._adaptive.threshold_linear
         loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
+        if force_restart:
+            frame_active = True
+            self.consec_active = max(0, START_CONSECUTIVE - 1)
+            self.consec_inactive = 0
         capturing_now = self.active or frame_active
 
         # collect rolling window for debug stats
@@ -2403,6 +2419,13 @@ class TimelineRecorder:
 
         if self.post_count <= 0:
             self._finalize_event(reason=f"no active input for {POST_PAD}ms")
+
+    def request_manual_split(self) -> bool:
+        if not self.active:
+            self._manual_split_requested = False
+            return False
+        self._manual_split_requested = True
+        return True
 
     def _finalize_event(self, reason: str, wait_for_encode_start: bool = False):
         if self.frames_written <= 0 or not self.base_name:
@@ -2811,6 +2834,7 @@ class TimelineRecorder:
         self.event_day = None
         self._ingest_hint = None
         self._ingest_hint_used = True
+        self._manual_split_requested = False
         self._cleanup_live_waveform()
 
     def flush(self, idx: int):

@@ -66,6 +66,7 @@ ARECORD_CMD = [
 ]
 
 stop_requested = False
+split_requested = False
 p = None
 
 
@@ -137,7 +138,10 @@ def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
             break
 
 def handle_signal(signum, frame):  # noqa
-    global stop_requested, p
+    global stop_requested, p, split_requested
+    if signum == signal.SIGUSR1:
+        split_requested = True
+        return
     print(f"[live] received signal {signum}, shutting down...", flush=True)
     stop_requested = True
     if p is not None and p.poll() is None:
@@ -148,6 +152,7 @@ def handle_signal(signum, frame):  # noqa
 
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGUSR1, handle_signal)
 
 def spawn_arecord():
     env = os.environ.copy()
@@ -361,8 +366,9 @@ class FilterPipeline:
         return FilterPipelineError(reason, fallback)
 
 def main():
-    global p, stop_requested
+    global p, stop_requested, split_requested
     stop_requested = False
+    split_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
 
@@ -509,6 +515,14 @@ def main():
                     pass
 
             while not stop_requested:
+                if split_requested:
+                    if rec.request_manual_split():
+                        print("[live] manual split signal received", flush=True)
+                        split_requested = False
+                    else:
+                        print("[live] manual split requested but no active event", flush=True)
+                        split_requested = False
+
                 now = time.monotonic()
                 if STREAM_MODE == "hls" and now >= next_state_poll:
                     controller.refresh_from_state()
