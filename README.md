@@ -146,6 +146,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
+- Adjustable waveform amplitude zoom control for inspecting quiet or loud passages.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.

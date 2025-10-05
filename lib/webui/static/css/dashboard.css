@@ -1368,8 +1368,17 @@ button.small {
 .waveform-header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.waveform-header-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .waveform-header span:first-child {
@@ -1382,6 +1391,30 @@ button.small {
 .waveform-status {
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+.waveform-zoom-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.waveform-zoom-control label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.waveform-zoom-control input[type="range"] {
+  width: 8rem;
+}
+
+.waveform-zoom-value {
+  min-width: 2.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .waveform-clock-row {
