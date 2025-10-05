@@ -722,6 +722,75 @@ def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
             unique_thresholds.append(threshold)
     assert len(unique_thresholds) == len(observation_logs)
 
+
+def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp_path):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    def perf_counter():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+    monkeypatch.setattr(segmenter.time, "perf_counter", perf_counter)
+
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "enabled", True)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "update_interval_sec", 0.05)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "window_sec", 0.1)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "hysteresis_tolerance", 0.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "margin", 1.05)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "voiced_hold_sec", 0.1)
+
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 2)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 4)
+    monkeypatch.setattr(segmenter, "POST_PAD", 40, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 2, raising=False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 0, raising=False)
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(segmenter, "_normalized_load", lambda: 0.0)
+
+    class DummyWaveform:
+        def __init__(self, *_, **__):
+            pass
+
+        def add_frame(self, *_):
+            pass
+
+        def close(self):  # pragma: no cover - exercised indirectly
+            pass
+
+    monkeypatch.setattr(segmenter, "LiveWaveformWriter", DummyWaveform)
+    monkeypatch.setattr(segmenter, "is_voice", lambda *_: True)
+
+    rec = TimelineRecorder()
+    initial_threshold = rec._adaptive.threshold_linear
+
+    frame = make_frame(1200)
+    for idx in range(25):
+        rec.ingest(frame, idx)
+        fake_time[0] += 0.02
+
+    assert rec._adaptive.threshold_linear > initial_threshold
+    assert rec.active is False
+
+    rec.audio_q.put(None)
+    rec.writer.join(timeout=1)
+
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)
     assert segmenter.rms(buf) == 1200

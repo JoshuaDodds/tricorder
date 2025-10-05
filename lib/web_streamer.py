@@ -516,6 +516,7 @@ def _adaptive_rms_defaults() -> dict[str, Any]:
         "window_sec": 10.0,
         "hysteresis_tolerance": 0.1,
         "release_percentile": 0.5,
+        "voiced_hold_sec": 6.0,
     }
 
 
@@ -721,6 +722,7 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_sec",
             "hysteresis_tolerance",
             "release_percentile",
+            "voiced_hold_sec",
         ):
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):

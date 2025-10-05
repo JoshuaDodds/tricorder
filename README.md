@@ -386,6 +386,8 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
     For example, set `max_rms: 250` to allow adaptive increases up to 250 and no higher.
+  - `voiced_hold_sec` lets the controller fall back to voiced frames after extended stretches without
+    background samples so misclassified noise beds cannot pin the threshold at stale values.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
 - `logging` – developer-mode verbosity toggle.
 - `notifications` – optional webhook/email alerts when events finish recording.
