@@ -3347,6 +3347,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     event["partial_recording_path"] = normalized_path
                 if rel_path:
                     event["partial_recording_rel_path"] = rel_path
+            waveform_path = event_payload.get("partial_waveform_path")
+            if isinstance(waveform_path, str) and waveform_path:
+                normalized_waveform, rel_waveform = _normalize_partial_path(waveform_path)
+                if normalized_waveform:
+                    event["partial_waveform_path"] = normalized_waveform
+                if rel_waveform:
+                    event["partial_waveform_rel_path"] = rel_waveform
             in_progress = event_payload.get("in_progress")
             if isinstance(in_progress, bool):
                 event["in_progress"] = in_progress
@@ -3447,6 +3454,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             if rel_path:
                 status["partial_recording_rel_path"] = rel_path
 
+        partial_waveform_path = raw.get("partial_waveform_path")
+        if isinstance(partial_waveform_path, str) and partial_waveform_path:
+            normalized_waveform, rel_waveform = _normalize_partial_path(partial_waveform_path)
+            if normalized_waveform:
+                status["partial_waveform_path"] = normalized_waveform
+            if rel_waveform:
+                status["partial_waveform_rel_path"] = rel_waveform
+
         streaming_format = raw.get("streaming_container_format")
         if isinstance(streaming_format, str) and streaming_format:
             status["streaming_container_format"] = streaming_format
@@ -3497,32 +3512,40 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         pending_entries.append(entry)
             encoding["pending"] = pending_entries
 
+            active_entries: list[dict[str, object]] = []
             active_raw = encoding_raw.get("active")
-            if isinstance(active_raw, dict):
+            raw_candidates: list[dict[str, object]] = []
+            if isinstance(active_raw, list):
+                raw_candidates = [item for item in active_raw if isinstance(item, dict)]
+            elif isinstance(active_raw, dict):
+                raw_candidates = [active_raw]
+            for item in raw_candidates:
                 active_entry: dict[str, object] = {}
-                base_name = active_raw.get("base_name")
+                base_name = item.get("base_name")
                 if isinstance(base_name, str) and base_name:
                     active_entry["base_name"] = base_name
-                source = active_raw.get("source")
+                source = item.get("source")
                 if isinstance(source, str) and source:
                     active_entry["source"] = source
-                job_id = active_raw.get("id")
+                job_id = item.get("id")
                 if isinstance(job_id, (int, float)) and math.isfinite(job_id):
                     active_entry["id"] = int(job_id)
-                queued_at = active_raw.get("queued_at")
+                queued_at = item.get("queued_at")
                 if isinstance(queued_at, (int, float)) and math.isfinite(queued_at):
                     active_entry["queued_at"] = float(queued_at)
-                started_at = active_raw.get("started_at")
+                started_at = item.get("started_at")
                 if isinstance(started_at, (int, float)) and math.isfinite(started_at):
                     active_entry["started_at"] = float(started_at)
-                duration_value = active_raw.get("duration_seconds")
+                duration_value = item.get("duration_seconds")
                 if isinstance(duration_value, (int, float)) and math.isfinite(duration_value):
                     active_entry["duration_seconds"] = max(0.0, float(duration_value))
-                status_value = active_raw.get("status")
+                status_value = item.get("status")
                 if isinstance(status_value, str) and status_value:
                     active_entry["status"] = status_value
                 if active_entry:
-                    encoding["active"] = active_entry
+                    active_entries.append(active_entry)
+            if active_entries:
+                encoding["active"] = active_entries
 
             if encoding.get("pending") or encoding.get("active"):
                 status["encoding"] = encoding

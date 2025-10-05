@@ -67,7 +67,7 @@ def test_pcm_source_lowers_priority_when_encoding_active(tmp_path, monkeypatch):
     monkeypatch.setattr(
         process_dropped_file,
         "ENCODING_STATUS",
-        types.SimpleNamespace(snapshot=lambda: {"active": {"id": 1}}),
+        types.SimpleNamespace(snapshot=lambda: {"active": [{"id": 1}]}),
     )
 
     nice_calls: list[int] = []

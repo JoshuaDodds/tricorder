@@ -6,6 +6,7 @@ import re
 import sys
 import time
 import collections
+import contextlib
 import subprocess
 import wave
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ import warnings
 from collections.abc import Callable
 from typing import Optional
 import array
+from lib.waveform_cache import DEFAULT_BUCKET_COUNT, MAX_BUCKET_COUNT, PEAK_SCALE
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
@@ -50,6 +52,7 @@ SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
 FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
@@ -61,6 +64,17 @@ def _sanitize_event_tag(tag: str) -> str:
     sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
     sanitized = sanitized.strip("_-")
     return sanitized or "event"
+
+
+def _normalized_load() -> float | None:
+    try:
+        load1, _, _ = os.getloadavg()
+    except (AttributeError, OSError):
+        return None
+    cpus = os.cpu_count() or 1
+    if cpus <= 0:
+        cpus = 1
+    return load1 / float(cpus)
 
 
 @dataclass(frozen=True)
@@ -146,6 +160,42 @@ if _STREAMING_FORMAT not in {"opus", "webm"}:
 STREAMING_CONTAINER_FORMAT = _STREAMING_FORMAT
 STREAMING_EXTENSION = ".opus" if STREAMING_CONTAINER_FORMAT == "opus" else ".webm"
 STREAMING_PARTIAL_SUFFIX = f".partial{STREAMING_EXTENSION}"
+
+_PARALLEL_CFG = cfg["segmenter"].get("parallel_encode", {})
+PARALLEL_ENCODE_ENABLED = bool(_PARALLEL_CFG.get("enabled", True))
+PARALLEL_ENCODE_LOAD_THRESHOLD = float(
+    _PARALLEL_CFG.get("load_avg_per_cpu", 0.75)
+)
+PARALLEL_ENCODE_CHECK_INTERVAL = max(
+    0.0, float(_PARALLEL_CFG.get("cpu_check_interval_sec", 1.0))
+)
+PARALLEL_ENCODE_MIN_SECONDS = max(
+    0.0, float(_PARALLEL_CFG.get("min_event_seconds", 1.0))
+)
+if PARALLEL_ENCODE_MIN_SECONDS <= 0.0:
+    PARALLEL_ENCODE_MIN_FRAMES = 1
+else:
+    PARALLEL_ENCODE_MIN_FRAMES = max(
+        1, int(round((PARALLEL_ENCODE_MIN_SECONDS * 1000.0) / FRAME_MS))
+    )
+PARALLEL_ENCODE_SUFFIX = f".parallel{STREAMING_EXTENSION}"
+PARALLEL_PARTIAL_SUFFIX = f"{PARALLEL_ENCODE_SUFFIX}.partial"
+PARALLEL_TMP_DIR = os.path.join(TMP_DIR, "parallel")
+PARALLEL_OFFLINE_MAX_WORKERS = max(
+    1, int(_PARALLEL_CFG.get("offline_max_workers", 2))
+)
+PARALLEL_OFFLINE_LOAD_THRESHOLD = float(
+    _PARALLEL_CFG.get("offline_load_avg_per_cpu", PARALLEL_ENCODE_LOAD_THRESHOLD)
+)
+PARALLEL_OFFLINE_CHECK_INTERVAL = max(
+    0.1, float(_PARALLEL_CFG.get("offline_cpu_check_interval_sec", 1.0))
+)
+LIVE_WAVEFORM_BUCKET_COUNT = max(
+    1, int(_PARALLEL_CFG.get("live_waveform_buckets", DEFAULT_BUCKET_COUNT))
+)
+LIVE_WAVEFORM_UPDATE_INTERVAL = max(
+    0.1, float(_PARALLEL_CFG.get("live_waveform_update_interval_sec", 1.0))
+)
 
 # PRE_PAD / POST_PAD
 PRE_PAD = int(cfg["segmenter"]["pre_pad_ms"])
@@ -517,9 +567,157 @@ class StreamingOpusEncoder:
             dropped_chunks=self._dropped,
         )
 
+
+class LiveWaveformWriter:
+    """Incrementally publishes waveform JSON for in-progress recordings."""
+
+    def __init__(
+        self,
+        destination: str,
+        *,
+        bucket_count: int = LIVE_WAVEFORM_BUCKET_COUNT,
+        update_interval: float = LIVE_WAVEFORM_UPDATE_INTERVAL,
+    ) -> None:
+        if not destination:
+            raise ValueError("destination is required for LiveWaveformWriter")
+        self.destination = destination
+        self.bucket_count = max(1, min(bucket_count, MAX_BUCKET_COUNT))
+        self.update_interval = max(0.1, float(update_interval))
+        self._frames: list[tuple[int, int, float, int]] = []
+        self._total_frames = 0
+        self._total_samples = 0
+        self._last_write = 0.0
+        self._lock = threading.Lock()
+        self._start_epoch = time.time()
+
+    def add_frame(self, buf: bytes) -> None:
+        if not buf:
+            return
+        samples = array.array("h")
+        samples.frombytes(buf)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if not samples:
+            return
+        frame_min = min(samples)
+        frame_max = max(samples)
+        square_sum = 0.0
+        for sample in samples:
+            square_sum += float(sample) * float(sample)
+        sample_count = len(samples)
+        with self._lock:
+            self._frames.append((frame_min, frame_max, square_sum, sample_count))
+            self._total_frames += 1
+            self._total_samples += sample_count
+            now = time.monotonic()
+            if now - self._last_write >= self.update_interval:
+                self._write_locked(now)
+
+    def finalize(self) -> None:
+        with self._lock:
+            self._write_locked(time.monotonic())
+
+    def clear(self) -> None:
+        with self._lock:
+            self._frames.clear()
+            self._total_frames = 0
+            self._total_samples = 0
+            self._last_write = 0.0
+
+    def _write_locked(self, timestamp: float) -> None:
+        if self._total_frames <= 0 or self._total_samples <= 0:
+            return
+        payload = self._build_payload_locked(timestamp)
+        dest_dir = os.path.dirname(self.destination)
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError:
+            pass
+        tmp_path = f"{self.destination}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.write("\n")
+            os.replace(tmp_path, self.destination)
+            self._last_write = timestamp
+        except Exception:
+            with contextlib.suppress(Exception):
+                os.unlink(tmp_path)
+
+    def _build_payload_locked(self, timestamp: float) -> dict[str, object]:
+        frame_count = self._total_frames
+        if frame_count <= 0:
+            return {
+                "version": 1,
+                "channels": 1,
+                "sample_rate": SAMPLE_RATE,
+                "frame_count": 0,
+                "duration_seconds": 0.0,
+                "peak_scale": PEAK_SCALE,
+                "peaks": [],
+                "rms_values": [],
+                "updated_epoch": time.time(),
+                "start_epoch": self._start_epoch,
+            }
+
+        bucket_count = max(1, min(self.bucket_count, frame_count))
+        frames_per_bucket = frame_count / float(bucket_count)
+        peaks = [0] * (bucket_count * 2)
+        rms_values = [0] * bucket_count
+
+        bucket_min = 32767
+        bucket_max = -32768
+        bucket_sq = 0.0
+        bucket_samples = 0
+        bucket_index = 0
+        consumed_frames = 0.0
+        next_threshold = frames_per_bucket
+
+        for frame_min, frame_max, square_sum, sample_count in self._frames:
+            if bucket_index >= bucket_count:
+                break
+            if frame_min < bucket_min:
+                bucket_min = frame_min
+            if frame_max > bucket_max:
+                bucket_max = frame_max
+            bucket_sq += square_sum
+            bucket_samples += sample_count
+            consumed_frames += 1.0
+
+            if consumed_frames >= next_threshold or bucket_index == bucket_count - 1:
+                peaks[bucket_index * 2] = max(-32768, min(32767, bucket_min))
+                peaks[bucket_index * 2 + 1] = max(-32768, min(32767, bucket_max))
+                if bucket_samples > 0:
+                    rms_val = int(round(math.sqrt(bucket_sq / bucket_samples)))
+                else:
+                    rms_val = 0
+                rms_values[bucket_index] = max(0, min(PEAK_SCALE, rms_val))
+                bucket_index += 1
+                bucket_min = 32767
+                bucket_max = -32768
+                bucket_sq = 0.0
+                bucket_samples = 0
+                next_threshold = frames_per_bucket * (bucket_index + 1)
+
+        duration_seconds = frame_count * (FRAME_MS / 1000.0)
+        payload = {
+            "version": 1,
+            "channels": 1,
+            "sample_rate": SAMPLE_RATE,
+            "frame_count": frame_count,
+            "sample_count": self._total_samples,
+            "duration_seconds": duration_seconds,
+            "peak_scale": PEAK_SCALE,
+            "peaks": peaks,
+            "rms_values": rms_values,
+            "start_epoch": self._start_epoch,
+            "updated_epoch": time.time(),
+        }
+        return payload
+
 # ---------- Async encoder worker ----------
 ENCODE_QUEUE: queue.Queue = queue.Queue()
-_ENCODE_WORKER = None
+_ENCODE_WORKERS: list['_EncoderWorker'] = []
 _ENCODE_LOCK = threading.Lock()
 SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
 
@@ -529,7 +727,7 @@ class EncodingStatus:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._pending: collections.deque[dict[str, object]] = collections.deque()
-        self._active: dict[str, object] | None = None
+        self._active: dict[int, dict[str, object]] = {}
         self._next_id = 1
         self._listeners: list[Callable[[dict[str, object] | None], None]] = []
 
@@ -543,7 +741,7 @@ class EncodingStatus:
 
     def snapshot(self) -> dict[str, object] | None:
         with self._lock:
-            active = dict(self._active) if self._active else None
+            active_items = [dict(entry) for entry in self._active.values()]
             pending = [dict(entry) for entry in self._pending]
         pending_payload = [
             {
@@ -555,16 +753,25 @@ class EncodingStatus:
             }
             for entry in pending
         ]
-        active_payload = None
-        if active:
-            active_payload = {
-                "id": active.get("id"),
-                "base_name": active.get("base_name", ""),
-                "queued_at": active.get("queued_at"),
-                "started_at": active.get("started_at"),
-                "source": active.get("source"),
+        active_payload = [
+            {
+                "id": entry.get("id"),
+                "base_name": entry.get("base_name", ""),
+                "queued_at": entry.get("queued_at"),
+                "started_at": entry.get("started_at"),
+                "source": entry.get("source"),
                 "status": "active",
             }
+            for entry in sorted(
+                active_items,
+                key=lambda item: (
+                    item.get("started_at")
+                    or item.get("queued_at")
+                    or item.get("id")
+                    or 0
+                ),
+            )
+        ]
         if not pending_payload and not active_payload:
             return None
         return {"pending": pending_payload, "active": active_payload}
@@ -615,14 +822,13 @@ class EncodingStatus:
                 if "source" not in job or not isinstance(job.get("source"), str):
                     job["source"] = "unknown"
             job["started_at"] = time.time()
-            self._active = job
+            self._active[job_id] = job
             self._cond.notify_all()
         self._notify()
 
     def mark_finished(self, job_id: int) -> None:
         with self._cond:
-            if self._active and self._active.get("id") == job_id:
-                self._active = None
+            self._active.pop(job_id, None)
             self._cond.notify_all()
         self._notify()
 
@@ -633,7 +839,7 @@ class EncodingStatus:
 
         with self._cond:
             while True:
-                if self._active and self._active.get("id") == job_id:
+                if job_id in self._active:
                     return True
 
                 if not any(entry.get("id") == job_id for entry in self._pending):
@@ -656,7 +862,7 @@ class EncodingStatus:
 
         with self._cond:
             while True:
-                active_match = self._active and self._active.get("id") == job_id
+                active_match = job_id in self._active
                 pending_match = any(entry.get("id") == job_id for entry in self._pending)
                 if not active_match and not pending_match:
                     return True
@@ -679,6 +885,15 @@ class _EncoderWorker(threading.Thread):
     def __init__(self, job_queue: queue.Queue):
         super().__init__(daemon=True)
         self.q = job_queue
+
+    def _wait_for_cpu(self) -> None:
+        if PARALLEL_OFFLINE_LOAD_THRESHOLD <= 0.0:
+            return
+        while True:
+            normalized = _normalized_load()
+            if normalized is None or normalized <= PARALLEL_OFFLINE_LOAD_THRESHOLD:
+                return
+            time.sleep(PARALLEL_OFFLINE_CHECK_INTERVAL)
 
     def run(self):
         while True:
@@ -706,6 +921,7 @@ class _EncoderWorker(threading.Thread):
                         wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
                     ENCODING_STATUS.mark_started(job_id, base_name)
+                self._wait_for_cpu()
                 cmd = [ENCODER, wav_path, base_name]
                 if existing_opus:
                     cmd.append(existing_opus)
@@ -730,11 +946,18 @@ class _EncoderWorker(threading.Thread):
 
 
 def _ensure_encoder_worker() -> None:
-    global _ENCODE_WORKER
+    global _ENCODE_WORKERS
     with _ENCODE_LOCK:
-        if _ENCODE_WORKER is None or not _ENCODE_WORKER.is_alive():
-            _ENCODE_WORKER = _EncoderWorker(ENCODE_QUEUE)
-            _ENCODE_WORKER.start()
+        alive = []
+        for worker in _ENCODE_WORKERS:
+            if worker.is_alive():
+                alive.append(worker)
+        _ENCODE_WORKERS = alive
+        needed = max(0, PARALLEL_OFFLINE_MAX_WORKERS - len(_ENCODE_WORKERS))
+        for _ in range(needed):
+            worker = _EncoderWorker(ENCODE_QUEUE)
+            worker.start()
+            _ENCODE_WORKERS.append(worker)
 
 
 def _enqueue_encode_job(
@@ -954,6 +1177,20 @@ class TimelineRecorder:
         self._streaming_encoder: StreamingOpusEncoder | None = None
         self._streaming_day_dir: str | None = None
 
+        self._parallel_encode_allowed = bool(
+            PARALLEL_ENCODE_ENABLED and not self._streaming_enabled
+        )
+        self._parallel_encoder: StreamingOpusEncoder | None = None
+        self._parallel_partial_path: str | None = None
+        self._parallel_encoder_started_at: float | None = None
+        self._parallel_encoder_drops: int = 0
+        self._parallel_last_check: float = 0.0
+        self._parallel_day_dir: str | None = None
+
+        self._live_waveform: LiveWaveformWriter | None = None
+        self._live_waveform_path: str | None = None
+        self._live_waveform_rel_path: str | None = None
+
         self._adaptive = AdaptiveRmsController(
             frame_ms=FRAME_MS,
             initial_linear_threshold=STATIC_RMS_THRESH,
@@ -1086,6 +1323,8 @@ class TimelineRecorder:
                 "event_size_bytes",
                 "partial_recording_path",
                 "streaming_container_format",
+                "partial_waveform_path",
+                "partial_waveform_rel_path",
                 "encoding",
             )
             if extra and self._status_mode == "live":
@@ -1169,6 +1408,45 @@ class TimelineRecorder:
         except OSError:
             return None
 
+    def _relative_recordings_path(self, path: str | None) -> str | None:
+        if not path:
+            return None
+        try:
+            rel = os.path.relpath(path, REC_DIR)
+        except ValueError:
+            return None
+        if rel.startswith(".."):
+            return None
+        return rel.replace(os.sep, "/")
+
+    def _current_partial_path(self, capturing: bool) -> str | None:
+        if not capturing:
+            return None
+        if self._parallel_partial_path:
+            return self._parallel_partial_path
+        if self._streaming_encoder:
+            return self._streaming_encoder.partial_path
+        return None
+
+    def _current_partial_format(self, capturing: bool) -> str | None:
+        if not capturing:
+            return None
+        if self._parallel_partial_path:
+            return STREAMING_CONTAINER_FORMAT
+        if self._streaming_encoder:
+            return STREAMING_CONTAINER_FORMAT
+        return None
+
+    def _current_partial_waveform(self, capturing: bool) -> str | None:
+        if not capturing:
+            return None
+        return self._live_waveform_path
+
+    def _current_partial_waveform_rel(self, capturing: bool) -> str | None:
+        if not capturing:
+            return None
+        return self._live_waveform_rel_path
+
     def _maybe_update_live_metrics(self, rms_value: int) -> None:
         if self._status_mode != "live":
             return
@@ -1201,14 +1479,10 @@ class TimelineRecorder:
                     else None
                 ),
                 "event_size_bytes": self._current_event_size() if capturing else None,
-                "partial_recording_path": (
-                    self._streaming_encoder.partial_path
-                    if capturing and self._streaming_encoder
-                    else None
-                ),
-                "streaming_container_format": (
-                    STREAMING_CONTAINER_FORMAT if capturing and self._streaming_encoder else None
-                ),
+                "partial_recording_path": self._current_partial_path(capturing),
+                "streaming_container_format": self._current_partial_format(capturing),
+                "partial_waveform_path": self._current_partial_waveform(capturing),
+                "partial_waveform_rel_path": self._current_partial_waveform_rel(capturing),
                 "filter_chain_avg_ms": round(self._filter_avg_ms, 3),
                 "filter_chain_peak_ms": round(self._filter_peak_ms, 3),
                 "filter_chain_avg_budget_ms": FILTER_CHAIN_AVG_BUDGET_MS,
@@ -1295,6 +1569,57 @@ class TimelineRecorder:
             }
             print(json.dumps(payload), flush=True)
             self._filter_last_log_ts = now
+
+    def _parallel_cpu_ready(self) -> bool:
+        if PARALLEL_ENCODE_LOAD_THRESHOLD <= 0.0:
+            return True
+        normalized = _normalized_load()
+        if normalized is None:
+            return True
+        return normalized <= PARALLEL_ENCODE_LOAD_THRESHOLD
+
+    def _maybe_start_parallel_encode(self, *, force: bool = False) -> None:
+        if not self._parallel_encode_allowed:
+            return
+        if self._parallel_encoder is not None:
+            return
+        if not self.base_name or not self.tmp_wav_path:
+            return
+        if self.frames_written < PARALLEL_ENCODE_MIN_FRAMES:
+            return
+        now = time.monotonic()
+        if not force and (now - self._parallel_last_check) < PARALLEL_ENCODE_CHECK_INTERVAL:
+            return
+        self._parallel_last_check = now
+        if not self._parallel_cpu_ready():
+            return
+        target_dir = self._parallel_day_dir or PARALLEL_TMP_DIR
+        suffix = STREAMING_PARTIAL_SUFFIX if self._parallel_day_dir else PARALLEL_PARTIAL_SUFFIX
+        partial_path = os.path.join(target_dir, f"{self.base_name}{suffix}")
+        try:
+            os.makedirs(os.path.dirname(partial_path), exist_ok=True)
+        except OSError:
+            pass
+        encoder = StreamingOpusEncoder(
+            partial_path,
+            container_format=STREAMING_CONTAINER_FORMAT,
+        )
+        try:
+            encoder.start()
+        except Exception as exc:
+            print(
+                f"[segmenter] WARN: failed to start parallel encoder: {exc!r}",
+                flush=True,
+            )
+            return
+        self._parallel_encoder = encoder
+        self._parallel_partial_path = partial_path
+        self._parallel_encoder_started_at = time.time()
+        self._parallel_encoder_drops = 0
+        print(
+            f"[segmenter] Parallel encode started for {self.base_name}",
+            flush=True,
+        )
 
     def _q_send(self, item):
         try:
@@ -1407,12 +1732,18 @@ class TimelineRecorder:
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
 
+                day_stamp = time.strftime("%Y%m%d")
+                self._parallel_day_dir = os.path.join(REC_DIR, day_stamp)
+                try:
+                    os.makedirs(self._parallel_day_dir, exist_ok=True)
+                except OSError:
+                    pass
+
                 self._q_send(('open', self.base_name, self.tmp_wav_path))
 
                 if self._streaming_enabled:
                     try:
-                        day = time.strftime("%Y%m%d")
-                        day_dir = os.path.join(REC_DIR, day)
+                        day_dir = self._parallel_day_dir
                         os.makedirs(day_dir, exist_ok=True)
                         partial_path = os.path.join(
                             day_dir,
@@ -1432,11 +1763,37 @@ class TimelineRecorder:
                         self._streaming_encoder = None
                         self._streaming_day_dir = None
 
+                waveform_partial_path = os.path.join(
+                    self._parallel_day_dir,
+                    f"{self.base_name}{STREAMING_PARTIAL_SUFFIX}.waveform.json",
+                )
+                self._live_waveform_path = waveform_partial_path
+                self._live_waveform_rel_path = self._relative_recordings_path(
+                    waveform_partial_path
+                )
+                try:
+                    self._live_waveform = LiveWaveformWriter(
+                        waveform_partial_path,
+                        bucket_count=LIVE_WAVEFORM_BUCKET_COUNT,
+                        update_interval=LIVE_WAVEFORM_UPDATE_INTERVAL,
+                    )
+                except Exception:
+                    self._live_waveform = None
+                    self._live_waveform_path = None
+                    self._live_waveform_rel_path = None
+
                 if self.prebuf:
                     for f in self.prebuf:
                         self._q_send(bytes(f))
                         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(f)):
                             self.queue_drops += 1
+                        if self._parallel_encoder and not self._parallel_encoder.feed(bytes(f)):
+                            self._parallel_encoder_drops += 1
+                        if self._live_waveform:
+                            try:
+                                self._live_waveform.add_frame(bytes(f))
+                            except Exception:
+                                pass
                         self.frames_written += 1
                         self.sum_rms += rms(f)
                 self.prebuf.clear()
@@ -1446,6 +1803,7 @@ class TimelineRecorder:
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
+                self._maybe_start_parallel_encode(force=True)
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
                     f"(trigger={'RMS' if loud else 'VAD'}>{current_threshold} (rms={rms_val}))",
@@ -1458,25 +1816,46 @@ class TimelineRecorder:
                     "trigger_rms": self.trigger_rms,
                 }
                 if self._status_mode == "live":
-                    if self._streaming_encoder:
+                    if self._streaming_encoder or self._parallel_encoder:
                         event_status = dict(event_status)
                         event_status["in_progress"] = True
-                        event_status["partial_recording_path"] = (
-                            self._streaming_encoder.partial_path
-                        )
-                        event_status["streaming_container_format"] = (
-                            STREAMING_CONTAINER_FORMAT
-                        )
+                        if self._streaming_encoder:
+                            event_status["partial_recording_path"] = (
+                                self._streaming_encoder.partial_path
+                            )
+                            event_status["streaming_container_format"] = (
+                                STREAMING_CONTAINER_FORMAT
+                            )
+                        elif self._parallel_encoder and self._parallel_partial_path:
+                            event_status["partial_recording_path"] = (
+                                self._parallel_partial_path
+                            )
+                            event_status["streaming_container_format"] = "opus"
+                        if self._live_waveform_path:
+                            event_status["partial_waveform_path"] = self._live_waveform_path
+                        if self._live_waveform_rel_path:
+                            event_status["partial_waveform_rel_path"] = (
+                                self._live_waveform_rel_path
+                            )
                     self._update_capture_status(True, event=event_status)
             return
 
         self._q_send(bytes(buf))
         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
             self.queue_drops += 1
+        if self._parallel_encoder and not self._parallel_encoder.feed(bytes(buf)):
+            self._parallel_encoder_drops += 1
+        if self._live_waveform:
+            try:
+                self._live_waveform.add_frame(bytes(buf))
+            except Exception:
+                pass
         self.frames_written += 1
         self.sum_rms += rms(proc_for_analysis)
         self.saw_voiced = voiced or self.saw_voiced
         self.saw_loud = loud or self.saw_loud
+
+        self._maybe_start_parallel_encode()
 
         if sum(self.recent_active) >= KEEP_CONSECUTIVE:
             self.post_count = POST_PAD_FRAMES
@@ -1492,9 +1871,12 @@ class TimelineRecorder:
             return
 
         streaming_result: StreamingEncoderResult | None = None
+        parallel_result: StreamingEncoderResult | None = None
         partial_stream_path: str | None = None
+        parallel_partial_path: str | None = None
         final_stream_path: str | None = None
         streaming_drop_detected = False
+        parallel_drop_detected = False
         day_dir = self._streaming_day_dir
         if self._streaming_encoder:
             try:
@@ -1536,6 +1918,37 @@ class TimelineRecorder:
                 flush=True,
             )
 
+        if self._parallel_encoder:
+            try:
+                parallel_result = self._parallel_encoder.close(timeout=5.0)
+            except Exception as exc:
+                print(
+                    f"[segmenter] WARN: parallel encoder close failed: {exc!r}",
+                    flush=True,
+                )
+                parallel_result = StreamingEncoderResult(
+                    partial_path=self._parallel_partial_path,
+                    success=False,
+                    returncode=None,
+                    error=exc,
+                    stderr=None,
+                    bytes_sent=0,
+                    dropped_chunks=self._parallel_encoder_drops,
+                )
+            finally:
+                self._parallel_encoder = None
+        if parallel_result:
+            parallel_partial_path = parallel_result.partial_path
+            if parallel_result.dropped_chunks or self._parallel_encoder_drops:
+                parallel_drop_detected = True
+
+        if parallel_drop_detected and parallel_result:
+            detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
+            print(
+                f"[segmenter] WARN: parallel encoder dropped chunks ({detail}); will fall back to offline encode",
+                flush=True,
+            )
+
         if self.saw_voiced and self.saw_loud:
             etype_label = EVENT_TAGS["both"]
         elif self.saw_voiced:
@@ -1570,7 +1983,7 @@ class TimelineRecorder:
             event_count = str(self.event_counter) if self.event_counter is not None else base.rsplit("_", 1)[-1]
             safe_etype = _sanitize_event_tag(etype_label)
             final_base = f"{event_ts}_{safe_etype}_RMS-{trigger_rms}_{event_count}"
-            streaming_succeeded = False
+            reuse_mode: str | None = None
             target_day_dir = day_dir or os.path.join(REC_DIR, day)
             os.makedirs(target_day_dir, exist_ok=True)
             final_opus_path = os.path.join(target_day_dir, f"{final_base}{STREAMING_EXTENSION}")
@@ -1583,7 +1996,7 @@ class TimelineRecorder:
             ):
                 try:
                     os.replace(partial_stream_path, final_opus_path)
-                    streaming_succeeded = True
+                    reuse_mode = "streaming"
                     final_stream_path = final_opus_path
                     print(
                         f"[segmenter] Streaming encode finalized at {final_opus_path}",
@@ -1594,16 +2007,51 @@ class TimelineRecorder:
                         f"[segmenter] WARN: failed to finalize streaming output: {exc!r}",
                         flush=True,
                     )
-                    streaming_succeeded = False
-            elif streaming_result and not streaming_result.success:
-                if streaming_result.stderr:
+            elif streaming_result and not streaming_result.success and streaming_result.stderr:
+                print(
+                    f"[segmenter] WARN: streaming encoder stderr: {streaming_result.stderr.strip()}",
+                    flush=True,
+                )
+
+            if (
+                reuse_mode is None
+                and parallel_result
+                and parallel_result.success
+                and not parallel_drop_detected
+                and parallel_partial_path
+                and os.path.exists(parallel_partial_path)
+            ):
+                try:
+                    os.replace(parallel_partial_path, final_opus_path)
+                    reuse_mode = "parallel"
+                    final_stream_path = final_opus_path
                     print(
-                        f"[segmenter] WARN: streaming encoder stderr: {streaming_result.stderr.strip()}",
+                        f"[segmenter] Parallel encode finalized at {final_opus_path}",
                         flush=True,
                     )
-            if not streaming_succeeded and partial_stream_path and os.path.exists(partial_stream_path):
+                except Exception as exc:
+                    print(
+                        f"[segmenter] WARN: failed to finalize parallel output: {exc!r}",
+                        flush=True,
+                    )
+            elif (
+                parallel_result
+                and not parallel_result.success
+                and parallel_result.stderr
+            ):
+                print(
+                    f"[segmenter] WARN: parallel encoder stderr: {parallel_result.stderr.strip()}",
+                    flush=True,
+                )
+
+            if reuse_mode != "streaming" and partial_stream_path and os.path.exists(partial_stream_path):
                 try:
                     os.unlink(partial_stream_path)
+                except OSError:
+                    pass
+            if reuse_mode != "parallel" and parallel_partial_path and os.path.exists(parallel_partial_path):
+                try:
+                    os.unlink(parallel_partial_path)
                 except OSError:
                     pass
 
@@ -1611,7 +2059,7 @@ class TimelineRecorder:
                 tmp_wav_path,
                 final_base,
                 source=self._recording_source,
-                existing_opus_path=final_stream_path if streaming_succeeded else None,
+                existing_opus_path=final_stream_path if reuse_mode else None,
             )
             if job_id is not None:
                 self._encode_jobs.append(job_id)
@@ -1625,6 +2073,11 @@ class TimelineRecorder:
                         ),
                         flush=True,
                     )
+            if reuse_mode is None:
+                print(
+                    f"[segmenter] Offline encode scheduled for {final_base}",
+                    flush=True,
+                )
         self._streaming_day_dir = None
 
         if tmp_wav_path and base:
@@ -1665,6 +2118,8 @@ class TimelineRecorder:
                     "event_size_bytes": None,
                     "partial_recording_path": None,
                     "streaming_container_format": None,
+                    "partial_waveform_path": None,
+                    "partial_waveform_rel_path": None,
                 },
             )
         if NOTIFIER:
@@ -1675,7 +2130,26 @@ class TimelineRecorder:
                     f"[segmenter] WARN: notification dispatch failed: {exc!r}",
                     flush=True,
                 )
+        self._cleanup_live_waveform()
         self._reset_event_state()
+
+    def _cleanup_live_waveform(self) -> None:
+        writer = self._live_waveform
+        if writer:
+            try:
+                writer.finalize()
+            except Exception:
+                pass
+        path = self._live_waveform_path
+        if path and os.path.exists(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._live_waveform = None
+        self._live_waveform_path = None
+        self._live_waveform_rel_path = None
+        self._parallel_day_dir = None
 
     def _reset_event_state(self):
         if self._streaming_encoder:
@@ -1699,6 +2173,35 @@ class TimelineRecorder:
                     pass
         self._streaming_encoder = None
         self._streaming_day_dir = None
+        if self._parallel_encoder:
+            result: StreamingEncoderResult | None = None
+            try:
+                result = self._parallel_encoder.close(timeout=1.0)
+            except Exception:
+                result = StreamingEncoderResult(
+                    partial_path=self._parallel_partial_path,
+                    success=False,
+                    returncode=None,
+                    error=None,
+                    stderr=None,
+                    bytes_sent=0,
+                    dropped_chunks=self._parallel_encoder_drops,
+                )
+            if result and result.partial_path and os.path.exists(result.partial_path):
+                try:
+                    os.unlink(result.partial_path)
+                except OSError:
+                    pass
+        if self._parallel_partial_path and os.path.exists(self._parallel_partial_path):
+            try:
+                os.unlink(self._parallel_partial_path)
+            except OSError:
+                pass
+        self._parallel_encoder = None
+        self._parallel_partial_path = None
+        self._parallel_encoder_drops = 0
+        self._parallel_encoder_started_at = None
+        self._parallel_last_check = 0.0
         self.active = False
         self.post_count = 0
         self.recent_active.clear()
@@ -1717,6 +2220,7 @@ class TimelineRecorder:
         self.event_started_epoch = None
         self._ingest_hint = None
         self._ingest_hint_used = True
+        self._cleanup_live_waveform()
 
     def flush(self, idx: int):
         if self.active:

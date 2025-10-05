@@ -206,11 +206,13 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             "event": {"base_name": "alpha"},
             "encoding": {
                 "pending": [{"base_name": "queued", "source": "ingest"}],
-                "active": {
-                    "base_name": "active",
-                    "source": "live",
-                    "duration_seconds": 12.0,
-                },
+                "active": [
+                    {
+                        "base_name": "active",
+                        "source": "live",
+                        "duration_seconds": 12.0,
+                    }
+                ],
             },
         }
         status_path.write_text(json.dumps(status_payload), encoding="utf-8")
@@ -293,6 +295,8 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
         day_dir.mkdir()
         partial_path = day_dir / "alpha.partial.opus"
         partial_path.write_bytes(b"header")
+        waveform_path = day_dir / "alpha.partial.opus.waveform.json"
+        waveform_path.write_text("{}", encoding="utf-8")
 
         payload = {
             "capturing": True,
@@ -301,6 +305,7 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             "event_size_bytes": 5120,
             "event_duration_seconds": 4.0,
             "partial_recording_path": str(partial_path),
+            "partial_waveform_path": str(waveform_path),
             "streaming_container_format": "opus",
             "event": {
                 "base_name": "alpha",
@@ -308,6 +313,7 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
                 "started_epoch": now - 2,
                 "started_at": "12-00-00",
                 "partial_recording_path": str(partial_path),
+                "partial_waveform_path": str(waveform_path),
                 "streaming_container_format": "opus",
             },
         }
@@ -323,9 +329,12 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             capture_status = data.get("capture_status", {})
             rel_path = capture_status.get("partial_recording_rel_path")
             assert rel_path == "20240105/alpha.partial.opus"
+            waveform_rel = capture_status.get("partial_waveform_rel_path")
+            assert waveform_rel == "20240105/alpha.partial.opus.waveform.json"
             event = capture_status.get("event", {})
             assert event.get("partial_recording_rel_path") == rel_path
             assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
+            assert event.get("partial_waveform_rel_path") == waveform_rel
         finally:
             await client.close()
             await server.close()
