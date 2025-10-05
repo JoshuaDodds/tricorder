@@ -928,6 +928,123 @@ def _migrate_archival_rsync_lists(cfg: MutableMapping[str, Any]) -> bool:
     return changed
 
 
+_SECTION_FALLBACKS: Dict[str, Any] = {
+    "streaming": {
+        "mode": "hls",
+        "webrtc_history_seconds": 8.0,
+        "webrtc_ice_servers": [
+            {
+                "urls": [
+                    "stun:stun.cloudflare.com:3478",
+                    "stun:stun.l.google.com:19302",
+                ]
+            }
+        ],
+    },
+    "dashboard": {
+        "api_base": "",
+        "services": [
+            {
+                "unit": "voice-recorder.service",
+                "label": "Recorder",
+                "description": "Segments microphone input into individual events.",
+            },
+            {
+                "unit": "web-streamer.service",
+                "label": "Web UI",
+                "description": "Serves the dashboard and live stream.",
+            },
+            {
+                "unit": "dropbox.service",
+                "label": "Dropbox ingest",
+                "description": "Monitors dropbox_dir for externally provided audio files.",
+            },
+            {
+                "unit": "tricorder-auto-update.service",
+                "label": "Auto updater",
+                "description": "Applies updates staged by the project updater.",
+            },
+            {
+                "unit": "tmpfs-guard.service",
+                "label": "Tmpfs guard",
+                "description": "Ensures tmpfs usage stays within configured limits.",
+            },
+        ],
+        "web_service": "web-streamer.service",
+    },
+    "web_server": {
+        "mode": "http",
+        "listen_host": "0.0.0.0",
+        "listen_port": 8080,
+        "tls_provider": "letsencrypt",
+        "certificate_path": "",
+        "private_key_path": "",
+        "lets_encrypt": {
+            "enabled": False,
+            "email": "",
+            "domains": [],
+            "cache_dir": "/apps/tricorder/letsencrypt",
+            "staging": False,
+            "certbot_path": "certbot",
+            "http_port": 80,
+            "renew_before_days": 30,
+        },
+    },
+}
+
+
+def _clone_config_value(value: Any) -> Any:
+    return copy.deepcopy(value)
+
+
+def _template_section_default(section: str) -> Any:
+    template = _load_comment_template()
+    if template is not None:
+        candidate = template.get(section)
+        if candidate is not None:
+            return _clone_config_value(candidate)
+    fallback = _SECTION_FALLBACKS.get(section)
+    if fallback is None:
+        return {}
+    return _clone_config_value(fallback)
+
+
+def _seed_new_config_sections(
+    cfg: MutableMapping[str, Any], *, had_comments: bool
+) -> bool:
+    changed = False
+    added_section = False
+    for section in ("streaming", "dashboard", "web_server"):
+        existing = cfg.get(section)
+        if isinstance(existing, MutableMapping):
+            continue
+        if isinstance(existing, Mapping):
+            converted = _convert_to_round_trip(existing)
+            if isinstance(converted, MutableMapping):
+                cfg[section] = converted
+                changed = True
+                continue
+        if existing is not None and section in cfg:
+            # Respect non-mapping overrides (e.g., explicit null/false).
+            continue
+        cfg[section] = _template_section_default(section)
+        changed = True
+        added_section = True
+
+    if added_section and not had_comments:
+        template_doc = _template_with_values(cfg)
+        if isinstance(template_doc, MutableMapping):
+            try:
+                cfg.clear()
+            except Exception:
+                pass
+            else:
+                for key, value in template_doc.items():
+                    cfg[key] = _clone_config_value(value)
+                changed = True
+    return changed
+
+
 _CONFIG_MIGRATIONS: tuple[tuple[str, _ConfigMigration], ...] = (
     ("20241005_normalize_archival_rsync_lists", _migrate_archival_rsync_lists),
 )
@@ -969,7 +1086,22 @@ def apply_config_migrations(*, logger: logging.Logger | None = None) -> bool:
         # Empty configuration means nothing to migrate; avoid creating files with defaults.
         return False
 
+    had_comments = _file_has_comments(primary)
+
     changed = False
+    try:
+        if _seed_new_config_sections(document, had_comments=had_comments):
+            changed = True
+            _migration_info(
+                logger,
+                "Applied config migration 20241012_seed_dashboard_and_streaming_sections",
+            )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        _migration_warning(
+            logger,
+            f"Migration 20241012_seed_dashboard_and_streaming_sections failed: {exc}",
+        )
+
     for name, migration in _CONFIG_MIGRATIONS:
         try:
             if migration(document):
