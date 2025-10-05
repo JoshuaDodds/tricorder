@@ -1005,6 +1005,8 @@ class LiveWaveformWriter:
         *,
         bucket_count: int = LIVE_WAVEFORM_BUCKET_COUNT,
         update_interval: float = LIVE_WAVEFORM_UPDATE_INTERVAL,
+        start_epoch: float | None = None,
+        trigger_rms: int | None = None,
     ) -> None:
         if not destination:
             raise ValueError("destination is required for LiveWaveformWriter")
@@ -1016,7 +1018,32 @@ class LiveWaveformWriter:
         self._total_samples = 0
         self._last_write = 0.0
         self._lock = threading.Lock()
-        self._start_epoch = time.time()
+        self._start_epoch = self._resolve_start_epoch(start_epoch)
+        self._trigger_rms = self._sanitize_trigger_rms(trigger_rms)
+
+    @staticmethod
+    def _resolve_start_epoch(candidate: float | None) -> float:
+        if candidate is None:
+            return time.time()
+        try:
+            value = float(candidate)
+        except (TypeError, ValueError):
+            return time.time()
+        if not math.isfinite(value) or value <= 0.0:
+            return time.time()
+        return value
+
+    @staticmethod
+    def _sanitize_trigger_rms(candidate: int | None) -> int | None:
+        if candidate is None:
+            return None
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return 0
+        return value
 
     def add_frame(self, buf: bytes) -> None:
         if not buf:
@@ -1086,6 +1113,7 @@ class LiveWaveformWriter:
                 "rms_values": [],
                 "updated_epoch": time.time(),
                 "start_epoch": self._start_epoch,
+                "trigger_rms": self._trigger_rms,
             }
 
         bucket_count = max(1, min(self.bucket_count, frame_count))
@@ -1140,6 +1168,7 @@ class LiveWaveformWriter:
             "rms_values": rms_values,
             "start_epoch": self._start_epoch,
             "updated_epoch": time.time(),
+            "trigger_rms": self._trigger_rms,
         }
         return payload
 
@@ -2254,6 +2283,8 @@ class TimelineRecorder:
                         waveform_partial_path,
                         bucket_count=LIVE_WAVEFORM_BUCKET_COUNT,
                         update_interval=LIVE_WAVEFORM_UPDATE_INTERVAL,
+                        start_epoch=self.event_started_epoch,
+                        trigger_rms=self.trigger_rms,
                     )
                 except Exception:
                     self._live_waveform = None
