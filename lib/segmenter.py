@@ -1604,7 +1604,7 @@ class TimelineRecorder:
         if self._streaming_encoder:
             return STREAMING_CONTAINER_FORMAT
         if self._parallel_encoder:
-            return "opus"
+            return STREAMING_CONTAINER_FORMAT
         return None
 
     def _maybe_update_live_metrics(self, rms_value: int) -> None:
@@ -1762,7 +1762,9 @@ class TimelineRecorder:
             os.makedirs(os.path.dirname(partial_path), exist_ok=True)
         except OSError:
             pass
-        encoder = StreamingOpusEncoder(partial_path, container_format="opus")
+        encoder = StreamingOpusEncoder(
+            partial_path, container_format=STREAMING_CONTAINER_FORMAT
+        )
         try:
             encoder.start()
         except Exception as exc:
@@ -1982,7 +1984,9 @@ class TimelineRecorder:
                             event_status["partial_recording_path"] = (
                                 self._parallel_partial_path
                             )
-                            event_status["streaming_container_format"] = "opus"
+                            event_status["streaming_container_format"] = (
+                                STREAMING_CONTAINER_FORMAT
+                            )
                     self._update_capture_status(True, event=event_status)
             return
 
