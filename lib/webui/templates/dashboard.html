@@ -375,7 +375,26 @@
           <div class="waveform-section" id="waveform-section">
             <div class="waveform-header">
               <span>Waveform</span>
-              <span class="waveform-status" id="waveform-status"></span>
+              <div class="waveform-header-meta">
+                <div class="waveform-zoom-control">
+                  <label for="waveform-zoom">Waveform Zoom</label>
+                  <input
+                    id="waveform-zoom"
+                    type="range"
+                    min="0.25"
+                    max="4"
+                    step="0.25"
+                    value="1"
+                  />
+                  <span
+                    id="waveform-zoom-value"
+                    class="waveform-zoom-value"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >1×</span>
+                </div>
+                <span class="waveform-status" id="waveform-status"></span>
+              </div>
             </div>
             <div class="waveform-clock-row" data-active="false">
               <div
