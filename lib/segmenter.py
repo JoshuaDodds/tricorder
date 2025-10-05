@@ -1386,12 +1386,21 @@ class AdaptiveRmsController:
                     )
         self.margin = max(0.0, float(section.get("margin", 1.2)))
         self.update_interval = max(0.1, float(section.get("update_interval_sec", 5.0)))
+        default_voiced_hold = max(self.update_interval, 6.0)
+        try:
+            raw_hold = float(section.get("voiced_hold_sec", default_voiced_hold))
+        except (TypeError, ValueError):
+            raw_hold = default_voiced_hold
+        self.voiced_hold_sec = max(0.0, raw_hold)
         self.hysteresis_tolerance = max(0.0, float(section.get("hysteresis_tolerance", 0.1)))
         self.release_percentile = min(1.0, max(0.01, float(section.get("release_percentile", 0.5))))
         window_sec = max(0.1, float(section.get("window_sec", 10.0)))
         window_frames = max(1, int(round((window_sec * 1000.0) / frame_ms)))
         self._buffer: collections.deque[float] = collections.deque(maxlen=window_frames)
         self._last_update = time.monotonic()
+        self._last_buffer_extend = self._last_update
+        self._voiced_fallback_active = False
+        self._voiced_fallback_logged = False
         self._last_p95: float | None = None
         self._last_candidate: float | None = None
         self._last_release: float | None = None
@@ -1440,16 +1449,46 @@ class AdaptiveRmsController:
         observation, self._last_observation = self._last_observation, None
         return observation
 
-    def observe(self, rms_value: int, voiced: bool) -> bool:
+    def observe(self, rms_value: int, voiced: bool, *, capturing: bool = False) -> bool:
         if not self.enabled:
             self._last_observation = None
             return False
 
         norm = max(0.0, min(rms_value / self._NORM, 1.0))
+        now = time.monotonic()
+
+        if not capturing:
+            self._voiced_fallback_active = False
+            self._voiced_fallback_logged = False
+
         if not voiced:
             self._buffer.append(norm)
+            self._last_buffer_extend = now
+            self._voiced_fallback_active = False
+            self._voiced_fallback_logged = False
+        elif capturing:
+            allow_fallback = False
+            if self.voiced_hold_sec == 0.0:
+                allow_fallback = True
+            elif (now - self._last_buffer_extend) >= self.voiced_hold_sec:
+                allow_fallback = True
+            elif self._voiced_fallback_active:
+                allow_fallback = True
 
-        now = time.monotonic()
+            if allow_fallback:
+                if not self._voiced_fallback_active:
+                    self._voiced_fallback_active = True
+                    if self.voiced_hold_sec > 0.0 and not self._voiced_fallback_logged:
+                        gap = max(0.0, now - self._last_buffer_extend)
+                        print(
+                            "[segmenter] adaptive RMS enabling voiced fallback after "
+                            f"{gap:.1f}s without background samples",
+                            flush=True,
+                        )
+                        self._voiced_fallback_logged = True
+                self._buffer.append(norm)
+                self._last_buffer_extend = now
+
         if (now - self._last_update) < self.update_interval:
             self._last_observation = None
             return False
@@ -2016,12 +2055,13 @@ class TimelineRecorder:
         current_threshold = self._adaptive.threshold_linear
         loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
+        capturing_now = self.active or frame_active
 
         # collect rolling window for debug stats
         self._dbg_rms.append(rms_val)
         self._dbg_voiced.append(bool(voiced))
 
-        self._adaptive.observe(rms_val, bool(voiced))
+        self._adaptive.observe(rms_val, bool(voiced), capturing=capturing_now)
         observation = self._adaptive.pop_observation()
         if observation:
             threshold_changed = (

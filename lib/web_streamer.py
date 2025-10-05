@@ -516,6 +516,7 @@ def _adaptive_rms_defaults() -> dict[str, Any]:
         "window_sec": 10.0,
         "hysteresis_tolerance": 0.1,
         "release_percentile": 0.5,
+        "voiced_hold_sec": 6.0,
     }
 
 
@@ -721,6 +722,7 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_sec",
             "hysteresis_tolerance",
             "release_percentile",
+            "voiced_hold_sec",
         ):
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1330,6 +1332,16 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
     )
     if percentile is not None:
         normalized["release_percentile"] = percentile
+
+    voiced_hold = _coerce_float(
+        payload.get("voiced_hold_sec"),
+        "voiced_hold_sec",
+        errors,
+        min_value=0.0,
+        max_value=600.0,
+    )
+    if voiced_hold is not None:
+        normalized["voiced_hold_sec"] = voiced_hold
 
     if normalized["max_thresh"] < normalized["min_thresh"]:
         errors.append("max_thresh must be greater than or equal to min_thresh")
