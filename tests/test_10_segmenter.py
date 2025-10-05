@@ -1062,6 +1062,7 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     env["DENOISE"] = "0"
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
+    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
 
     result = subprocess.run(
         [str(script_path), str(wav_path), "sample", str(existing_opus)],

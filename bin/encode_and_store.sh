@@ -38,7 +38,9 @@ run_python_module() {
   "$PYTHON_BIN" -m "$module" "$@"
 }
 day="$(date +%Y%m%d)"
-outdir="/apps/tricorder/recordings/$day"
+recordings_root="${ENCODER_RECORDINGS_DIR:-/apps/tricorder/recordings}"
+recordings_root="${recordings_root%/}"
+outdir="${recordings_root}/${day}"
 mkdir -p "$outdir"
 
 if [[ -n "$existing_opus" ]]; then
