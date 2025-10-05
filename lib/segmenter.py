@@ -1604,7 +1604,7 @@ class TimelineRecorder:
         if self._streaming_encoder:
             return STREAMING_CONTAINER_FORMAT
         if self._parallel_encoder:
-            return "opus"
+            return STREAMING_CONTAINER_FORMAT
         return None
 
     def _maybe_update_live_metrics(self, rms_value: int) -> None:
@@ -1762,7 +1762,9 @@ class TimelineRecorder:
             os.makedirs(os.path.dirname(partial_path), exist_ok=True)
         except OSError:
             pass
-        encoder = StreamingOpusEncoder(partial_path, container_format="opus")
+        encoder = StreamingOpusEncoder(
+            partial_path, container_format=STREAMING_CONTAINER_FORMAT
+        )
         try:
             encoder.start()
         except Exception as exc:
@@ -1982,7 +1984,9 @@ class TimelineRecorder:
                             event_status["partial_recording_path"] = (
                                 self._parallel_partial_path
                             )
-                            event_status["streaming_container_format"] = "opus"
+                            event_status["streaming_container_format"] = (
+                                STREAMING_CONTAINER_FORMAT
+                            )
                     self._update_capture_status(True, event=event_status)
             return
 
@@ -2045,6 +2049,7 @@ class TimelineRecorder:
 
         if self.queue_drops:
             streaming_drop_detected = True
+            parallel_drop_detected = True
 
         if streaming_drop_detected:
             drop_details = []
@@ -2096,10 +2101,21 @@ class TimelineRecorder:
                     flush=True,
                 )
 
-        if parallel_drop_detected and parallel_result:
-            detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
+        if parallel_drop_detected:
+            drop_details: list[str] = []
+            if parallel_result and (
+                parallel_result.dropped_chunks or self._parallel_encoder_drops
+            ):
+                detail = parallel_result.dropped_chunks or self._parallel_encoder_drops
+                drop_details.append(f"encoder={detail}")
+            if self.queue_drops:
+                drop_details.append(f"queue={self.queue_drops}")
+            details = ", ".join(drop_details) if drop_details else "unknown"
             print(
-                f"[segmenter] WARN: parallel encoder dropped chunks ({detail}); will fall back to offline encode",
+                (
+                    "[segmenter] WARN: parallel encoder detected dropped chunks "
+                    f"({details}); will fall back to offline encode"
+                ),
                 flush=True,
             )
 
