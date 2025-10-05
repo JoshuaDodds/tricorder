@@ -47,6 +47,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import types
 import wave
 import zipfile
 from datetime import datetime, timezone
@@ -82,6 +83,50 @@ RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
+
+
+def _noop_callback(*_args, **_kwargs) -> None:
+    """Fallback callable used when defensive guards replace invalid callbacks."""
+
+
+def _install_loop_callback_guard(
+    loop: asyncio.AbstractEventLoop, log: logging.Logger
+) -> None:
+    """Prevent asyncio from executing ``None`` callbacks by swapping in a no-op."""
+
+    if getattr(loop, "_tricorder_none_callback_guard", False):  # pragma: no cover - guard
+        return
+
+    def _wrap(method_name: str) -> None:
+        original = getattr(loop, method_name, None)
+        if original is None:
+            return
+
+        reported = False
+
+        def safe(self, callback, *args, **kwargs):
+            nonlocal reported
+            if callback is None:
+                if not reported:
+                    log.error(
+                        "Ignored %s(None) scheduling attempt; replacing with no-op.",
+                        method_name,
+                        stack_info=True,
+                    )
+                    reported = True
+                else:
+                    log.error(
+                        "Ignored %s(None) scheduling attempt; replacing with no-op.",
+                        method_name,
+                    )
+                callback = _noop_callback
+            return original(callback, *args, **kwargs)
+
+        setattr(loop, method_name, types.MethodType(safe, loop))
+
+    _wrap("call_soon")
+    _wrap("call_soon_threadsafe")
+    loop._tricorder_none_callback_guard = True  # type: ignore[attr-defined]
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
@@ -5534,6 +5579,7 @@ def start_web_streamer_in_thread(
 
     def _run():
         asyncio.set_event_loop(loop)
+        _install_loop_callback_guard(loop, log)
         app = build_app(lets_encrypt_manager=lets_encrypt_manager)
         if ssl_context is not None:
             app[SSL_CONTEXT_KEY] = ssl_context
