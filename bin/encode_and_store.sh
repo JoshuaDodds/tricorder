@@ -15,6 +15,28 @@ in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1
 existing_opus="${3:-}"
 VENV="/apps/tricorder/venv"
+PYTHON_BIN="${ENCODER_PYTHON:-}";
+if [[ -z "$PYTHON_BIN" ]]; then
+  if [[ -x "$VENV/bin/python" ]]; then
+    PYTHON_BIN="$VENV/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    PYTHON_BIN=""
+  fi
+fi
+
+run_python_module() {
+  local module="$1"
+  shift
+  if [[ -z "$PYTHON_BIN" ]]; then
+    echo "[encode] python interpreter not available for $module" | systemd-cat -t tricorder
+    return 1
+  fi
+  "$PYTHON_BIN" -m "$module" "$@"
+}
 day="$(date +%Y%m%d)"
 outdir="/apps/tricorder/recordings/$day"
 mkdir -p "$outdir"
@@ -47,6 +69,7 @@ reuse_waveform=0
 if [[ -f "$waveform_file" ]]; then
   reuse_waveform=1
 fi
+transcript_file="${outfile}.transcript.json"
 
 # Optional denoise filter chain
 FILTERS=()
@@ -87,12 +110,32 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
       "$temp_outfile"; then
         echo "[encode] ffmpeg failed for $existing_opus" | systemd-cat -t tricorder
         rm -f "$temp_outfile"
-        "$VENV/bin/python" -m lib.fault_handler encode_failure "$existing_opus" "$base"
+        run_python_module lib.fault_handler encode_failure "$existing_opus" "$base"
         exit 1
     fi
     mv -f "$temp_outfile" "$existing_opus"
   else
     echo "[encode] Streaming encoder provided $existing_opus; no filters requested" | systemd-cat -t tricorder
+    if [[ "$reuse_waveform" -ne 1 ]]; then
+      if ! run_python_module lib.waveform_cache "$in_wav" "$waveform_file"; then
+        echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
+        rm -f "$in_wav"
+        exit 1
+      fi
+      echo "[encode] Wrote waveform $waveform_file"
+    else
+      echo "[encode] Reused waveform $waveform_file"
+    fi
+    if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; then
+      echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
+    fi
+    rm -f "$in_wav"
+    if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
+      echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder
+    fi
+    echo "[encoder] Stored $outfile" | systemd-cat -t tricorder
+    echo "[encode] Done"
+    exit 0
   fi
 else
   if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
@@ -102,7 +145,7 @@ else
     -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
     "$outfile"; then
       echo "[encode] ffmpeg failed for $in_wav" | systemd-cat -t tricorder
-      "$VENV/bin/python" -m lib.fault_handler encode_failure "$in_wav" "$base"
+      run_python_module lib.fault_handler encode_failure "$in_wav" "$base"
       exit 1
   fi
 fi
@@ -110,7 +153,7 @@ fi
 if [[ "$reuse_waveform" -eq 1 ]]; then
   echo "[encode] Reused waveform $waveform_file"
 else
-  if ! "$VENV/bin/python" -m lib.waveform_cache "$in_wav" "$waveform_file"; then
+  if ! run_python_module lib.waveform_cache "$in_wav" "$waveform_file"; then
     echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
     rm -f "$outfile"
     rm -f "$in_wav"
@@ -119,14 +162,13 @@ else
   echo "[encode] Wrote waveform $waveform_file"
 fi
 
-transcript_file="${outfile}.transcript.json"
-if ! "$VENV/bin/python" -m lib.transcription "$in_wav" "$transcript_file" "$base"; then
+if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; then
   echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
 fi
 
 rm -f "$in_wav"
 
-if ! "$VENV/bin/python" -m lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
+if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
   echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder
 fi
 
