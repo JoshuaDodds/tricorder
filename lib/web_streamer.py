@@ -89,6 +89,9 @@ def _noop_callback(*_args, **_kwargs) -> None:
     """Fallback callable used when defensive guards replace invalid callbacks."""
 
 
+_HANDLE_RUN_GUARD_INSTALLED = False
+
+
 def _install_loop_callback_guard(
     loop: asyncio.AbstractEventLoop, log: logging.Logger
 ) -> None:
@@ -96,6 +99,8 @@ def _install_loop_callback_guard(
 
     if getattr(loop, "_tricorder_none_callback_guard", False):  # pragma: no cover - guard
         return
+
+    _install_handle_run_guard()
 
     def _wrap(method_name: str) -> None:
         original = getattr(loop, method_name, None)
@@ -127,6 +132,31 @@ def _install_loop_callback_guard(
     _wrap("call_soon")
     _wrap("call_soon_threadsafe")
     loop._tricorder_none_callback_guard = True  # type: ignore[attr-defined]
+
+
+def _install_handle_run_guard() -> None:
+    global _HANDLE_RUN_GUARD_INSTALLED
+    if _HANDLE_RUN_GUARD_INSTALLED:  # pragma: no cover - defensive guard
+        return
+
+    handle_run = getattr(asyncio.Handle, "_run", None)
+    if handle_run is None:  # pragma: no cover - older asyncio fallbacks
+        return
+
+    asyncio_log = logging.getLogger("asyncio")
+
+    @functools.wraps(handle_run)
+    def safe_run(self: asyncio.Handle) -> None:  # type: ignore[name-defined]
+        if self._callback is None:
+            asyncio_log.error(
+                "Discarded asyncio handle with None callback; args=%r", self._args, stack_info=True
+            )
+            self._callback = _noop_callback
+            self._args = ()
+        return handle_run(self)
+
+    setattr(asyncio.Handle, "_run", safe_run)
+    _HANDLE_RUN_GUARD_INSTALLED = True
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
