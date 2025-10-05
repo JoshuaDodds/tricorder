@@ -593,10 +593,60 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 
         artifact_bases: list[str] = list(existing_final_bases)
         final_base: str | None = None
+        existing_opus_path: str | None = None
+        final_opus_path: Path | None = None
         if not existing_final_bases:
             rms_value = _estimate_rms_from_file(wav_path)
             final_base = _derive_final_base(wav_path, rms_value)
             artifact_bases.append(final_base)
+            final_opus_path = day_dir / f"{final_base}{final_extension}"
+
+            partial_candidate: Path | None = None
+            if STREAMING_PARTIAL_SUFFIX:
+                candidate = day_dir / f"{wav_path.stem}{STREAMING_PARTIAL_SUFFIX}"
+                if candidate.exists():
+                    partial_candidate = candidate
+
+            if final_opus_path.exists():
+                existing_opus_path = str(final_opus_path)
+            elif partial_candidate is not None:
+                try:
+                    os.replace(partial_candidate, final_opus_path)
+                except Exception as exc:
+                    print(
+                        (
+                            "[recovery] WARN: failed to promote streaming partial "
+                            f"{partial_candidate} -> {final_opus_path}: {exc!r}"
+                        ),
+                        flush=True,
+                    )
+                    partial_candidate = None
+                else:
+                    existing_opus_path = str(final_opus_path)
+                    _log_recovery(
+                        f"Promoted streaming partial {partial_candidate.name} to {final_opus_path.name}"
+                    )
+
+            if partial_candidate is not None and existing_opus_path:
+                for suffix in (".waveform.json", ".transcript.json"):
+                    partial_sidecar = partial_candidate.with_name(partial_candidate.name + suffix)
+                    if not partial_sidecar.exists():
+                        continue
+                    destination = final_opus_path.with_suffix(final_opus_path.suffix + suffix)
+                    try:
+                        os.replace(partial_sidecar, destination)
+                    except Exception as exc:
+                        print(
+                            (
+                                "[recovery] WARN: failed to promote streaming sidecar "
+                                f"{partial_sidecar} -> {destination}: {exc!r}"
+                            ),
+                            flush=True,
+                        )
+                        continue
+                    _log_recovery(
+                        f"Promoted streaming sidecar {partial_sidecar.name} to {destination.name}"
+                    )
 
         for artifact in _collect_streaming_artifacts(day_dir, wav_path.stem, artifact_bases):
             _remove_file(artifact, report, category="artifact")
@@ -608,7 +658,12 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         day_dir.mkdir(parents=True, exist_ok=True)
         try:
             assert final_base is not None
-            _enqueue_encode_job(str(wav_path), final_base, source="recovery")
+            _enqueue_encode_job(
+                str(wav_path),
+                final_base,
+                source="recovery",
+                existing_opus_path=existing_opus_path,
+            )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
                 f"[recovery] WARN: failed to enqueue encode job for {final_base}: {exc!r}",
@@ -950,6 +1005,8 @@ class LiveWaveformWriter:
         *,
         bucket_count: int = LIVE_WAVEFORM_BUCKET_COUNT,
         update_interval: float = LIVE_WAVEFORM_UPDATE_INTERVAL,
+        start_epoch: float | None = None,
+        trigger_rms: int | None = None,
     ) -> None:
         if not destination:
             raise ValueError("destination is required for LiveWaveformWriter")
@@ -961,7 +1018,32 @@ class LiveWaveformWriter:
         self._total_samples = 0
         self._last_write = 0.0
         self._lock = threading.Lock()
-        self._start_epoch = time.time()
+        self._start_epoch = self._resolve_start_epoch(start_epoch)
+        self._trigger_rms = self._sanitize_trigger_rms(trigger_rms)
+
+    @staticmethod
+    def _resolve_start_epoch(candidate: float | None) -> float:
+        if candidate is None:
+            return time.time()
+        try:
+            value = float(candidate)
+        except (TypeError, ValueError):
+            return time.time()
+        if not math.isfinite(value) or value <= 0.0:
+            return time.time()
+        return value
+
+    @staticmethod
+    def _sanitize_trigger_rms(candidate: int | None) -> int | None:
+        if candidate is None:
+            return None
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return 0
+        return value
 
     def add_frame(self, buf: bytes) -> None:
         if not buf:
@@ -1031,6 +1113,7 @@ class LiveWaveformWriter:
                 "rms_values": [],
                 "updated_epoch": time.time(),
                 "start_epoch": self._start_epoch,
+                "trigger_rms": self._trigger_rms,
             }
 
         bucket_count = max(1, min(self.bucket_count, frame_count))
@@ -1085,6 +1168,7 @@ class LiveWaveformWriter:
             "rms_values": rms_values,
             "start_epoch": self._start_epoch,
             "updated_epoch": time.time(),
+            "trigger_rms": self._trigger_rms,
         }
         return payload
 
@@ -1238,6 +1322,28 @@ class EncodingStatus:
                 active_match = job_id in self._active
                 pending_match = any(entry.get("id") == job_id for entry in self._pending)
                 if not active_match and not pending_match:
+                    return True
+
+                if timeout is None:
+                    self._cond.wait()
+                    continue
+
+                assert deadline is not None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+
+    def wait_for_all(self, timeout: float | None = None) -> bool:
+        """Wait until all pending and active jobs have finished."""
+
+        deadline: float | None = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+
+        with self._cond:
+            while True:
+                if not self._active and not self._pending:
                     return True
 
                 if timeout is None:
@@ -1615,7 +1721,8 @@ class TimelineRecorder:
         self.event_timestamp: str | None = None
         self.event_counter: int | None = None
         self.trigger_rms: int | None = None
-        self.queue_drops = 0
+        self.writer_queue_drops = 0
+        self.streaming_queue_drops = 0
 
         self.frames_written = 0
         self.sum_rms = 0
@@ -2038,7 +2145,7 @@ class TimelineRecorder:
         try:
             self.audio_q.put_nowait(item)
         except queue.Full:
-            self.queue_drops += 1
+            self.writer_queue_drops += 1
 
     def ingest(self, buf: bytes, idx: int):
         start = time.perf_counter()
@@ -2199,6 +2306,8 @@ class TimelineRecorder:
                         waveform_partial_path,
                         bucket_count=LIVE_WAVEFORM_BUCKET_COUNT,
                         update_interval=LIVE_WAVEFORM_UPDATE_INTERVAL,
+                        start_epoch=self.event_started_epoch,
+                        trigger_rms=self.trigger_rms,
                     )
                 except Exception:
                     self._live_waveform = None
@@ -2212,7 +2321,7 @@ class TimelineRecorder:
                         prebuf_bytes.append(frame_bytes)
                         self._q_send(frame_bytes)
                         if self._streaming_encoder and not self._streaming_encoder.feed(frame_bytes):
-                            self.queue_drops += 1
+                            self.streaming_queue_drops += 1
                         if self._parallel_encoder and not self._parallel_encoder.feed(frame_bytes):
                             self._parallel_encoder_drops += 1
                         if self._live_waveform:
@@ -2272,7 +2381,7 @@ class TimelineRecorder:
 
         self._q_send(bytes(buf))
         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
-            self.queue_drops += 1
+            self.streaming_queue_drops += 1
         if self._parallel_encoder and not self._parallel_encoder.feed(bytes(buf)):
             self._parallel_encoder_drops += 1
         if self._live_waveform:
@@ -2332,7 +2441,7 @@ class TimelineRecorder:
             partial_stream_path = streaming_result.partial_path
             streaming_drop_detected = bool(streaming_result.dropped_chunks)
 
-        if self.queue_drops:
+        if self.streaming_queue_drops:
             streaming_drop_detected = True
 
         if streaming_drop_detected:
@@ -2341,8 +2450,10 @@ class TimelineRecorder:
                 drop_details.append(
                     f"encoder={streaming_result.dropped_chunks}"
                 )
-            if self.queue_drops:
-                drop_details.append(f"queue={self.queue_drops}")
+            if self.streaming_queue_drops:
+                drop_details.append(f"queue={self.streaming_queue_drops}")
+            if self.writer_queue_drops:
+                drop_details.append(f"writer={self.writer_queue_drops}")
             details = ", ".join(drop_details) if drop_details else "unknown"
             print(
                 f"[segmenter] WARN: streaming encoder dropped chunks ({details}); falling back to offline encode",
@@ -2400,9 +2511,10 @@ class TimelineRecorder:
         except queue.Empty:
             print("[segmenter] WARN: writer did not close file within 5s", flush=True)
 
+        total_queue_drops = self.writer_queue_drops + self.streaming_queue_drops
         print(
             f"[segmenter] Event ended ({reason}). type={etype_label}, avg_rms={avg_rms:.1f}, frames={self.frames_written}"
-            + (f", q_drops={self.queue_drops}" if self.queue_drops else ""),
+            + (f", q_drops={total_queue_drops}" if total_queue_drops else ""),
             flush=True
         )
 
@@ -2690,7 +2802,8 @@ class TimelineRecorder:
         self.saw_loud = False
         self.base_name = None
         self.tmp_wav_path = None
-        self.queue_drops = 0
+        self.writer_queue_drops = 0
+        self.streaming_queue_drops = 0
         self.event_timestamp = None
         self.event_counter = None
         self.trigger_rms = None

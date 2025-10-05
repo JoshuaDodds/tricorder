@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -78,6 +79,40 @@ def _write_test_certificate(tmp_path: Path) -> tuple[Path, Path]:
     cert_path.write_text(TEST_CERT_PEM, encoding="utf-8")
     key_path.write_text(TEST_KEY_PEM, encoding="utf-8")
     return cert_path, key_path
+
+
+def test_loop_callback_guard_replaces_none_callbacks(caplog):
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        with caplog.at_level(logging.ERROR, logger="web_streamer"):
+            web_streamer._install_loop_callback_guard(loop, logger)
+            loop.call_soon(None)
+
+        assert "call_soon(None)" in caplog.text
+
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+    finally:
+        loop.close()
+
+
+def test_handle_run_guard_discards_none_callbacks(caplog):
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        handle = loop.call_soon(lambda: None)
+        handle._callback = None
+        handle._args = ("sentinel",)
+
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            handle._run()
+
+        assert "Discarded asyncio handle with None callback" in caplog.text
+    finally:
+        loop.close()
 
 
 @pytest.mark.asyncio

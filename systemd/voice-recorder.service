@@ -16,6 +16,10 @@ Nice=5
 StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
+KillMode=process
+KillSignal=SIGINT
+SendSIGKILL=no
+TimeoutStopSec=infinity
 
 [Install]
 WantedBy=multi-user.target

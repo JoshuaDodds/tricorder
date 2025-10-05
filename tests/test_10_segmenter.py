@@ -169,6 +169,9 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     for idx in range(4):
         rec.ingest(make_frame(2000), idx)
 
+    rec.writer_queue_drops = 3
+    rec.streaming_queue_drops = 0
+
     rec.flush(10)
 
     encoder = captured_encoder.get("instance")
@@ -479,14 +482,19 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
-    assert existing_arg is None
+    expected_extension = segmenter.STREAMING_EXTENSION
+    if not expected_extension.startswith("."):
+        expected_extension = f".{expected_extension}"
+    expected_opus = day_dir / f"{expected_final_base}{expected_extension}"
+    assert existing_arg == str(expected_opus)
 
     assert report.requeued == [expected_final_base]
     assert not partial_path.exists()
     assert not partial_waveform.exists()
     assert not filtered_path.exists()
     assert wav_path.exists()
-    assert any(str(partial_path) == entry for entry in report.removed_artifacts)
+    assert str(partial_path) not in report.removed_artifacts
+    assert str(partial_waveform) not in report.removed_artifacts
     assert report.removed_wavs == []
 
 
@@ -801,6 +809,25 @@ def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)
     assert segmenter.rms(buf) == 1200
+
+
+def test_live_waveform_writer_preserves_start_and_trigger(tmp_path):
+    destination = tmp_path / "waveform.json"
+    writer = segmenter.LiveWaveformWriter(
+        str(destination),
+        bucket_count=8,
+        update_interval=0.0,
+        start_epoch=123.456,
+        trigger_rms=789,
+    )
+    writer.add_frame(make_frame(1000))
+    writer.finalize()
+
+    with destination.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    assert payload["start_epoch"] == pytest.approx(123.456, rel=0, abs=1e-6)
+    assert payload["trigger_rms"] == 789
 
 
 def test_apply_gain_scales_and_clips(monkeypatch):

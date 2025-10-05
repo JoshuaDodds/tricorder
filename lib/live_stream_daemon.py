@@ -7,8 +7,8 @@ import sys
 import time
 from collections import deque
 from queue import Empty
-from typing import Any, Optional, Tuple
-from lib.segmenter import TimelineRecorder, perform_startup_recovery
+from typing import Any, Iterable, Optional, Tuple
+from lib.segmenter import ENCODING_STATUS, TimelineRecorder, perform_startup_recovery
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
@@ -67,6 +67,74 @@ ARECORD_CMD = [
 
 stop_requested = False
 p = None
+
+
+def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
+    jobs = [job_id for job_id in job_ids if isinstance(job_id, int)]
+    for job_id in jobs:
+        while True:
+            try:
+                finished = ENCODING_STATUS.wait_for_finish(job_id, timeout=10.0)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                print(
+                    f"[live] WARN: failed waiting for encode job {job_id}: {exc}",
+                    flush=True,
+                )
+                break
+            if finished:
+                break
+            print(
+                f"[live] Waiting for encode job {job_id} to finish...",
+                flush=True,
+            )
+
+    while True:
+        snapshot = ENCODING_STATUS.snapshot()
+        if not snapshot:
+            break
+
+        def _format(entry: dict[str, object], status: str) -> str:
+            job_id = entry.get("id")
+            base = entry.get("base_name") or ""
+            prefix = f"{job_id}" if isinstance(job_id, int) else "?"
+            base_str = f" {base}" if isinstance(base, str) and base else ""
+            return f"{prefix}{base_str} ({status})"
+
+        outstanding = [
+            _format(entry, "active")
+            for entry in snapshot.get("active", [])
+            if isinstance(entry, dict)
+        ]
+        outstanding.extend(
+            _format(entry, "pending")
+            for entry in snapshot.get("pending", [])
+            if isinstance(entry, dict)
+        )
+
+        if not outstanding:
+            break
+
+        print(
+            "[live] Waiting for outstanding encode jobs: "
+            + ", ".join(outstanding),
+            flush=True,
+        )
+
+        try:
+            finished = ENCODING_STATUS.wait_for_all(timeout=10.0)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            print(
+                f"[live] WARN: failed waiting for outstanding encode jobs: {exc}",
+                flush=True,
+            )
+            break
+
+        if finished:
+            break
 
 def handle_signal(signum, frame):  # noqa
     global stop_requested, p
@@ -579,6 +647,8 @@ def main():
                         flush_processed(drained)
                 if 'rec' in locals():
                     rec.flush(frame_idx)
+                    if stop_requested:
+                        _wait_for_encode_completion(rec.encode_job_ids())
             except Exception as e:
                 print(f"[live] flush failed: {e!r}", flush=True)
 
