@@ -92,6 +92,7 @@ def _noop_callback(*_args, **_kwargs) -> None:
 
 
 _HANDLE_RUN_GUARD_INSTALLED = False
+_SELECTOR_TRANSPORT_GUARD_INSTALLED = False
 
 
 def _install_loop_callback_guard(
@@ -103,6 +104,7 @@ def _install_loop_callback_guard(
         return
 
     _install_handle_run_guard()
+    _install_selector_transport_guard(log)
 
     def _wrap(method_name: str) -> None:
         original = getattr(loop, method_name, None)
@@ -159,6 +161,105 @@ def _install_handle_run_guard() -> None:
 
     setattr(asyncio.Handle, "_run", safe_run)
     _HANDLE_RUN_GUARD_INSTALLED = True
+
+
+def _install_selector_transport_guard(log: logging.Logger) -> None:
+    """Harden asyncio's transport cleanup against missing protocol/socket objects."""
+
+    global _SELECTOR_TRANSPORT_GUARD_INSTALLED
+    if _SELECTOR_TRANSPORT_GUARD_INSTALLED:  # pragma: no cover - defensive guard
+        return
+
+    try:
+        from asyncio import selector_events
+    except Exception:  # pragma: no cover - platform guard
+        return
+
+    original = getattr(selector_events._SelectorTransport, "_call_connection_lost", None)
+    if original is None:  # pragma: no cover - platform guard
+        return
+
+    asyncio_log = logging.getLogger("asyncio")
+
+    @functools.wraps(original)
+    def safe_call_connection_lost(self, exc):
+        protocol_connected = getattr(self, "_protocol_connected", False)
+        protocol = getattr(self, "_protocol", None)
+        sock = getattr(self, "_sock", None)
+
+        def _cleanup():
+            current_sock = getattr(self, "_sock", None)
+            if current_sock is not None:
+                try:
+                    current_sock.close()
+                except Exception:
+                    asyncio_log.debug(
+                        "Error closing socket during guarded connection_lost cleanup.",
+                        exc_info=True,
+                    )
+            try:
+                self._sock = None
+            except Exception:
+                pass
+            try:
+                self._protocol = None
+            except Exception:
+                pass
+            try:
+                self._loop = None
+            except Exception:
+                pass
+            server = getattr(self, "_server", None)
+            if server is not None:
+                try:
+                    server._detach()
+                except Exception:
+                    asyncio_log.debug(
+                        "Error detaching server during guarded connection_lost cleanup.",
+                        exc_info=True,
+                    )
+                try:
+                    self._server = None
+                except Exception:
+                    pass
+            try:
+                self._protocol_connected = False
+            except Exception:
+                pass
+
+        if sock is None or (protocol_connected and protocol is None):
+            missing = "protocol" if protocol is None else "socket"
+            message = (
+                "Selector transport missing %s during connection_lost; continuing cleanup defensively."
+                % missing
+            )
+            asyncio_log.error(message, stack_info=True)
+            log.error(message)
+            if protocol_connected and protocol is not None:
+                try:
+                    protocol.connection_lost(exc)
+                except Exception:
+                    asyncio_log.exception(
+                        "Error calling connection_lost on %r during guarded cleanup.",
+                        protocol,
+                    )
+            _cleanup()
+            return
+
+        try:
+            original(self, exc)
+        except AttributeError:
+            asyncio_log.error(
+                "Selector transport raised AttributeError during connection_lost; continuing cleanup defensively.",
+                exc_info=True,
+            )
+            log.error(
+                "Selector transport raised AttributeError during connection_lost; cleanup handled defensively."
+            )
+            _cleanup()
+
+    selector_events._SelectorTransport._call_connection_lost = safe_call_connection_lost
+    _SELECTOR_TRANSPORT_GUARD_INSTALLED = True
 
 
 def _normalize_webrtc_ice_servers(raw: object) -> list[dict[str, object]]:
