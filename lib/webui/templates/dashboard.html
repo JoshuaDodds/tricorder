@@ -246,6 +246,14 @@
             <button id="split-event-trigger" class="ghost-button" type="button">
               Split Event
             </button>
+            <button
+              id="manual-record-toggle"
+              class="danger-button"
+              type="button"
+              aria-pressed="false"
+            >
+              Manual Record
+            </button>
             <button id="live-stream-toggle" class="primary-button" type="button">Live Stream</button>
           </div>
           <div class="header-status-group">
@@ -383,7 +391,62 @@
             </div>
             <button id="preview-close" class="ghost-button small" type="button">Hide</button>
           </div>
-          <audio id="preview-player" controls preload="none"></audio>
+          <audio id="preview-player" preload="none" aria-hidden="true"></audio>
+          <div class="player-transport" id="player-transport" hidden data-active="false">
+            <div class="transport-buttons" role="group" aria-label="Playback controls">
+              <button id="transport-restart" class="transport-button" type="button" aria-label="Restart">
+                <span class="transport-button-icon" aria-hidden="true">⏮</span>
+                <span class="transport-button-text sr-only">Restart</span>
+              </button>
+              <button
+                id="transport-rewind"
+                class="transport-button"
+                type="button"
+                aria-label="Rewind 10 seconds"
+              >
+                <span class="transport-button-icon" aria-hidden="true">⏪</span>
+                <span class="transport-button-text sr-only">Rewind 10 seconds</span>
+              </button>
+              <button
+                id="transport-play"
+                class="transport-button transport-button-primary"
+                type="button"
+                aria-pressed="false"
+                aria-label="Play"
+              >
+                <span class="transport-button-icon" aria-hidden="true">▶</span>
+                <span class="transport-button-text sr-only">Play</span>
+              </button>
+              <button
+                id="transport-forward"
+                class="transport-button"
+                type="button"
+                aria-label="Forward 30 seconds"
+              >
+                <span class="transport-button-icon" aria-hidden="true">⏩</span>
+                <span class="transport-button-text sr-only">Forward 30 seconds</span>
+              </button>
+              <button id="transport-end" class="transport-button" type="button" aria-label="Skip to end">
+                <span class="transport-button-icon" aria-hidden="true">⏭</span>
+                <span class="transport-button-text sr-only">Skip to end</span>
+              </button>
+            </div>
+            <div class="transport-options">
+              <label class="transport-speed" for="transport-speed-select">
+                <span class="transport-speed-label">Speed</span>
+                <select id="transport-speed-select">
+                  <option value="0.25">0.25×</option>
+                  <option value="0.5">0.5×</option>
+                  <option value="0.75">0.75×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="1.75">1.75×</option>
+                  <option value="2">2×</option>
+                </select>
+              </label>
+            </div>
+          </div>
           <div class="waveform-section" id="waveform-section">
             <div class="waveform-header">
               <span>Waveform</span>

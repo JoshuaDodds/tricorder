@@ -233,8 +233,8 @@ def _install_selector_transport_guard(log: logging.Logger) -> None:
                 "Selector transport missing %s during connection_lost; continuing cleanup defensively."
                 % missing
             )
-            asyncio_log.error(message, stack_info=True)
-            log.error(message)
+            asyncio_log.warning(message)
+            log.warning(message)
             if protocol_connected and protocol is not None:
                 try:
                     protocol.connection_lost(exc)
@@ -3501,6 +3501,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     capture_status_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json"
     )
+    manual_record_state_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), "manual_record_state.json"
+    )
     motion_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
     )
@@ -3542,21 +3545,53 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 return False
         return None
 
+    def _read_manual_record_flag() -> bool:
+        try:
+            with open(manual_record_state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return False
+        except (json.JSONDecodeError, OSError):
+            return False
+        if isinstance(payload, dict):
+            return bool(payload.get("enabled", False))
+        if isinstance(payload, bool):
+            return bool(payload)
+        return False
+
     def _read_capture_status() -> dict[str, object]:
         try:
             with open(capture_status_path, "r", encoding="utf-8") as handle:
                 raw = json.load(handle)
         except FileNotFoundError:
-            return {"capturing": False, "updated_at": None}
+            return {
+                "capturing": False,
+                "updated_at": None,
+                "manual_recording": _read_manual_record_flag(),
+            }
         except json.JSONDecodeError:
-            return {"capturing": False, "updated_at": None, "error": "invalid"}
+            return {
+                "capturing": False,
+                "updated_at": None,
+                "error": "invalid",
+                "manual_recording": _read_manual_record_flag(),
+            }
         except OSError:
-            return {"capturing": False, "updated_at": None}
+            return {
+                "capturing": False,
+                "updated_at": None,
+                "manual_recording": _read_manual_record_flag(),
+            }
 
         status: dict[str, object] = {
             "capturing": bool(raw.get("capturing", False)),
             "service_running": False,
         }
+        manual_flag = raw.get("manual_recording")
+        if isinstance(manual_flag, bool):
+            status["manual_recording"] = manual_flag
+        else:
+            status["manual_recording"] = _read_manual_record_flag()
         updated_at = raw.get("updated_at")
         if isinstance(updated_at, (int, float)):
             status["updated_at"] = float(updated_at)
@@ -5529,6 +5564,51 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return web.json_response({"ok": False, "error": message}, status=502)
         return web.json_response({"ok": True})
 
+    async def capture_manual_record(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
+
+        raw_enabled = payload.get("enabled") if isinstance(payload, dict) else None
+        enabled: bool | None
+        if isinstance(raw_enabled, bool):
+            enabled = raw_enabled
+        elif isinstance(raw_enabled, (int, float)):
+            enabled = bool(raw_enabled)
+        elif isinstance(raw_enabled, str):
+            normalized = raw_enabled.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                enabled = True
+            elif normalized in {"0", "false", "no", "off"}:
+                enabled = False
+            else:
+                enabled = None
+        else:
+            enabled = None
+
+        if enabled is None:
+            return web.json_response(
+                {"ok": False, "error": "Payload must include boolean 'enabled'"},
+                status=400,
+            )
+
+        try:
+            os.makedirs(os.path.dirname(manual_record_state_path), exist_ok=True)
+            with open(manual_record_state_path, "w", encoding="utf-8") as handle:
+                json.dump({"enabled": bool(enabled), "updated_at": time.time()}, handle)
+                handle.write("\n")
+        except OSError as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": f"Failed to update manual record state: {exc}",
+                },
+                status=500,
+            )
+
+        return web.json_response({"ok": True, "enabled": bool(enabled)})
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -5671,6 +5751,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/integrations", integrations_api)
     app.router.add_post("/api/services/{unit}/action", service_action)
     app.router.add_post("/api/capture/split", capture_split)
+    app.router.add_post("/api/capture/manual-record", capture_manual_record)
 
     if stream_mode == "hls":
         app.router.add_get("/hls/start", hls_start)

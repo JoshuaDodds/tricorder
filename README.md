@@ -143,6 +143,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 
 - Live recorder status and listener counts with encoder start/stop controls.
 - Manual **Split Event** control to finalize the current recording and immediately begin a new segment without interrupting encoding.
+- Manual **Record** toggle to force continuous recording and skip offline filter passes when you need uninterrupted capture.
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.

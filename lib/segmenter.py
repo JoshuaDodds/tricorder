@@ -296,6 +296,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
             final_base,
             source="recovery",
             existing_opus_path=None,
+            manual_recording=False,
         )
         requeued.append(final_base)
 
@@ -694,6 +695,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 final_base,
                 source="recovery",
                 existing_opus_path=existing_opus_path,
+                manual_recording=False,
             )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
@@ -1416,7 +1418,11 @@ class _EncoderWorker(threading.Thread):
                 wav_path: str
                 base_name: str
                 existing_opus: str | None = None
-                if isinstance(item, tuple) and len(item) == 4:
+                manual_recording = False
+                if isinstance(item, tuple) and len(item) >= 5:
+                    job_id, wav_path, base_name, existing_opus, manual_flag = item[:5]
+                    manual_recording = bool(manual_flag)
+                elif isinstance(item, tuple) and len(item) == 4:
                     job_id, wav_path, base_name, existing_opus = item
                 elif isinstance(item, tuple) and len(item) == 3:
                     job_id, wav_path, base_name = item
@@ -1427,6 +1433,8 @@ class _EncoderWorker(threading.Thread):
                         base_name = item[1]
                         if len(item) >= 3:
                             existing_opus = item[2]
+                        if len(item) >= 4:
+                            manual_recording = bool(item[3])
                     else:
                         wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
@@ -1436,6 +1444,8 @@ class _EncoderWorker(threading.Thread):
                 if existing_opus:
                     cmd.append(existing_opus)
                 env = os.environ.copy()
+                if manual_recording:
+                    env["DENOISE"] = "0"
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
                 env.setdefault("ENCODER_MIN_CLIP_SECONDS", str(MIN_CLIP_SECONDS))
@@ -1487,12 +1497,19 @@ def _enqueue_encode_job(
     *,
     source: str = "live",
     existing_opus_path: str | None = None,
+    manual_recording: bool = False,
 ) -> int | None:
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
     job_id = ENCODING_STATUS.enqueue(base_name, source=source)
-    payload = (job_id, tmp_wav_path, base_name, existing_opus_path)
+    payload = (
+        job_id,
+        tmp_wav_path,
+        base_name,
+        existing_opus_path,
+        bool(manual_recording),
+    )
     try:
         ENCODE_QUEUE.put_nowait(payload)
     except queue.Full:
@@ -1775,6 +1792,8 @@ class TimelineRecorder:
         self._ingest_hint_used = False
         self._encode_jobs: list[int] = []
         self._manual_split_requested = False
+        self._manual_recording = False
+        self._event_manual_recording = False
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -1831,6 +1850,7 @@ class TimelineRecorder:
                     "event_size_bytes": None,
                     "partial_recording_path": None,
                     "streaming_container_format": None,
+                    "manual_recording": False,
                     **self._motion_status_extra(),
                 },
             )
@@ -1873,6 +1893,7 @@ class TimelineRecorder:
             elif "adaptive_rms_threshold" not in payload:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
             payload["adaptive_rms_enabled"] = bool(self._adaptive.enabled)
+            payload["manual_recording"] = bool(getattr(self, "_manual_recording", False))
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -1905,6 +1926,7 @@ class TimelineRecorder:
                 "partial_waveform_path",
                 "partial_waveform_rel_path",
                 "encoding",
+                "manual_recording",
             )
             if extra and self._status_mode == "live":
                 for key, value in extra.items():
@@ -2042,6 +2064,21 @@ class TimelineRecorder:
         if updated.active and self.active and self._current_motion_event_start is None:
             self._current_motion_event_start = updated.active_since or updated.updated_at
         self._publish_motion_status()
+
+    def set_manual_recording(self, enabled: bool) -> None:
+        next_state = bool(enabled)
+        if next_state == getattr(self, "_manual_recording", False):
+            return
+        self._manual_recording = next_state
+        if next_state:
+            if self.active:
+                self._event_manual_recording = True
+            self._refresh_capture_status()
+            return
+        if self.active:
+            self._finalize_event(reason="manual recording stopped")
+        else:
+            self._refresh_capture_status()
 
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
         with self._status_lock:
@@ -2328,6 +2365,10 @@ class TimelineRecorder:
         current_threshold = self._adaptive.threshold_linear
         loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
+        if self._manual_recording:
+            frame_active = True
+            loud = True
+            voiced = True
         if self._motion_forced_active:
             frame_active = True
         if force_restart:
@@ -2506,6 +2547,7 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
+                self._event_manual_recording = self._manual_recording
                 self._motion_pending_start = False
                 if self._motion_forced_active and self._current_motion_event_start is None:
                     self._current_motion_event_start = self._motion_active_since or time.time()
@@ -2600,6 +2642,7 @@ class TimelineRecorder:
         persisted_waveform: tuple[str, str | None] | None = None
         streaming_drop_detected = False
         parallel_drop_detected = False
+        manual_event = bool(self._event_manual_recording)
         day_dir = self._streaming_day_dir
         if self._streaming_encoder:
             try:
@@ -2788,6 +2831,7 @@ class TimelineRecorder:
                 final_base,
                 source=self._recording_source,
                 existing_opus_path=final_stream_path if reuse_mode else None,
+                manual_recording=manual_event,
             )
             if job_id is not None:
                 self._encode_jobs.append(job_id)
@@ -2997,6 +3041,7 @@ class TimelineRecorder:
         self._ingest_hint = None
         self._ingest_hint_used = True
         self._manual_split_requested = False
+        self._event_manual_recording = False
         self._cleanup_live_waveform()
 
     def flush(self, idx: int):

@@ -118,10 +118,17 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
     original_counters = segmenter.TimelineRecorder.event_counters
     segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
 
-    captured_jobs: list[tuple[str, str, str, str | None]] = []
+    captured_jobs: list[tuple[str, str, str, str | None, bool]] = []
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
-        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path))
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str,
+        existing_opus_path: str | None,
+        manual_recording: bool = False,
+    ):
+        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
         return len(captured_jobs)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -168,6 +175,57 @@ def test_manual_split_no_active_event(tmp_path, monkeypatch):
         assert rec.request_manual_split() is False
     finally:
         rec.flush(0)
+
+
+def test_manual_record_toggle_updates_status_and_encode(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    manual_flags: list[bool] = []
+
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str,
+        existing_opus_path: str | None,
+        manual_recording: bool = False,
+    ):
+        manual_flags.append(manual_recording)
+        return len(manual_flags)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.set_manual_recording(True)
+        cache = rec._status_cache or {}
+        assert cache.get("manual_recording") is True
+
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is True
+
+        rec.set_manual_recording(False)
+        assert rec._manual_recording is False
+        cache = rec._status_cache or {}
+        assert cache.get("manual_recording") is False
+        assert manual_flags == [True]
+    finally:
+        rec.flush(5)
 
 
 def test_motion_state_forced_recording(monkeypatch, tmp_path):
@@ -291,10 +349,18 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
 
     captured_job: dict[str, object] = {}
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str,
+        existing_opus_path: str | None,
+        manual_recording: bool = False,
+    ):
         captured_job["base"] = base_name
         captured_job["existing"] = existing_opus_path
         captured_job["source"] = source
+        captured_job["manual"] = manual_recording
         return 42
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -543,10 +609,18 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
 
     captured: dict[str, object | None] = {}
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str = "live",
+        existing_opus_path: str | None = None,
+        manual_recording: bool = False,
+    ):
         captured["tmp_wav_path"] = tmp_wav_path
         captured["base_name"] = base_name
         captured["existing_opus_path"] = existing_opus_path
+        captured["manual_recording"] = manual_recording
         return 123
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -585,10 +659,17 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None]] = []
+    calls: list[tuple[str, str, str, str | None, bool]] = []
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path))
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str = "live",
+        existing_opus_path: str | None = None,
+        manual_recording: bool = False,
+    ):
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -613,10 +694,11 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     report = segmenter.perform_startup_recovery()
 
     assert calls, "expected encode job to be requeued"
-    tmp_arg, base_arg, source_arg, existing_arg = calls[0]
+    tmp_arg, base_arg, source_arg, existing_arg, manual_flag = calls[0]
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
+    assert manual_flag is False
     expected_extension = segmenter.STREAMING_EXTENSION
     if not expected_extension.startswith("."):
         expected_extension = f".{expected_extension}"
@@ -642,10 +724,17 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None]] = []
+    calls: list[tuple[str, str, str, str | None, bool]] = []
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str = "live", existing_opus_path: str | None = None):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path))
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str = "live",
+        existing_opus_path: str | None = None,
+        manual_recording: bool = False,
+    ):
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
