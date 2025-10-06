@@ -2065,6 +2065,8 @@ class TimelineRecorder:
             return
         self._manual_recording = next_state
         if next_state:
+            if self.active:
+                self._event_manual_recording = True
             self._refresh_capture_status()
             return
         if self.active:
