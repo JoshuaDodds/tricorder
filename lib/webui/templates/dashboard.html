@@ -347,7 +347,12 @@
         data-active="false"
         aria-hidden="true"
       >
-        <div id="live-stream-panel" class="live-stream-panel" aria-hidden="true">
+        <div
+          id="live-stream-panel"
+          class="live-stream-panel"
+          aria-hidden="true"
+          tabindex="-1"
+        >
           <div class="live-stream-header">
             <div class="live-stream-titles">
               <h3>Live stream</h3>
@@ -360,11 +365,18 @@
             </div>
           </div>
           <audio id="live-stream-audio" controls preload="auto"></audio>
-          <p class="live-stream-hint">Streaming pauses automatically when hidden.</p>
+          <p class="live-stream-hint">Streaming continues when backgrounded. Use the toggle to stop it.</p>
         </div>
       </section>
       <section class="main-grid">
-        <div id="player-card" class="card player-card" hidden data-active="false" data-context="recordings">
+        <div
+          id="player-card"
+          class="card player-card"
+          hidden
+          data-active="false"
+          data-context="recordings"
+          tabindex="-1"
+        >
           <div class="card-header">
             <div class="card-heading">
               <h2>Preview</h2>
@@ -404,7 +416,7 @@
                 data-active="false"
               >--:--:--</div>
             </div>
-            <div class="waveform-container" id="waveform-container" hidden>
+            <div class="waveform-container" id="waveform-container" hidden tabindex="-1">
               <canvas id="waveform-canvas"></canvas>
               <div
                 id="waveform-trigger-marker"
