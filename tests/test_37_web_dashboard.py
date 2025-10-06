@@ -230,6 +230,7 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             assert capture_status.get("event") is None
             assert "encoding" not in capture_status
             assert capture_status.get("last_stop_reason") == "status stale"
+            assert capture_status.get("manual_recording") is False
         finally:
             await client.close()
             await server.close()
@@ -265,6 +266,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert first_status.get("event") is None
             assert "encoding" not in first_status
             assert first_status.get("last_stop_reason") == "service offline"
+            assert first_status.get("manual_recording") is False
 
             offline_payload["last_stop_reason"] = "shutdown"
             status_path.write_text(json.dumps(offline_payload), encoding="utf-8")
@@ -278,6 +280,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert second_status.get("event") is None
             assert "encoding" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
+            assert second_status.get("manual_recording") is False
         finally:
             await client.close()
             await server.close()
@@ -2167,6 +2170,58 @@ def test_capture_split_failure(monkeypatch, dashboard_env):
             payload = await resp.json()
             assert payload.get("ok") is False
             assert payload.get("error") == "boom"
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_manual_record_endpoint(dashboard_env):
+    async def runner():
+        manual_state_path = Path(os.environ["TMP_DIR"]) / "manual_record_state.json"
+        if manual_state_path.exists():
+            manual_state_path.unlink()
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/manual-record", json={"enabled": True})
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("ok") is True
+            assert payload.get("enabled") is True
+            data = json.loads(manual_state_path.read_text(encoding="utf-8"))
+            assert data.get("enabled") is True
+
+            resp = await client.post("/api/capture/manual-record", json={"enabled": False})
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("enabled") is False
+            data = json.loads(manual_state_path.read_text(encoding="utf-8"))
+            assert data.get("enabled") is False
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_manual_record_invalid_payload(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/manual-record", json={"enabled": "maybe"})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload.get("ok") is False
+            resp_invalid = await client.post(
+                "/api/capture/manual-record", data=b"not-json", headers={"Content-Type": "application/json"}
+            )
+            assert resp_invalid.status == 400
         finally:
             await client.close()
             await server.close()
