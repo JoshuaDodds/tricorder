@@ -347,7 +347,12 @@
         data-active="false"
         aria-hidden="true"
       >
-        <div id="live-stream-panel" class="live-stream-panel" aria-hidden="true">
+        <div
+          id="live-stream-panel"
+          class="live-stream-panel"
+          aria-hidden="true"
+          tabindex="-1"
+        >
           <div class="live-stream-header">
             <div class="live-stream-titles">
               <h3>Live stream</h3>
@@ -360,18 +365,80 @@
             </div>
           </div>
           <audio id="live-stream-audio" controls preload="auto"></audio>
-          <p class="live-stream-hint">Streaming pauses automatically when hidden.</p>
+          <p class="live-stream-hint">Streaming continues when backgrounded. Use the toggle to stop it.</p>
         </div>
       </section>
       <section class="main-grid">
-        <div id="player-card" class="card player-card" hidden data-active="false" data-context="recordings">
+        <div
+          id="player-card"
+          class="card player-card"
+          hidden
+          data-active="false"
+          data-context="recordings"
+          tabindex="-1"
+        >
           <div class="card-header">
             <div class="card-heading">
               <h2>Preview</h2>
             </div>
             <button id="preview-close" class="ghost-button small" type="button">Hide</button>
           </div>
-          <audio id="preview-player" controls preload="none"></audio>
+          <audio id="preview-player" preload="none" aria-hidden="true"></audio>
+          <div class="player-transport" id="player-transport" hidden data-active="false">
+            <div class="transport-buttons" role="group" aria-label="Playback controls">
+              <button id="transport-restart" class="transport-button" type="button" aria-label="Restart">
+                <span class="transport-button-icon" aria-hidden="true">⏮</span>
+                <span class="transport-button-text sr-only">Restart</span>
+              </button>
+              <button
+                id="transport-rewind"
+                class="transport-button"
+                type="button"
+                aria-label="Rewind 10 seconds"
+              >
+                <span class="transport-button-icon" aria-hidden="true">⏪</span>
+                <span class="transport-button-text sr-only">Rewind 10 seconds</span>
+              </button>
+              <button
+                id="transport-play"
+                class="transport-button transport-button-primary"
+                type="button"
+                aria-pressed="false"
+                aria-label="Play"
+              >
+                <span class="transport-button-icon" aria-hidden="true">▶</span>
+                <span class="transport-button-text sr-only">Play</span>
+              </button>
+              <button
+                id="transport-forward"
+                class="transport-button"
+                type="button"
+                aria-label="Forward 30 seconds"
+              >
+                <span class="transport-button-icon" aria-hidden="true">⏩</span>
+                <span class="transport-button-text sr-only">Forward 30 seconds</span>
+              </button>
+              <button id="transport-end" class="transport-button" type="button" aria-label="Skip to end">
+                <span class="transport-button-icon" aria-hidden="true">⏭</span>
+                <span class="transport-button-text sr-only">Skip to end</span>
+              </button>
+            </div>
+            <div class="transport-options">
+              <label class="transport-speed" for="transport-speed-select">
+                <span class="transport-speed-label">Speed</span>
+                <select id="transport-speed-select">
+                  <option value="0.25">0.25×</option>
+                  <option value="0.5">0.5×</option>
+                  <option value="0.75">0.75×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="1.75">1.75×</option>
+                  <option value="2">2×</option>
+                </select>
+              </label>
+            </div>
+          </div>
           <div class="waveform-section" id="waveform-section">
             <div class="waveform-header">
               <span>Waveform</span>
@@ -404,7 +471,7 @@
                 data-active="false"
               >--:--:--</div>
             </div>
-            <div class="waveform-container" id="waveform-container" hidden>
+            <div class="waveform-container" id="waveform-container" hidden tabindex="-1">
               <canvas id="waveform-canvas"></canvas>
               <div
                 id="waveform-trigger-marker"

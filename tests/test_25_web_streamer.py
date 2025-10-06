@@ -115,6 +115,110 @@ def test_handle_run_guard_discards_none_callbacks(caplog):
         loop.close()
 
 
+def test_selector_transport_guard_handles_missing_protocol(caplog):
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        from asyncio import selector_events
+
+        class DummySock:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class DummyServer:
+            def __init__(self):
+                self.detached = False
+
+            def _detach(self):
+                self.detached = True
+
+        dummy_sock = DummySock()
+        dummy_server = DummyServer()
+        transport = SimpleNamespace(
+            _protocol_connected=True,
+            _protocol=None,
+            _sock=dummy_sock,
+            _loop=loop,
+            _server=dummy_server,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="asyncio"):
+            selector_events._SelectorTransport._call_connection_lost(transport, None)
+
+        assert dummy_sock.closed is True
+        assert dummy_server.detached is True
+        assert transport._sock is None
+        assert transport._server is None
+        assert transport._protocol is None
+        assert transport._loop is None
+        assert transport._protocol_connected is False
+        assert any(
+            record.levelno == logging.WARNING
+            and "Selector transport missing protocol" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        loop.close()
+
+
+def test_selector_transport_guard_invokes_protocol_callback():
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        from asyncio import selector_events
+
+        class DummyProtocol:
+            def __init__(self):
+                self.lost_exc = None
+
+            def connection_lost(self, exc):
+                self.lost_exc = exc
+
+        class DummySock:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class DummyServer:
+            def __init__(self):
+                self.detached = False
+
+            def _detach(self):
+                self.detached = True
+
+        protocol = DummyProtocol()
+        dummy_sock = DummySock()
+        dummy_server = DummyServer()
+        transport = SimpleNamespace(
+            _protocol_connected=True,
+            _protocol=protocol,
+            _sock=dummy_sock,
+            _loop=loop,
+            _server=dummy_server,
+        )
+
+        selector_events._SelectorTransport._call_connection_lost(transport, "boom")
+
+        assert protocol.lost_exc == "boom"
+        assert dummy_sock.closed is True
+        assert dummy_server.detached is True
+        assert transport._sock is None
+        assert transport._server is None
+        assert transport._protocol is None
+        assert transport._loop is None
+    finally:
+        loop.close()
+
+
 @pytest.mark.asyncio
 async def test_dashboard_page_structure(aiohttp_client):
     client = await aiohttp_client(web_streamer.build_app())
@@ -198,6 +302,38 @@ async def test_hls_playlist_waits_for_segments(monkeypatch, tmp_path, aiohttp_cl
     assert response.headers.get("Cache-Control") == "no-store"
 
     await writer
+
+
+@pytest.mark.asyncio
+async def test_integrations_motion_endpoint(monkeypatch, tmp_path, aiohttp_client):
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_path))
+    client = await aiohttp_client(web_streamer.build_app())
+
+    baseline = await client.get("/api/integrations")
+    assert baseline.status == 200
+    baseline_payload = await baseline.json()
+    assert baseline_payload["motion_active"] is False
+
+    activated = await client.get("/api/integrations?motion=true")
+    assert activated.status == 200
+    activated_payload = await activated.json()
+    assert activated_payload["motion_active"] is True
+    assert isinstance(activated_payload.get("motion_active_since"), (int, float))
+
+    snapshot = await client.get("/api/integrations")
+    snapshot_payload = await snapshot.json()
+    assert snapshot_payload["motion_active"] is True
+    assert snapshot_payload.get("events")
+
+    deactivated = await client.get("/api/integrations?motion=false")
+    deactivated_payload = await deactivated.json()
+    assert deactivated_payload["motion_active"] is False
+    assert deactivated_payload.get("motion_active_since") is None
+
+    recordings = await client.get("/api/recordings")
+    recordings_payload = await recordings.json()
+    assert "motion_state" in recordings_payload
+    assert recordings_payload["motion_state"]["motion_active"] is False
 
 
 @pytest.mark.asyncio

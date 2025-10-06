@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable
 from typing import Optional
 import array
 from lib.waveform_cache import DEFAULT_BUCKET_COUNT, MAX_BUCKET_COUNT, PEAK_SCALE
+from lib.motion_state import MOTION_STATE_FILENAME, MotionStateWatcher
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
@@ -1798,6 +1799,21 @@ class TimelineRecorder:
         self._filter_avg_ms: float = 0.0
         self._filter_peak_ms: float = 0.0
         self._filter_last_log_ts: float = 0.0
+        self._motion_state_path = os.path.join(TMP_DIR, MOTION_STATE_FILENAME)
+        self._motion_watcher = MotionStateWatcher(self._motion_state_path)
+        motion_state = self._motion_watcher.state
+        self._motion_forced_active = bool(motion_state.active)
+        self._motion_active_since: float | None = (
+            motion_state.active_since if motion_state.active else None
+        )
+        self._motion_pending_start = bool(self._motion_forced_active)
+        self._motion_sequence = motion_state.sequence
+        self._current_motion_event_start: float | None = (
+            motion_state.active_since if motion_state.active else None
+        )
+        if self._motion_pending_start and START_CONSECUTIVE > 0:
+            self.consec_active = max(self.consec_active, START_CONSECUTIVE - 1)
+            self.consec_inactive = 0
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
@@ -1809,6 +1825,7 @@ class TimelineRecorder:
                     "event_size_bytes": None,
                     "partial_recording_path": None,
                     "streaming_container_format": None,
+                    **self._motion_status_extra(),
                 },
             )
 
@@ -1928,6 +1945,98 @@ class TimelineRecorder:
             reason=reason,
         )
 
+    def _motion_status_extra(self) -> dict[str, object]:
+        watcher = getattr(self, '_motion_watcher', None)
+        motion_state = watcher.state if watcher is not None else None
+        sequence = motion_state.sequence if motion_state is not None else 0
+        payload: dict[str, object] = {
+            "motion_active": bool(getattr(self, '_motion_forced_active', False)),
+            "motion_sequence": int(sequence),
+        }
+        since = getattr(self, '_motion_active_since', None)
+        if payload["motion_active"] and since is not None:
+            payload["motion_active_since"] = float(since)
+        else:
+            payload["motion_active_since"] = None
+        return payload
+
+    def _current_motion_event_payload(self, *, for_last_event: bool = False) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        start_epoch = getattr(self, '_current_motion_event_start', None)
+        if start_epoch is not None:
+            payload["motion_started_epoch"] = float(start_epoch)
+        watcher = getattr(self, '_motion_watcher', None)
+        motion_state = watcher.state if watcher is not None else None
+        if motion_state is not None:
+            payload["motion_sequence"] = int(motion_state.sequence)
+        if for_last_event or getattr(self, '_motion_forced_active', False):
+            payload["motion_active"] = bool(getattr(self, '_motion_forced_active', False))
+        return payload
+
+    def _augment_motion_fields(self, event: dict | None, *, for_last: bool = False) -> dict | None:
+        payload = self._current_motion_event_payload(for_last_event=for_last)
+        if not payload:
+            return event
+        if event is None:
+            return payload
+        updated = dict(event)
+        updated.update(payload)
+        return updated
+
+    def _publish_motion_status(self) -> None:
+        if self._status_mode != "live":
+            return
+        capturing, event, last_event, reason = self._status_snapshot()
+        event = self._augment_motion_fields(event, for_last=False)
+        last_event = self._augment_motion_fields(last_event, for_last=True)
+        self._update_capture_status(
+            capturing,
+            event=event,
+            last_event=last_event,
+            reason=reason,
+            extra=self._motion_status_extra(),
+        )
+
+    def _refresh_motion_state(self) -> None:
+        watcher = getattr(self, '_motion_watcher', None)
+        if watcher is None:
+            return
+        updated = watcher.poll()
+        state = watcher.state
+        previous_forced = getattr(self, '_motion_forced_active', False)
+        if updated is None:
+            if state.sequence == self._motion_sequence and state.active == self._motion_forced_active:
+                return
+            updated = state
+        self._motion_sequence = updated.sequence
+        if updated.active:
+            start_epoch = updated.active_since or updated.updated_at
+            self._motion_forced_active = True
+            self._motion_active_since = start_epoch
+            if self._current_motion_event_start is None:
+                self._current_motion_event_start = start_epoch
+            if not self.active:
+                self._motion_pending_start = True
+                if START_CONSECUTIVE > 0:
+                    self.consec_active = max(self.consec_active, START_CONSECUTIVE - 1)
+                    self.consec_inactive = 0
+        else:
+            self._motion_forced_active = False
+            self._motion_active_since = None
+            self._motion_pending_start = False
+            if not self.active:
+                self._current_motion_event_start = None
+            if previous_forced:
+                try:
+                    self.recent_active.clear()
+                except AttributeError:
+                    pass
+                self.consec_active = 0
+                self.consec_inactive = 0
+        if updated.active and self.active and self._current_motion_event_start is None:
+            self._current_motion_event_start = updated.active_since or updated.updated_at
+        self._publish_motion_status()
+
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
         with self._status_lock:
             capturing = self.active
@@ -2043,6 +2152,8 @@ class TimelineRecorder:
                 "filter_chain_peak_ms": round(self._filter_peak_ms, 3),
                 "filter_chain_avg_budget_ms": FILTER_CHAIN_AVG_BUDGET_MS,
                 "filter_chain_peak_budget_ms": FILTER_CHAIN_PEAK_BUDGET_MS,
+                "filter_chain_peak_budget_ms": FILTER_CHAIN_PEAK_BUDGET_MS,
+                **self._motion_status_extra(),
             },
         )
 
@@ -2195,6 +2306,8 @@ class TimelineRecorder:
             else:
                 self._manual_split_requested = False
 
+        self._refresh_motion_state()
+
         start = time.perf_counter()
         buf = self._apply_gain(buf)
         if DENOISE_BEFORE_VAD:
@@ -2209,6 +2322,8 @@ class TimelineRecorder:
         current_threshold = self._adaptive.threshold_linear
         loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
+        if self._motion_forced_active:
+            frame_active = True
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)
@@ -2385,6 +2500,9 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
+                self._motion_pending_start = False
+                if self._motion_forced_active and self._current_motion_event_start is None:
+                    self._current_motion_event_start = self._motion_active_since or time.time()
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
@@ -2405,6 +2523,7 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
+                event_status.update(self._current_motion_event_payload())
                 if self._status_mode == "live":
                     if self._streaming_encoder or self._parallel_encoder:
                         event_status = dict(event_status)
@@ -2694,6 +2813,7 @@ class TimelineRecorder:
                 "trigger_rms": trigger_rms,
                 "etype": etype_label,
             }
+            last_event_status.update(self._current_motion_event_payload(for_last_event=True))
         else:
             last_event_status = {
                 "base_name": self.base_name or "",
@@ -2705,6 +2825,7 @@ class TimelineRecorder:
                 "trigger_rms": trigger_rms,
                 "etype": etype_label,
             }
+            last_event_status.update(self._current_motion_event_payload(for_last_event=True))
 
         last_event_status["end_reason"] = reason
         last_event_status["in_progress"] = False
