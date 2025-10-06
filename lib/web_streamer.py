@@ -1890,6 +1890,11 @@ from lib.config import (
     update_web_server_settings,
 )
 from lib.lets_encrypt import LetsEncryptError, LetsEncryptManager
+from lib.motion_state import (
+    MOTION_STATE_FILENAME,
+    load_motion_state,
+    store_motion_state,
+)
 from lib.waveform_cache import generate_waveform
 
 
@@ -3493,7 +3498,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _scan_recordings_sync)
 
-    capture_status_path = os.path.join(cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json")
+    capture_status_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json"
+    )
+    motion_state_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
+    )
 
     def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
         if not isinstance(raw, str) or not raw.strip():
@@ -3516,6 +3526,21 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         rel_path = rel_candidate.as_posix() if rel_candidate is not None else None
         return str(resolved), rel_path
+
+    def _parse_motion_flag(raw: object) -> bool | None:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if not normalized:
+                return None
+            if normalized in {"1", "true", "yes", "on", "running"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "stopped"}:
+                return False
+        return None
 
     def _read_capture_status() -> dict[str, object]:
         try:
@@ -3573,6 +3598,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             streaming_format = event_payload.get("streaming_container_format")
             if isinstance(streaming_format, str) and streaming_format:
                 event["streaming_container_format"] = streaming_format
+            motion_active = _parse_motion_flag(event_payload.get("motion_active"))
+            if motion_active is not None:
+                event["motion_active"] = motion_active
+            motion_started = event_payload.get("motion_started_epoch")
+            if isinstance(motion_started, (int, float)):
+                event["motion_started_epoch"] = float(motion_started)
             if event:
                 status["event"] = event
 
@@ -3612,6 +3643,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             last_streaming_format = last_payload.get("streaming_container_format")
             if isinstance(last_streaming_format, str) and last_streaming_format:
                 last_event["streaming_container_format"] = last_streaming_format
+            motion_active = _parse_motion_flag(last_payload.get("motion_active"))
+            if motion_active is not None:
+                last_event["motion_active"] = motion_active
+            motion_started = last_payload.get("motion_started_epoch")
+            if isinstance(motion_started, (int, float)):
+                last_event["motion_started_epoch"] = float(motion_started)
             if last_event:
                 status["last_event"] = last_event
 
@@ -3634,6 +3671,17 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 status["service_running"] = True
             elif normalized in {"0", "false", "no", "off", "stopped"}:
                 status["service_running"] = False
+
+        motion_active_raw = raw.get("motion_active")
+        parsed_motion = _parse_motion_flag(motion_active_raw)
+        if parsed_motion is not None:
+            status["motion_active"] = parsed_motion
+        motion_since = raw.get("motion_active_since")
+        if isinstance(motion_since, (int, float)):
+            status["motion_active_since"] = float(motion_since)
+        motion_sequence = raw.get("motion_sequence")
+        if isinstance(motion_sequence, (int, float)):
+            status["motion_sequence"] = int(motion_sequence)
 
         adaptive_threshold = raw.get("adaptive_rms_threshold")
         if isinstance(adaptive_threshold, (int, float)) and math.isfinite(adaptive_threshold):
@@ -3790,6 +3838,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status["service_running"] = True
 
         return status
+
+    def _motion_state_snapshot(*, include_events: bool = True) -> dict[str, object]:
+        state = load_motion_state(motion_state_path)
+        payload = state.to_payload(include_events=include_events)
+        payload.setdefault("motion_active", state.active)
+        if "motion_active_since" not in payload:
+            payload["motion_active_since"] = None
+        if include_events:
+            payload.setdefault("events", [])
+        return payload
 
     def _filter_recordings(entries: list[dict[str, object]], request: web.Request) -> dict[str, object]:
         query = request.rel_url.query
@@ -3967,6 +4025,27 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
         payload["recycle_bin_total_bytes"] = _calculate_recycle_bin_usage(recycle_root)
         payload["capture_status"] = _read_capture_status()
+        payload["motion_state"] = _motion_state_snapshot()
+        return web.json_response(payload)
+
+    async def integrations_api(request: web.Request) -> web.Response:
+        raw_motion = request.rel_url.query.get("motion")
+        if raw_motion is None:
+            payload = _motion_state_snapshot()
+            payload["ok"] = True
+            return web.json_response(payload)
+
+        parsed = _parse_motion_flag(raw_motion)
+        if parsed is None:
+            raise web.HTTPBadRequest(reason="Invalid 'motion' parameter; expected true/false")
+
+        state = store_motion_state(motion_state_path, motion_active=parsed)
+        payload = state.to_payload(include_events=True)
+        payload.setdefault("motion_active", state.active)
+        if "motion_active_since" not in payload:
+            payload["motion_active_since"] = None
+        payload.setdefault("events", [])
+        payload["ok"] = True
         return web.json_response(payload)
 
     async def recordings_delete(request: web.Request) -> web.Response:
@@ -5589,6 +5668,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/config/web-server", config_web_server_update)
     app.router.add_get("/api/system-health", system_health)
     app.router.add_get("/api/services", services_list)
+    app.router.add_get("/api/integrations", integrations_api)
     app.router.add_post("/api/services/{unit}/action", service_action)
     app.router.add_post("/api/capture/split", capture_split)
 

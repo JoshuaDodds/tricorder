@@ -301,6 +301,38 @@ async def test_hls_playlist_waits_for_segments(monkeypatch, tmp_path, aiohttp_cl
 
 
 @pytest.mark.asyncio
+async def test_integrations_motion_endpoint(monkeypatch, tmp_path, aiohttp_client):
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_path))
+    client = await aiohttp_client(web_streamer.build_app())
+
+    baseline = await client.get("/api/integrations")
+    assert baseline.status == 200
+    baseline_payload = await baseline.json()
+    assert baseline_payload["motion_active"] is False
+
+    activated = await client.get("/api/integrations?motion=true")
+    assert activated.status == 200
+    activated_payload = await activated.json()
+    assert activated_payload["motion_active"] is True
+    assert isinstance(activated_payload.get("motion_active_since"), (int, float))
+
+    snapshot = await client.get("/api/integrations")
+    snapshot_payload = await snapshot.json()
+    assert snapshot_payload["motion_active"] is True
+    assert snapshot_payload.get("events")
+
+    deactivated = await client.get("/api/integrations?motion=false")
+    deactivated_payload = await deactivated.json()
+    assert deactivated_payload["motion_active"] is False
+    assert deactivated_payload.get("motion_active_since") is None
+
+    recordings = await client.get("/api/recordings")
+    recordings_payload = await recordings.json()
+    assert "motion_state" in recordings_payload
+    assert recordings_payload["motion_state"]["motion_active"] is False
+
+
+@pytest.mark.asyncio
 async def test_webrtc_mode_registers_webrtc_routes(monkeypatch, tmp_path, aiohttp_client):
     monkeypatch.setenv("TRICORDER_TMP", str(tmp_path))
     from lib import config as config_module

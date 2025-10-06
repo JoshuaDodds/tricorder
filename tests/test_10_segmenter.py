@@ -21,6 +21,7 @@ from pathlib import Path
 import wave
 
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
+from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
 import lib.segmenter as segmenter
 
 
@@ -102,6 +103,7 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
     monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
     monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
 
     def fake_strftime(fmt: str, *_args: object) -> str:
         if fmt == "%Y%m%d":
@@ -166,6 +168,53 @@ def test_manual_split_no_active_event(tmp_path, monkeypatch):
         assert rec.request_manual_split() is False
     finally:
         rec.flush(0)
+
+
+def test_motion_state_forced_recording(monkeypatch, tmp_path):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=50.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.ingest(make_frame(0), 0)
+        assert rec.active is True
+        assert rec._motion_forced_active is True
+
+        status = rec._status_cache or {}
+        event = status.get("event") or {}
+        assert event.get("motion_active") is True
+        assert event.get("motion_started_epoch") == 50.0
+
+        store_motion_state(motion_state_path, motion_active=False, timestamp=75.0)
+        rec._motion_watcher.force_refresh()
+        rec._refresh_motion_state()
+        assert rec._motion_forced_active is False
+        rec.ingest(make_frame(0), 1)
+
+        assert rec.active is False
+        cached = rec._status_cache or {}
+        last_event = cached.get("last_event") or {}
+        assert last_event.get("motion_active") is False
+        assert last_event.get("motion_started_epoch") == 50.0
+    finally:
+        rec.flush(3)
 
 
 def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
