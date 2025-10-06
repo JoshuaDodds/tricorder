@@ -7,6 +7,7 @@ import sys
 import time
 import collections
 import contextlib
+import contextvars
 import subprocess
 import wave
 from dataclasses import dataclass
@@ -1220,6 +1221,10 @@ class LiveWaveformWriter:
 ENCODE_QUEUE: queue.Queue = queue.Queue()
 _ENCODE_WORKERS: list['_EncoderWorker'] = []
 _ENCODE_LOCK = threading.Lock()
+_ENCODE_JOB_MANUAL_FLAG: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "_encode_job_manual_flag",
+    default=None,
+)
 SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
 
 
@@ -1287,18 +1292,25 @@ class EncodingStatus:
             except Exception:
                 pass
 
-    def enqueue(self, base_name: str, *, source: str = "live") -> int:
+    def enqueue(
+        self,
+        base_name: str,
+        *,
+        source: str = "live",
+        manual_recording: bool | None = None,
+    ) -> int:
         with self._cond:
             job_id = self._next_id
             self._next_id += 1
-            self._pending.append(
-                {
-                    "id": job_id,
-                    "base_name": base_name,
-                    "queued_at": time.time(),
-                    "source": source,
-                }
-            )
+            payload = {
+                "id": job_id,
+                "base_name": base_name,
+                "queued_at": time.time(),
+                "source": source,
+            }
+            if manual_recording is not None:
+                payload["manual_recording"] = bool(manual_recording)
+            self._pending.append(payload)
             self._cond.notify_all()
         self._notify()
         return job_id
@@ -1429,8 +1441,11 @@ class _EncoderWorker(threading.Thread):
                 wav_path: str
                 base_name: str
                 existing_opus: str | None = None
+                manual_recording: bool | None = None
                 if isinstance(item, tuple) and len(item) == 4:
                     job_id, wav_path, base_name, existing_opus = item
+                elif isinstance(item, tuple) and len(item) == 5:
+                    job_id, wav_path, base_name, existing_opus, manual_recording = item
                 elif isinstance(item, tuple) and len(item) == 3:
                     job_id, wav_path, base_name = item
                 else:
@@ -1440,6 +1455,8 @@ class _EncoderWorker(threading.Thread):
                         base_name = item[1]
                         if len(item) >= 3:
                             existing_opus = item[2]
+                        if len(item) >= 4:
+                            manual_recording = item[3]
                     else:
                         wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
@@ -1451,7 +1468,12 @@ class _EncoderWorker(threading.Thread):
                 env = os.environ.copy()
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
-                env.setdefault("MANUAL_RECORDING", "1" if is_manual_recording_enabled() else "0")
+                manual_env_flag: bool
+                if manual_recording is None:
+                    manual_env_flag = is_manual_recording_enabled()
+                else:
+                    manual_env_flag = bool(manual_recording)
+                env.setdefault("MANUAL_RECORDING", "1" if manual_env_flag else "0")
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity
@@ -1504,8 +1526,13 @@ def _enqueue_encode_job(
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
-    job_id = ENCODING_STATUS.enqueue(base_name, source=source)
-    payload = (job_id, tmp_wav_path, base_name, existing_opus_path)
+    manual_flag = _ENCODE_JOB_MANUAL_FLAG.get()
+    job_id = ENCODING_STATUS.enqueue(
+        base_name,
+        source=source,
+        manual_recording=manual_flag,
+    )
+    payload = (job_id, tmp_wav_path, base_name, existing_opus_path, manual_flag)
     try:
         ENCODE_QUEUE.put_nowait(payload)
     except queue.Full:
@@ -1783,6 +1810,7 @@ class TimelineRecorder:
         self.sum_rms = 0
         self.saw_voiced = False
         self.saw_loud = False
+        self.event_manual_recording = False
 
         self._ingest_hint: Optional[RecorderIngestHint] = ingest_hint
         self._ingest_hint_used = False
@@ -2313,6 +2341,8 @@ class TimelineRecorder:
         if manual_recording:
             frame_active = True
             self.post_count = POST_PAD_FRAMES
+        if self.active and manual_recording:
+            self.event_manual_recording = True
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)
@@ -2415,6 +2445,7 @@ class TimelineRecorder:
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
                 self.event_started_epoch = start_epoch
                 self.event_day = time.strftime("%Y%m%d", time.localtime(start_epoch))
+                self.event_manual_recording = bool(manual_recording)
 
                 day_stamp = time.strftime("%Y%m%d")
                 self._parallel_day_dir = os.path.join(REC_DIR, day_stamp)
@@ -2681,6 +2712,7 @@ class TimelineRecorder:
         )
 
         job_id: int | None = None
+        manual_recording_during_event = self.event_manual_recording
         if tmp_wav_path and base:
             day = self.event_day or time.strftime("%Y%m%d")
             os.makedirs(os.path.join(REC_DIR, day), exist_ok=True)
@@ -2762,12 +2794,19 @@ class TimelineRecorder:
                 except OSError:
                     pass
 
-            job_id = _enqueue_encode_job(
-                tmp_wav_path,
-                final_base,
-                source=self._recording_source,
-                existing_opus_path=final_stream_path if reuse_mode else None,
-            )
+            manual_token: contextvars.Token[bool | None] | None = None
+            if manual_recording_during_event:
+                manual_token = _ENCODE_JOB_MANUAL_FLAG.set(manual_recording_during_event)
+            try:
+                job_id = _enqueue_encode_job(
+                    tmp_wav_path,
+                    final_base,
+                    source=self._recording_source,
+                    existing_opus_path=final_stream_path if reuse_mode else None,
+                )
+            finally:
+                if manual_token is not None:
+                    _ENCODE_JOB_MANUAL_FLAG.reset(manual_token)
             if job_id is not None:
                 self._encode_jobs.append(job_id)
             if job_id is not None and wait_for_encode_start:
@@ -2962,6 +3001,7 @@ class TimelineRecorder:
         self.sum_rms = 0
         self.saw_voiced = False
         self.saw_loud = False
+        self.event_manual_recording = False
         self.base_name = None
         self.tmp_wav_path = None
         self.writer_queue_drops = 0
