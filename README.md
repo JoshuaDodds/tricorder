@@ -150,7 +150,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
-- JSON APIs (`/api/recordings`, `/api/recycle-bin`, `/api/config`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
+- JSON APIs (`/api/recordings`, `/api/recycle-bin`, `/api/config`, `/api/integrations`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
 ### Audio filter chain tuning
