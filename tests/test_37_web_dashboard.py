@@ -2174,6 +2174,60 @@ def test_capture_split_failure(monkeypatch, dashboard_env):
     asyncio.run(runner())
 
 
+def test_capture_manual_record_endpoint(dashboard_env):
+    async def runner():
+        manual_path = Path(os.environ["TMP_DIR"]) / "manual_recording.json"
+        if manual_path.exists():
+            manual_path.unlink()
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/capture/manual-record")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["ok"] is True
+            assert payload["enabled"] is False
+
+            enable_resp = await client.post("/api/capture/manual-record", json={"enabled": True})
+            assert enable_resp.status == 200
+            enable_payload = await enable_resp.json()
+            assert enable_payload["ok"] is True
+            assert enable_payload["enabled"] is True
+
+            assert manual_path.exists()
+            on_disk = json.loads(manual_path.read_text(encoding="utf-8"))
+            assert on_disk["enabled"] is True
+
+            disable_resp = await client.post("/api/capture/manual-record", json={"enabled": False})
+            assert disable_resp.status == 200
+            disable_payload = await disable_resp.json()
+            assert disable_payload["enabled"] is False
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_manual_record_rejects_invalid_payload(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/manual-record", json={})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload.get("ok") is False
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_bulk_download_includes_sidecars(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"

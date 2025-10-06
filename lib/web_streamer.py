@@ -52,7 +52,7 @@ import wave
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
@@ -77,6 +77,8 @@ CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
 DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
 ]
+
+MOTION_STATE_FILENAME = "motion_state.json"
 
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
@@ -3472,7 +3474,55 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _scan_recordings_sync)
 
-    capture_status_path = os.path.join(cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json")
+    tmp_dir = cfg["paths"].get("tmp_dir", tmp_root)
+    capture_status_path = os.path.join(tmp_dir, "segmenter_status.json")
+    manual_record_path = os.path.join(tmp_dir, "manual_recording.json")
+    motion_state_path = os.path.join(tmp_dir, MOTION_STATE_FILENAME)
+
+    def _coerce_bool(value: object, default: Optional[bool] = False) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "disabled"}:
+                return False
+        return default
+
+    def _read_manual_record_state() -> dict[str, object]:
+        try:
+            with open(manual_record_path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except FileNotFoundError:
+            return {"enabled": False, "updated_at": None}
+        except json.JSONDecodeError:
+            return {"enabled": False, "updated_at": None, "error": "invalid"}
+        except OSError:
+            return {"enabled": False, "updated_at": None}
+
+        state: dict[str, object] = {}
+        state["enabled"] = _coerce_bool(raw.get("enabled"), False)
+
+        updated_at = raw.get("updated_at")
+        if isinstance(updated_at, (int, float)) and math.isfinite(updated_at):
+            state["updated_at"] = float(updated_at)
+        else:
+            state["updated_at"] = None
+
+        return state
+
+    def _write_manual_record_state(enabled: bool) -> dict[str, object]:
+        payload = {"enabled": bool(enabled), "updated_at": time.time()}
+        tmp_path = f"{manual_record_path}.tmp"
+        os.makedirs(os.path.dirname(manual_record_path), exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+        os.replace(tmp_path, manual_record_path)
+        return payload
 
     def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
         if not isinstance(raw, str) or not raw.strip():
@@ -3552,6 +3602,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             streaming_format = event_payload.get("streaming_container_format")
             if isinstance(streaming_format, str) and streaming_format:
                 event["streaming_container_format"] = streaming_format
+            motion_active = event_payload.get("motion_active")
+            if isinstance(motion_active, bool):
+                event["motion_active"] = motion_active
+            elif isinstance(motion_active, (int, float)):
+                event["motion_active"] = bool(motion_active)
+            elif isinstance(motion_active, str):
+                normalized = motion_active.strip().lower()
+                if normalized in {"1", "true", "yes", "on", "active"}:
+                    event["motion_active"] = True
+                elif normalized in {"0", "false", "no", "off", "inactive"}:
+                    event["motion_active"] = False
+            motion_started = event_payload.get("motion_started_epoch")
+            if isinstance(motion_started, (int, float)) and math.isfinite(motion_started):
+                event["motion_started_epoch"] = float(motion_started)
             if event:
                 status["event"] = event
 
@@ -3591,6 +3655,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             last_streaming_format = last_payload.get("streaming_container_format")
             if isinstance(last_streaming_format, str) and last_streaming_format:
                 last_event["streaming_container_format"] = last_streaming_format
+            last_motion = last_payload.get("motion_active")
+            if isinstance(last_motion, bool):
+                last_event["motion_active"] = last_motion
+            elif isinstance(last_motion, (int, float)):
+                last_event["motion_active"] = bool(last_motion)
+            elif isinstance(last_motion, str):
+                normalized = last_motion.strip().lower()
+                if normalized in {"1", "true", "yes", "on", "active"}:
+                    last_event["motion_active"] = True
+                elif normalized in {"0", "false", "no", "off", "inactive"}:
+                    last_event["motion_active"] = False
+            last_motion_started = last_payload.get("motion_started_epoch")
+            if isinstance(last_motion_started, (int, float)) and math.isfinite(last_motion_started):
+                last_event["motion_started_epoch"] = float(last_motion_started)
             if last_event:
                 status["last_event"] = last_event
 
@@ -3629,6 +3707,24 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 status["adaptive_rms_enabled"] = True
             elif normalized in {"0", "false", "no", "off", "disabled"}:
                 status["adaptive_rms_enabled"] = False
+
+        manual_record_raw = raw.get("manual_recording")
+        if isinstance(manual_record_raw, bool):
+            status["manual_recording"] = manual_record_raw
+        elif isinstance(manual_record_raw, (int, float)):
+            status["manual_recording"] = bool(manual_record_raw)
+        elif isinstance(manual_record_raw, str):
+            normalized = manual_record_raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                status["manual_recording"] = True
+            elif normalized in {"0", "false", "no", "off"}:
+                status["manual_recording"] = False
+
+        manual_updated_raw = raw.get("manual_recording_updated_at")
+        if isinstance(manual_updated_raw, (int, float)) and math.isfinite(manual_updated_raw):
+            status["manual_recording_updated_at"] = float(manual_updated_raw)
+        else:
+            status.pop("manual_recording_updated_at", None)
 
         duration_seconds = raw.get("event_duration_seconds")
         if isinstance(duration_seconds, (int, float)) and math.isfinite(duration_seconds):
@@ -3767,6 +3863,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 )
         else:
             status["service_running"] = True
+
+        manual_state = _read_manual_record_state()
+        status["manual_recording"] = bool(manual_state.get("enabled", False))
+        manual_updated = manual_state.get("updated_at")
+        if isinstance(manual_updated, (int, float)) and math.isfinite(manual_updated):
+            status["manual_recording_updated_at"] = float(manual_updated)
+        else:
+            status.pop("manual_recording_updated_at", None)
 
         return status
 
@@ -5429,6 +5533,29 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return web.json_response({"ok": False, "error": message}, status=502)
         return web.json_response({"ok": True})
 
+    async def capture_manual_record_get(_: web.Request) -> web.Response:
+        state = _read_manual_record_state()
+        response = {"ok": True}
+        response.update(state)
+        return web.json_response(response)
+
+    async def capture_manual_record_post(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
+        enabled = _coerce_bool(payload.get("enabled"), None)
+        if enabled is None:
+            return web.json_response({"ok": False, "error": "enabled flag required"}, status=400)
+        state = _write_manual_record_state(enabled)
+        response = {"ok": True}
+        response.update(state)
+        return web.json_response(response)
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -5570,6 +5697,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/services", services_list)
     app.router.add_post("/api/services/{unit}/action", service_action)
     app.router.add_post("/api/capture/split", capture_split)
+    app.router.add_get("/api/capture/manual-record", capture_manual_record_get)
+    app.router.add_post("/api/capture/manual-record", capture_manual_record_post)
 
     if stream_mode == "hls":
         app.router.add_get("/hls/start", hls_start)

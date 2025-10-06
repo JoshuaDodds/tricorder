@@ -316,6 +316,151 @@ STREAMING_CONTAINER_FORMAT = _STREAMING_FORMAT
 STREAMING_EXTENSION = ".opus" if STREAMING_CONTAINER_FORMAT == "opus" else ".webm"
 STREAMING_PARTIAL_SUFFIX = f".partial{STREAMING_EXTENSION}"
 
+MOTION_STATE_FILENAME = "motion_state.json"
+
+
+def _manual_record_state_path() -> str:
+    return os.path.join(TMP_DIR, "manual_recording.json")
+
+
+_MANUAL_RECORDING_ENABLED = False
+_MANUAL_RECORD_LOCK = threading.Lock()
+
+
+def _set_manual_recording_enabled(enabled: bool) -> None:
+    global _MANUAL_RECORDING_ENABLED
+    with _MANUAL_RECORD_LOCK:
+        _MANUAL_RECORDING_ENABLED = bool(enabled)
+
+
+def is_manual_recording_enabled() -> bool:
+    with _MANUAL_RECORD_LOCK:
+        return _MANUAL_RECORDING_ENABLED
+
+
+@dataclass(frozen=True)
+class MotionState:
+    active: bool
+    active_since: float | None
+    updated_at: float | None
+    sequence: int
+
+
+def _coerce_motion_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "active"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "inactive"}:
+            return False
+    return default
+
+
+def _coerce_motion_timestamp(value: object) -> float | None:
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
+    return None
+
+
+def _read_motion_state(path: str) -> MotionState:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return MotionState(False, None, None, 0)
+    except json.JSONDecodeError:
+        return MotionState(False, None, None, 0)
+    except OSError:
+        return MotionState(False, None, None, 0)
+
+    active = _coerce_motion_bool(payload.get("motion_active") or payload.get("active"), False)
+    sequence_raw = payload.get("sequence")
+    if isinstance(sequence_raw, (int, float)) and math.isfinite(sequence_raw):
+        sequence = max(0, int(sequence_raw))
+    else:
+        sequence = 0
+
+    updated_at = _coerce_motion_timestamp(payload.get("updated_at"))
+    active_since = _coerce_motion_timestamp(
+        payload.get("motion_started_epoch") or payload.get("active_since")
+    )
+    if not active:
+        active_since = None
+
+    return MotionState(active, active_since, updated_at, sequence)
+
+
+def store_motion_state(
+    path: str | os.PathLike[str], *, motion_active: bool, timestamp: float | None = None
+) -> MotionState:
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    previous = _read_motion_state(os.fspath(target))
+    sequence = previous.sequence + 1
+    now = time.time()
+    updated_at = float(timestamp if timestamp is not None else now)
+
+    if motion_active:
+        started_epoch = float(timestamp if timestamp is not None else updated_at)
+    else:
+        started_epoch = previous.active_since
+
+    payload: dict[str, object] = {
+        "version": 1,
+        "sequence": sequence,
+        "motion_active": bool(motion_active),
+        "updated_at": updated_at,
+    }
+    if started_epoch is not None:
+        payload["motion_started_epoch"] = float(started_epoch)
+    if not motion_active:
+        payload["motion_stopped_epoch"] = updated_at
+
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.write("\n")
+    os.replace(tmp_path, target)
+
+    return MotionState(bool(motion_active), started_epoch if motion_active else None, updated_at, sequence)
+
+
+class MotionStateWatcher:
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._mtime: float | None = None
+        self.state = MotionState(False, None, None, 0)
+        self.refresh(force=True)
+
+    def refresh(self, *, force: bool = False) -> MotionState:
+        try:
+            stat = os.stat(self._path)
+        except FileNotFoundError:
+            self._mtime = None
+            self.state = MotionState(False, None, None, 0)
+            return self.state
+        except OSError:
+            return self.state
+
+        mtime = stat.st_mtime
+        if not force and self._mtime is not None and mtime == self._mtime:
+            return self.state
+
+        self._mtime = mtime
+        self.state = _read_motion_state(self._path)
+        return self.state
+
+    def force_refresh(self) -> None:
+        self._mtime = None
+
 _PARALLEL_CFG = cfg["segmenter"].get("parallel_encode", {})
 PARALLEL_ENCODE_ENABLED = bool(_PARALLEL_CFG.get("enabled", True))
 PARALLEL_ENCODE_LOAD_THRESHOLD = float(
@@ -1432,6 +1577,7 @@ class _EncoderWorker(threading.Thread):
                 env = os.environ.copy()
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
+                env.setdefault("MANUAL_RECORDING", "1" if is_manual_recording_enabled() else "0")
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity
@@ -1769,6 +1915,32 @@ class TimelineRecorder:
         self._encode_jobs: list[int] = []
         self._manual_split_requested = False
 
+        self._manual_recording_enabled = is_manual_recording_enabled()
+        self._manual_recording_checked_at = 0.0
+        self._manual_recording_mtime: float | None = None
+        self._manual_recording_updated_at: float | None = None
+        self._manual_recording_path = _manual_record_state_path()
+        self.event_manual_recording = False
+
+        self._motion_state_path = os.path.join(TMP_DIR, MOTION_STATE_FILENAME)
+        self._motion_watcher = MotionStateWatcher(self._motion_state_path)
+        motion_state = self._motion_watcher.state
+        self._motion_forced_active = bool(motion_state.active)
+        self._motion_active_since: float | None = (
+            motion_state.active_since if motion_state.active else None
+        )
+        self._motion_sequence = motion_state.sequence
+        self._motion_checked_at = 0.0
+        self._motion_refresh_interval = 0.5
+        self._motion_event_was_active = bool(motion_state.active)
+        self._current_motion_event_start: float | None = (
+            motion_state.active_since if motion_state.active else None
+        )
+        if self._motion_forced_active and START_CONSECUTIVE > 0:
+            self.consec_active = max(self.consec_active, START_CONSECUTIVE - 1)
+            self.consec_inactive = 0
+            self.post_count = max(self.post_count, POST_PAD_FRAMES)
+
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
         self._status_lock = threading.Lock()
@@ -1798,6 +1970,8 @@ class TimelineRecorder:
         self._filter_avg_ms: float = 0.0
         self._filter_peak_ms: float = 0.0
         self._filter_last_log_ts: float = 0.0
+        self._refresh_manual_recording(force=True)
+        self._refresh_motion_state(force=True)
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
@@ -1832,6 +2006,22 @@ class TimelineRecorder:
         reason: str | None = None,
         extra: dict[str, object] | None = None,
     ) -> None:
+        if event is not None:
+            event = dict(event)
+            if self.event_manual_recording:
+                event["manual_recording"] = True
+            elif "manual_recording" in event:
+                event["manual_recording"] = bool(event.get("manual_recording"))
+            if (
+                self._motion_event_was_active
+                or self._motion_forced_active
+                or self._current_motion_event_start is not None
+            ):
+                event["motion_active"] = bool(self._motion_forced_active)
+                if self._current_motion_event_start is not None:
+                    event["motion_started_epoch"] = float(self._current_motion_event_start)
+        if last_event is not None:
+            last_event = dict(last_event)
         with self._status_lock:
             if self._status_mode == "ingest" and self._status_cache is None:
                 self._load_status_cache_from_disk()
@@ -1850,6 +2040,12 @@ class TimelineRecorder:
             elif "adaptive_rms_threshold" not in payload:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
             payload["adaptive_rms_enabled"] = bool(self._adaptive.enabled)
+
+            payload["manual_recording"] = bool(self._manual_recording_enabled)
+            if self._manual_recording_updated_at is not None:
+                payload["manual_recording_updated_at"] = float(self._manual_recording_updated_at)
+            else:
+                payload.pop("manual_recording_updated_at", None)
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -1882,6 +2078,8 @@ class TimelineRecorder:
                 "partial_waveform_path",
                 "partial_waveform_rel_path",
                 "encoding",
+                "manual_recording",
+                "manual_recording_updated_at",
             )
             if extra and self._status_mode == "live":
                 for key, value in extra.items():
@@ -2183,7 +2381,119 @@ class TimelineRecorder:
         except queue.Full:
             self.writer_queue_drops += 1
 
+    def _manual_recording_state(self) -> tuple[bool, float | None]:
+        path = self._manual_recording_path
+        enabled = False
+        updated_at: float | None = None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return False, None
+        except json.JSONDecodeError:
+            return False, None
+        except OSError:
+            return False, None
+        if isinstance(payload, dict):
+            raw_enabled = payload.get("enabled")
+            if isinstance(raw_enabled, bool):
+                enabled = raw_enabled
+            elif isinstance(raw_enabled, (int, float)):
+                enabled = bool(raw_enabled)
+            elif isinstance(raw_enabled, str):
+                normalized = raw_enabled.strip().lower()
+                if normalized in {"1", "true", "yes", "on"}:
+                    enabled = True
+                elif normalized in {"0", "false", "no", "off"}:
+                    enabled = False
+            raw_updated = payload.get("updated_at")
+            if isinstance(raw_updated, (int, float)):
+                if math.isfinite(float(raw_updated)):
+                    updated_at = float(raw_updated)
+        return enabled, updated_at
+
+    def _handle_manual_recording_change(self, enabled: bool, updated_at: float | None) -> None:
+        previous = self._manual_recording_enabled
+        self._manual_recording_enabled = bool(enabled)
+        self._manual_recording_updated_at = updated_at
+        _set_manual_recording_enabled(self._manual_recording_enabled)
+        if self._manual_recording_enabled and not previous:
+            self.consec_active = max(self.consec_active, START_CONSECUTIVE)
+            self.post_count = POST_PAD_FRAMES
+            print("[segmenter] Manual recording enabled", flush=True)
+        elif not self._manual_recording_enabled and previous:
+            self.post_count = min(self.post_count or POST_PAD_FRAMES, POST_PAD_FRAMES)
+            self.recent_active.clear()
+            self.consec_active = 0
+            self.consec_inactive = 0
+            print("[segmenter] Manual recording disabled", flush=True)
+        if self._status_mode == "live":
+            self._refresh_capture_status()
+
+    def _refresh_manual_recording(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        self._manual_recording_checked_at = now
+        path = self._manual_recording_path
+        try:
+            stat = os.stat(path)
+        except FileNotFoundError:
+            mtime = None
+        except OSError:
+            mtime = None
+        else:
+            mtime = stat.st_mtime
+        self._manual_recording_mtime = mtime
+        enabled, updated_at = self._manual_recording_state()
+        if enabled != self._manual_recording_enabled or updated_at != self._manual_recording_updated_at:
+            self._handle_manual_recording_change(enabled, updated_at)
+
+    def _refresh_motion_state(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and (now - self._motion_checked_at) < self._motion_refresh_interval:
+            return
+        self._motion_checked_at = now
+        state = self._motion_watcher.refresh(force=force)
+        previous_active = self._motion_forced_active
+        previous_start = self._motion_active_since
+        previous_sequence = self._motion_sequence
+        self._motion_sequence = state.sequence
+        active = bool(state.active)
+        start_epoch = state.active_since if state.active else None
+        if active and start_epoch is None:
+            start_epoch = state.updated_at
+        if active and start_epoch is not None:
+            self._motion_active_since = float(start_epoch)
+            if self._current_motion_event_start is None or not self.active:
+                self._current_motion_event_start = float(start_epoch)
+        elif not active:
+            self._motion_active_since = None
+            if not self.active:
+                self._current_motion_event_start = None
+                self._motion_event_was_active = False
+        self._motion_forced_active = active
+        if active and START_CONSECUTIVE > 0:
+            self.consec_active = max(self.consec_active, START_CONSECUTIVE)
+            self.consec_inactive = 0
+            self.post_count = max(self.post_count, POST_PAD_FRAMES)
+        if previous_active and not self._motion_forced_active:
+            if self.active:
+                self.recent_active.clear()
+                self.consec_active = 0
+                self.consec_inactive = 0
+            self.post_count = min(self.post_count or POST_PAD_FRAMES, POST_PAD_FRAMES)
+        if active and self.active:
+            self._motion_event_was_active = True
+        changed = (
+            previous_active != self._motion_forced_active
+            or previous_start != self._motion_active_since
+            or previous_sequence != self._motion_sequence
+        )
+        if changed and self._status_mode == "live":
+            self._refresh_capture_status()
+
     def ingest(self, buf: bytes, idx: int):
+        self._refresh_manual_recording()
+        self._refresh_motion_state()
         force_restart = False
         if self._manual_split_requested:
             if self.active:
@@ -2209,6 +2519,19 @@ class TimelineRecorder:
         current_threshold = self._adaptive.threshold_linear
         loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
+        manual_recording = self._manual_recording_enabled
+        if manual_recording:
+            frame_active = True
+            self.post_count = POST_PAD_FRAMES
+        if self._motion_forced_active:
+            frame_active = True
+            self.post_count = POST_PAD_FRAMES
+        if self.active and manual_recording:
+            self.event_manual_recording = True
+        if self.active and self._motion_forced_active:
+            self._motion_event_was_active = True
+            if self._current_motion_event_start is None and self._motion_active_since is not None:
+                self._current_motion_event_start = self._motion_active_since
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)
@@ -2388,6 +2711,17 @@ class TimelineRecorder:
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
+                self.event_manual_recording = bool(manual_recording)
+                if self._motion_forced_active:
+                    self._motion_event_was_active = True
+                    if self._motion_active_since is None:
+                        self._motion_active_since = self.event_started_epoch
+                    if self._current_motion_event_start is None:
+                        self._current_motion_event_start = (
+                            self._motion_active_since or self.event_started_epoch
+                        )
+                else:
+                    self._motion_event_was_active = False
                 parallel_was_missing = self._parallel_encoder is None
                 self._maybe_start_parallel_encode(force=True)
                 if parallel_was_missing and self._parallel_encoder and prebuf_bytes:
@@ -2405,6 +2739,14 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
+                if self.event_manual_recording:
+                    event_status["manual_recording"] = True
+                if self._motion_event_was_active or self._motion_forced_active:
+                    event_status["motion_active"] = bool(self._motion_forced_active)
+                    if self._current_motion_event_start is not None:
+                        event_status["motion_started_epoch"] = float(
+                            self._current_motion_event_start
+                        )
                 if self._status_mode == "live":
                     if self._streaming_encoder or self._parallel_encoder:
                         event_status = dict(event_status)
@@ -2708,6 +3050,14 @@ class TimelineRecorder:
 
         last_event_status["end_reason"] = reason
         last_event_status["in_progress"] = False
+        if self.event_manual_recording:
+            last_event_status["manual_recording"] = True
+        if self._motion_event_was_active or self._current_motion_event_start is not None:
+            last_event_status["motion_active"] = bool(self._motion_forced_active)
+            if self._current_motion_event_start is not None:
+                last_event_status["motion_started_epoch"] = float(
+                    self._current_motion_event_start
+                )
         if final_stream_path:
             last_event_status["recording_path"] = final_stream_path
             last_event_status["streaming_container_format"] = STREAMING_CONTAINER_FORMAT
@@ -2870,6 +3220,10 @@ class TimelineRecorder:
         self._ingest_hint = None
         self._ingest_hint_used = True
         self._manual_split_requested = False
+        self.event_manual_recording = False
+        if not self._motion_forced_active:
+            self._current_motion_event_start = None
+        self._motion_event_was_active = False
         self._cleanup_live_waveform()
 
     def flush(self, idx: int):
