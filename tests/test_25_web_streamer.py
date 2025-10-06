@@ -115,6 +115,106 @@ def test_handle_run_guard_discards_none_callbacks(caplog):
         loop.close()
 
 
+def test_selector_transport_guard_handles_missing_protocol(caplog):
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        from asyncio import selector_events
+
+        class DummySock:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class DummyServer:
+            def __init__(self):
+                self.detached = False
+
+            def _detach(self):
+                self.detached = True
+
+        dummy_sock = DummySock()
+        dummy_server = DummyServer()
+        transport = SimpleNamespace(
+            _protocol_connected=True,
+            _protocol=None,
+            _sock=dummy_sock,
+            _loop=loop,
+            _server=dummy_server,
+        )
+
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            selector_events._SelectorTransport._call_connection_lost(transport, None)
+
+        assert dummy_sock.closed is True
+        assert dummy_server.detached is True
+        assert transport._sock is None
+        assert transport._server is None
+        assert transport._protocol is None
+        assert transport._loop is None
+        assert transport._protocol_connected is False
+        assert "Selector transport missing protocol" in caplog.text
+    finally:
+        loop.close()
+
+
+def test_selector_transport_guard_invokes_protocol_callback():
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        from asyncio import selector_events
+
+        class DummyProtocol:
+            def __init__(self):
+                self.lost_exc = None
+
+            def connection_lost(self, exc):
+                self.lost_exc = exc
+
+        class DummySock:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class DummyServer:
+            def __init__(self):
+                self.detached = False
+
+            def _detach(self):
+                self.detached = True
+
+        protocol = DummyProtocol()
+        dummy_sock = DummySock()
+        dummy_server = DummyServer()
+        transport = SimpleNamespace(
+            _protocol_connected=True,
+            _protocol=protocol,
+            _sock=dummy_sock,
+            _loop=loop,
+            _server=dummy_server,
+        )
+
+        selector_events._SelectorTransport._call_connection_lost(transport, "boom")
+
+        assert protocol.lost_exc == "boom"
+        assert dummy_sock.closed is True
+        assert dummy_server.detached is True
+        assert transport._sock is None
+        assert transport._server is None
+        assert transport._protocol is None
+        assert transport._loop is None
+    finally:
+        loop.close()
+
+
 @pytest.mark.asyncio
 async def test_dashboard_page_structure(aiohttp_client):
     client = await aiohttp_client(web_streamer.build_app())
