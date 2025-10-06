@@ -940,6 +940,12 @@ body[data-theme="light"] .app-menu-toggle {
   transform: translateY(-1px);
 }
 
+.danger-button[aria-pressed="true"] {
+  background: var(--danger-bg-hover);
+  box-shadow: 0 0 0 3px var(--danger-ring);
+  transform: none;
+}
+
 button.small {
   font-size: 0.85rem;
   padding: 0.4rem 0.85rem;
