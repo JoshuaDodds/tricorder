@@ -316,6 +316,25 @@ STREAMING_CONTAINER_FORMAT = _STREAMING_FORMAT
 STREAMING_EXTENSION = ".opus" if STREAMING_CONTAINER_FORMAT == "opus" else ".webm"
 STREAMING_PARTIAL_SUFFIX = f".partial{STREAMING_EXTENSION}"
 
+
+def _manual_record_state_path() -> str:
+    return os.path.join(TMP_DIR, "manual_recording.json")
+
+
+_MANUAL_RECORDING_ENABLED = False
+_MANUAL_RECORD_LOCK = threading.Lock()
+
+
+def _set_manual_recording_enabled(enabled: bool) -> None:
+    global _MANUAL_RECORDING_ENABLED
+    with _MANUAL_RECORD_LOCK:
+        _MANUAL_RECORDING_ENABLED = bool(enabled)
+
+
+def is_manual_recording_enabled() -> bool:
+    with _MANUAL_RECORD_LOCK:
+        return _MANUAL_RECORDING_ENABLED
+
 _PARALLEL_CFG = cfg["segmenter"].get("parallel_encode", {})
 PARALLEL_ENCODE_ENABLED = bool(_PARALLEL_CFG.get("enabled", True))
 PARALLEL_ENCODE_LOAD_THRESHOLD = float(
@@ -1432,6 +1451,7 @@ class _EncoderWorker(threading.Thread):
                 env = os.environ.copy()
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
+                env.setdefault("MANUAL_RECORDING", "1" if is_manual_recording_enabled() else "0")
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity
@@ -1769,6 +1789,12 @@ class TimelineRecorder:
         self._encode_jobs: list[int] = []
         self._manual_split_requested = False
 
+        self._manual_recording_enabled = is_manual_recording_enabled()
+        self._manual_recording_checked_at = 0.0
+        self._manual_recording_mtime: float | None = None
+        self._manual_recording_updated_at: float | None = None
+        self._manual_recording_path = _manual_record_state_path()
+
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
         self._status_lock = threading.Lock()
@@ -1798,6 +1824,7 @@ class TimelineRecorder:
         self._filter_avg_ms: float = 0.0
         self._filter_peak_ms: float = 0.0
         self._filter_last_log_ts: float = 0.0
+        self._refresh_manual_recording(force=True)
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
@@ -1850,6 +1877,12 @@ class TimelineRecorder:
             elif "adaptive_rms_threshold" not in payload:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
             payload["adaptive_rms_enabled"] = bool(self._adaptive.enabled)
+
+            payload["manual_recording"] = bool(self._manual_recording_enabled)
+            if self._manual_recording_updated_at is not None:
+                payload["manual_recording_updated_at"] = float(self._manual_recording_updated_at)
+            else:
+                payload.pop("manual_recording_updated_at", None)
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -2183,7 +2216,74 @@ class TimelineRecorder:
         except queue.Full:
             self.writer_queue_drops += 1
 
+    def _manual_recording_state(self) -> tuple[bool, float | None]:
+        path = self._manual_recording_path
+        enabled = False
+        updated_at: float | None = None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return False, None
+        except json.JSONDecodeError:
+            return False, None
+        except OSError:
+            return False, None
+        if isinstance(payload, dict):
+            raw_enabled = payload.get("enabled")
+            if isinstance(raw_enabled, bool):
+                enabled = raw_enabled
+            elif isinstance(raw_enabled, (int, float)):
+                enabled = bool(raw_enabled)
+            elif isinstance(raw_enabled, str):
+                normalized = raw_enabled.strip().lower()
+                if normalized in {"1", "true", "yes", "on"}:
+                    enabled = True
+                elif normalized in {"0", "false", "no", "off"}:
+                    enabled = False
+            raw_updated = payload.get("updated_at")
+            if isinstance(raw_updated, (int, float)):
+                if math.isfinite(float(raw_updated)):
+                    updated_at = float(raw_updated)
+        return enabled, updated_at
+
+    def _handle_manual_recording_change(self, enabled: bool, updated_at: float | None) -> None:
+        previous = self._manual_recording_enabled
+        self._manual_recording_enabled = bool(enabled)
+        self._manual_recording_updated_at = updated_at
+        _set_manual_recording_enabled(self._manual_recording_enabled)
+        if self._manual_recording_enabled and not previous:
+            self.consec_active = max(self.consec_active, START_CONSECUTIVE)
+            self.post_count = POST_PAD_FRAMES
+            print("[segmenter] Manual recording enabled", flush=True)
+        elif not self._manual_recording_enabled and previous:
+            self.post_count = min(self.post_count or POST_PAD_FRAMES, POST_PAD_FRAMES)
+            self.recent_active.clear()
+            self.consec_active = 0
+            self.consec_inactive = 0
+            print("[segmenter] Manual recording disabled", flush=True)
+        if self._status_mode == "live":
+            self._refresh_capture_status()
+
+    def _refresh_manual_recording(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        self._manual_recording_checked_at = now
+        path = self._manual_recording_path
+        try:
+            stat = os.stat(path)
+        except FileNotFoundError:
+            mtime = None
+        except OSError:
+            mtime = None
+        else:
+            mtime = stat.st_mtime
+        self._manual_recording_mtime = mtime
+        enabled, updated_at = self._manual_recording_state()
+        if enabled != self._manual_recording_enabled or updated_at != self._manual_recording_updated_at:
+            self._handle_manual_recording_change(enabled, updated_at)
+
     def ingest(self, buf: bytes, idx: int):
+        self._refresh_manual_recording()
         force_restart = False
         if self._manual_split_requested:
             if self.active:
@@ -2209,6 +2309,10 @@ class TimelineRecorder:
         current_threshold = self._adaptive.threshold_linear
         loud = rms_val > current_threshold
         frame_active = loud  # primary trigger
+        manual_recording = self._manual_recording_enabled
+        if manual_recording:
+            frame_active = True
+            self.post_count = POST_PAD_FRAMES
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)

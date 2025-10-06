@@ -10,6 +10,23 @@ which ffmpeg || echo "[encode] ffmpeg not found"
 
 # Default: denoise ON (override with DENOISE=0 to disable)
 DENOISE="${DENOISE:-1}"
+MANUAL_RECORDING="${MANUAL_RECORDING:-0}"
+
+normalize_bool() {
+  case "${1:-}" in
+    1|true|TRUE|on|ON|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if normalize_bool "$MANUAL_RECORDING"; then
+  DENOISE="0"
+  echo "[encode] Manual recording active; skipping post-process filters"
+fi
 
 in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1

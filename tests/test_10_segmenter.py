@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import wave
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -166,6 +167,71 @@ def test_manual_split_no_active_event(tmp_path, monkeypatch):
         assert rec.request_manual_split() is False
     finally:
         rec.flush(0)
+
+
+def test_manual_recording_toggle_enforces_capture(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+
+    original_counters = segmenter.TimelineRecorder.event_counters
+    segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
+
+    def fake_strftime(fmt: str, *_args: object) -> str:
+        if fmt == "%Y%m%d":
+            return "20240102"
+        if fmt == "%H-%M-%S":
+            return "12-00-00"
+        return "12-00-00"
+
+    monkeypatch.setattr(segmenter.time, "strftime", fake_strftime)
+    monkeypatch.setattr(segmenter.time, "time", lambda: 1_700_000_000.0)
+
+    captured_jobs: list[tuple[str, str, str, str | None]] = []
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None):
+        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path))
+        return len(captured_jobs)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    manual_state_path = Path(segmenter._manual_record_state_path())
+    if manual_state_path.exists():
+        manual_state_path.unlink()
+
+    rec = TimelineRecorder()
+    try:
+        # Quiet frames do not trigger recording without manual override
+        for idx in range(3):
+            rec.ingest(make_frame(0), idx)
+        assert rec.active is False
+
+        manual_state_path.write_text(json.dumps({"enabled": True, "updated_at": time.time()}), encoding="utf-8")
+        rec.ingest(make_frame(0), 3)
+        assert rec.active is True
+        assert segmenter.is_manual_recording_enabled() is True
+
+        manual_state_path.write_text(json.dumps({"enabled": False, "updated_at": time.time()}), encoding="utf-8")
+        rec.ingest(make_frame(0), 4)
+        rec.ingest(make_frame(0), 5)
+        assert rec.active is False
+        assert segmenter.is_manual_recording_enabled() is False
+
+        assert captured_jobs, "expected encode job when manual recording finalized"
+    finally:
+        rec.flush(6)
+        segmenter.TimelineRecorder.event_counters = original_counters
 
 
 def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
