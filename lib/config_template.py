@@ -172,6 +172,10 @@ segmenter:
   # Keep modest to avoid memory spikes. Typical: 256–1024.
   max_queue_frames: 512
 
+  # Minimum duration (seconds) required to keep a finalized recording. Clips shorter than this
+  # threshold are discarded before filters, waveform generation, and archival. Set to 0 to disable.
+  min_clip_seconds: 0.0
+
   # Optional custom labels for event classifications. These strings are embedded in filenames,
   # notification payloads, and transcript metadata.
   event_tags:

@@ -303,6 +303,11 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
 ENCODER = cfg["paths"]["encoder_script"]
+_MIN_CLIP_RAW = cfg["segmenter"].get("min_clip_seconds", 0.0)
+try:
+    MIN_CLIP_SECONDS = max(0.0, float(_MIN_CLIP_RAW))
+except (TypeError, ValueError):
+    MIN_CLIP_SECONDS = 0.0
 
 STREAMING_ENCODE_ENABLED = bool(
     cfg["segmenter"].get("streaming_encode", False)
@@ -1432,6 +1437,7 @@ class _EncoderWorker(threading.Thread):
                 env = os.environ.copy()
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
+                env.setdefault("ENCODER_MIN_CLIP_SECONDS", str(MIN_CLIP_SECONDS))
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity

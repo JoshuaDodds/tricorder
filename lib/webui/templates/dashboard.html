@@ -1215,12 +1215,17 @@
                 <input id="segmenter-flush-bytes" type="number" min="4096" step="1024" />
                 <p class="field-description">Controls how often buffered WAV data is flushed to disk.</p>
               </div>
-              <div class="settings-field">
-                <label for="segmenter-max-queue">Max queued frames</label>
-                <input id="segmenter-max-queue" type="number" min="16" step="16" />
-                <p class="field-description">Upper bound on pending audio frames before applying backpressure.</p>
-              </div>
-              <div class="settings-field checkbox-field">
+                <div class="settings-field">
+                  <label for="segmenter-max-queue">Max queued frames</label>
+                  <input id="segmenter-max-queue" type="number" min="16" step="16" />
+                  <p class="field-description">Upper bound on pending audio frames before applying backpressure.</p>
+                </div>
+                <div class="settings-field">
+                  <label for="segmenter-min-clip-seconds">Minimum clip length (s)</label>
+                  <input id="segmenter-min-clip-seconds" type="number" min="0" step="0.1" />
+                  <p class="field-description">Discard final Opus files shorter than this duration before filters or archival.</p>
+                </div>
+                <div class="settings-field checkbox-field">
                 <div class="field-control">
                   <input id="segmenter-use-rnnoise" type="checkbox" />
                   <label for="segmenter-use-rnnoise">Enable RNNoise denoising</label>

@@ -635,6 +635,7 @@ def _segmenter_defaults() -> dict[str, Any]:
         "denoise_before_vad": False,
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
+        "min_clip_seconds": 0.0,
     }
 
 
@@ -823,6 +824,16 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 result[key] = int(value)
+
+        min_clip = raw.get("min_clip_seconds")
+        if isinstance(min_clip, (int, float)) and not isinstance(min_clip, bool):
+            candidate = float(min_clip)
+            if math.isfinite(candidate):
+                if candidate < 0.0:
+                    candidate = 0.0
+                if candidate > 600.0:
+                    candidate = 600.0
+                result["min_clip_seconds"] = candidate
 
         for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
             value = raw.get(key)
@@ -1382,6 +1393,16 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
         candidate = _coerce_int(payload.get(field), field, errors, min_value=min_value, max_value=max_value)
         if candidate is not None:
             normalized[field] = candidate
+
+    min_clip = _coerce_float(
+        payload.get("min_clip_seconds"),
+        "min_clip_seconds",
+        errors,
+        min_value=0.0,
+        max_value=600.0,
+    )
+    if min_clip is not None:
+        normalized["min_clip_seconds"] = min_clip
 
     for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
         normalized[field] = _bool_from_any(payload.get(field))

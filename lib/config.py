@@ -111,6 +111,7 @@ _DEFAULTS: Dict[str, Any] = {
         "denoise_before_vad": False,
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
+        "min_clip_seconds": 0.0,
         "event_tags": EVENT_TAG_DEFAULTS.copy(),
     },
     "adaptive_rms": {
