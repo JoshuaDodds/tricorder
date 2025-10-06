@@ -56,6 +56,7 @@ def _write_waveform_stub(
     duration: float = 1.0,
     *,
     start_epoch: float | None = None,
+    extra: dict | None = None,
 ) -> None:
     payload = {
         "version": 1,
@@ -73,6 +74,8 @@ def _write_waveform_stub(
         payload["started_at"] = datetime.fromtimestamp(
             float(start_epoch), tz=timezone.utc
         ).isoformat()
+    if extra:
+        payload.update(extra)
     target.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -136,6 +139,47 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
             assert recent.get("time_range") == "1h"
             assert recent["total"] == 0
             assert recent["items"] == []
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
+    async def runner():
+        day_dir = dashboard_env / "20240201"
+        day_dir.mkdir()
+        file_path = day_dir / "motion_example.opus"
+        file_path.write_bytes(b"m")
+
+        metadata = {
+            "motion_trigger_offset_seconds": 0.5,
+            "motion_release_offset_seconds": 1.25,
+            "motion_started_epoch": 1_700_000_100.0,
+            "motion_released_epoch": 1_700_000_101.5,
+        }
+        _write_waveform_stub(
+            file_path.with_suffix(file_path.suffix + ".waveform.json"),
+            duration=2.5,
+            extra=metadata,
+        )
+
+        os.utime(file_path, (1_700_000_200, 1_700_000_200))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/recordings?limit=5")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload["total"] >= 1
+            item = next(entry for entry in payload["items"] if entry["name"] == "motion_example")
+            assert item["motion_trigger_offset_seconds"] == pytest.approx(0.5)
+            assert item["motion_release_offset_seconds"] == pytest.approx(1.25)
+            assert item["motion_started_epoch"] == pytest.approx(1_700_000_100.0)
+            assert item["motion_released_epoch"] == pytest.approx(1_700_000_101.5)
         finally:
             await client.close()
             await server.close()

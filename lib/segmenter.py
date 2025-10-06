@@ -1830,6 +1830,7 @@ class TimelineRecorder:
         self._current_motion_event_start: float | None = (
             motion_state.active_since if motion_state.active else None
         )
+        self._current_motion_event_end: float | None = None
         if self._motion_pending_start and START_CONSECUTIVE > 0:
             self.consec_active = max(self.consec_active, START_CONSECUTIVE - 1)
             self.consec_inactive = 0
@@ -1982,11 +1983,72 @@ class TimelineRecorder:
             payload["motion_active_since"] = None
         return payload
 
-    def _current_motion_event_payload(self, *, for_last_event: bool = False) -> dict[str, object]:
+    def _motion_offset_values(
+        self,
+        *,
+        duration_seconds: float | None = None,
+    ) -> dict[str, float | None]:
+        trigger_offset: float | None = None
+        release_offset: float | None = None
+
+        start_epoch = self.event_started_epoch
+        if start_epoch is None:
+            return {
+                "motion_trigger_offset_seconds": None,
+                "motion_release_offset_seconds": None,
+            }
+
+        motion_start = getattr(self, "_current_motion_event_start", None)
+        if motion_start is not None:
+            try:
+                trigger_offset = max(0.0, float(motion_start) - float(start_epoch))
+            except (TypeError, ValueError):
+                trigger_offset = None
+
+        motion_end = getattr(self, "_current_motion_event_end", None)
+        if motion_end is not None:
+            try:
+                release_offset = max(0.0, float(motion_end) - float(start_epoch))
+            except (TypeError, ValueError):
+                release_offset = None
+
+        if duration_seconds is None and self.frames_written > 0:
+            duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+
+        if duration_seconds is not None and duration_seconds > 0:
+            if trigger_offset is not None:
+                trigger_offset = min(trigger_offset, duration_seconds)
+            if release_offset is not None:
+                release_offset = min(release_offset, duration_seconds)
+
+        if (
+            trigger_offset is not None
+            and release_offset is not None
+            and release_offset < trigger_offset
+        ):
+            release_offset = trigger_offset
+
+        return {
+            "motion_trigger_offset_seconds": trigger_offset,
+            "motion_release_offset_seconds": release_offset,
+        }
+
+    def _current_motion_event_payload(
+        self,
+        *,
+        for_last_event: bool = False,
+        duration_seconds: float | None = None,
+    ) -> dict[str, object]:
         payload: dict[str, object] = {}
         start_epoch = getattr(self, '_current_motion_event_start', None)
         if start_epoch is not None:
             payload["motion_started_epoch"] = float(start_epoch)
+        end_epoch = getattr(self, '_current_motion_event_end', None)
+        if end_epoch is not None:
+            payload["motion_released_epoch"] = float(end_epoch)
+        offsets = self._motion_offset_values(duration_seconds=duration_seconds)
+        payload["motion_trigger_offset_seconds"] = offsets["motion_trigger_offset_seconds"]
+        payload["motion_release_offset_seconds"] = offsets["motion_release_offset_seconds"]
         watcher = getattr(self, '_motion_watcher', None)
         motion_state = watcher.state if watcher is not None else None
         if motion_state is not None:
@@ -2037,6 +2099,7 @@ class TimelineRecorder:
             self._motion_active_since = start_epoch
             if self._current_motion_event_start is None:
                 self._current_motion_event_start = start_epoch
+            self._current_motion_event_end = None
             if not self.active:
                 self._motion_pending_start = True
                 if START_CONSECUTIVE > 0:
@@ -2046,8 +2109,15 @@ class TimelineRecorder:
             self._motion_forced_active = False
             self._motion_active_since = None
             self._motion_pending_start = False
-            if not self.active:
+            release_epoch = updated.updated_at if updated.updated_at else time.time()
+            if self.active and self._current_motion_event_start is not None:
+                try:
+                    self._current_motion_event_end = float(release_epoch)
+                except (TypeError, ValueError):
+                    self._current_motion_event_end = time.time()
+            else:
                 self._current_motion_event_start = None
+                self._current_motion_event_end = None
             if previous_forced:
                 try:
                     self.recent_active.clear()
@@ -2543,6 +2613,7 @@ class TimelineRecorder:
                 self.active = True
                 self._event_manual_recording = self._manual_recording
                 self._motion_pending_start = False
+                self._current_motion_event_end = None
                 if self._motion_forced_active and self._current_motion_event_start is None:
                     self._current_motion_event_start = self._motion_active_since or time.time()
                 self.post_count = POST_PAD_FRAMES
@@ -2565,7 +2636,12 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
-                event_status.update(self._current_motion_event_payload())
+                duration_hint = self.frames_written * (FRAME_MS / 1000.0)
+                event_status.update(
+                    self._current_motion_event_payload(
+                        duration_seconds=duration_hint
+                    )
+                )
                 if self._status_mode == "live":
                     if self._streaming_encoder or self._parallel_encoder:
                         event_status = dict(event_status)
@@ -2857,7 +2933,12 @@ class TimelineRecorder:
                 "trigger_rms": trigger_rms,
                 "etype": etype_label,
             }
-            last_event_status.update(self._current_motion_event_payload(for_last_event=True))
+            last_event_status.update(
+                self._current_motion_event_payload(
+                    for_last_event=True,
+                    duration_seconds=duration_seconds,
+                )
+            )
         else:
             last_event_status = {
                 "base_name": self.base_name or "",
@@ -2869,18 +2950,38 @@ class TimelineRecorder:
                 "trigger_rms": trigger_rms,
                 "etype": etype_label,
             }
-            last_event_status.update(self._current_motion_event_payload(for_last_event=True))
+            last_event_status.update(
+                self._current_motion_event_payload(
+                    for_last_event=True,
+                    duration_seconds=duration_seconds,
+                )
+            )
 
         last_event_status["end_reason"] = reason
         last_event_status["in_progress"] = False
         if final_stream_path:
             last_event_status["recording_path"] = final_stream_path
             last_event_status["streaming_container_format"] = STREAMING_CONTAINER_FORMAT
+        waveform_path: str | None = None
+        waveform_rel: str | None = None
         if persisted_waveform:
             waveform_path, waveform_rel = persisted_waveform
             last_event_status["waveform_path"] = waveform_path
             if waveform_rel:
                 last_event_status["waveform_rel_path"] = waveform_rel
+
+        metadata_payload = {
+            "motion_started_epoch": last_event_status.get("motion_started_epoch"),
+            "motion_released_epoch": last_event_status.get("motion_released_epoch"),
+            "motion_trigger_offset_seconds": last_event_status.get(
+                "motion_trigger_offset_seconds"
+            ),
+            "motion_release_offset_seconds": last_event_status.get(
+                "motion_release_offset_seconds"
+            ),
+        }
+        if waveform_path:
+            self._annotate_waveform_metadata(waveform_path, metadata_payload)
         if self._status_mode == "live":
             self._update_capture_status(
                 False,
@@ -2944,6 +3045,43 @@ class TimelineRecorder:
         self._live_waveform_path = None
         self._live_waveform_rel_path = None
         return final_destination, rel_path
+
+    def _annotate_waveform_metadata(
+        self,
+        destination: str | None,
+        metadata: dict[str, object],
+    ) -> None:
+        if not destination:
+            return
+        if not metadata:
+            return
+        try:
+            with open(destination, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict):
+                payload = {}
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+
+        updated = False
+        for key, value in metadata.items():
+            if key is None:
+                continue
+            payload[key] = value
+            updated = True
+
+        if not updated:
+            return
+
+        tmp_path = f"{destination}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.write("\n")
+            os.replace(tmp_path, destination)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
 
     def _cleanup_live_waveform(self) -> None:
         writer = self._live_waveform
@@ -3036,6 +3174,8 @@ class TimelineRecorder:
         self._ingest_hint_used = True
         self._manual_split_requested = False
         self._event_manual_recording = False
+        self._current_motion_event_start = None
+        self._current_motion_event_end = None
         self._cleanup_live_waveform()
 
     def flush(self, idx: int):
