@@ -383,7 +383,88 @@
             </div>
             <button id="preview-close" class="ghost-button small" type="button">Hide</button>
           </div>
-          <audio id="preview-player" controls preload="none"></audio>
+          <audio id="preview-player" preload="none" aria-hidden="true"></audio>
+          <div class="player-transport" id="player-transport" hidden data-active="false">
+            <div class="transport-row transport-primary">
+              <div class="transport-buttons" role="group" aria-label="Playback controls">
+                <button id="transport-restart" class="transport-button" type="button">
+                  <span aria-hidden="true">⏮</span>
+                  <span class="sr-only">Restart</span>
+                </button>
+                <button id="transport-rewind" class="transport-button" type="button">
+                  <span aria-hidden="true">⏪</span>
+                  <span class="sr-only">Rewind 10 seconds</span>
+                </button>
+                <button
+                  id="transport-play"
+                  class="transport-button transport-button-primary"
+                  type="button"
+                  aria-pressed="false"
+                >
+                  <span class="transport-button-icon" aria-hidden="true">▶</span>
+                  <span class="transport-button-text">Play</span>
+                </button>
+                <button id="transport-forward" class="transport-button" type="button">
+                  <span aria-hidden="true">⏩</span>
+                  <span class="sr-only">Forward 30 seconds</span>
+                </button>
+                <button id="transport-end" class="transport-button" type="button">
+                  <span aria-hidden="true">⏭</span>
+                  <span class="sr-only">Skip to end</span>
+                </button>
+              </div>
+              <div class="transport-time" role="group" aria-label="Playback position">
+                <span id="transport-current" class="transport-time-label">0:00</span>
+                <input
+                  id="transport-scrubber"
+                  class="transport-scrubber"
+                  type="range"
+                  min="0"
+                  max="1000"
+                  step="1"
+                  value="0"
+                  aria-label="Playback position"
+                />
+                <span id="transport-duration" class="transport-time-label">0:00</span>
+              </div>
+            </div>
+            <div class="transport-row transport-secondary">
+              <div class="transport-volume" role="group" aria-label="Volume">
+                <button
+                  id="transport-mute"
+                  class="transport-button"
+                  type="button"
+                  aria-pressed="false"
+                >
+                  <span class="transport-button-icon" aria-hidden="true">🔊</span>
+                  <span class="transport-button-text">Mute</span>
+                </button>
+                <input
+                  id="transport-volume"
+                  class="transport-volume-slider"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                  aria-label="Volume"
+                />
+              </div>
+              <label class="transport-speed" for="transport-speed-select">
+                <span>Speed</span>
+                <select id="transport-speed-select">
+                  <option value="0.25">0.25×</option>
+                  <option value="0.5">0.5×</option>
+                  <option value="0.75">0.75×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="1.75">1.75×</option>
+                  <option value="2">2×</option>
+                </select>
+              </label>
+            </div>
+          </div>
           <div class="waveform-section" id="waveform-section">
             <div class="waveform-header">
               <span>Waveform</span>
