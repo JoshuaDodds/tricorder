@@ -233,8 +233,8 @@ def _install_selector_transport_guard(log: logging.Logger) -> None:
                 "Selector transport missing %s during connection_lost; continuing cleanup defensively."
                 % missing
             )
-            asyncio_log.error(message, stack_info=True)
-            log.error(message)
+            asyncio_log.warning(message)
+            log.warning(message)
             if protocol_connected and protocol is not None:
                 try:
                     protocol.connection_lost(exc)

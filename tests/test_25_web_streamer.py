@@ -147,7 +147,7 @@ def test_selector_transport_guard_handles_missing_protocol(caplog):
             _server=dummy_server,
         )
 
-        with caplog.at_level(logging.ERROR, logger="asyncio"):
+        with caplog.at_level(logging.WARNING, logger="asyncio"):
             selector_events._SelectorTransport._call_connection_lost(transport, None)
 
         assert dummy_sock.closed is True
@@ -157,7 +157,11 @@ def test_selector_transport_guard_handles_missing_protocol(caplog):
         assert transport._protocol is None
         assert transport._loop is None
         assert transport._protocol_connected is False
-        assert "Selector transport missing protocol" in caplog.text
+        assert any(
+            record.levelno == logging.WARNING
+            and "Selector transport missing protocol" in record.getMessage()
+            for record in caplog.records
+        )
     finally:
         loop.close()
 
