@@ -419,6 +419,28 @@
             <div class="waveform-container" id="waveform-container" hidden tabindex="-1">
               <canvas id="waveform-canvas"></canvas>
               <div
+                id="waveform-motion-layer"
+                class="waveform-motion-layer"
+                aria-hidden="true"
+                data-active="false"
+              ></div>
+              <div
+                id="waveform-motion-start-marker"
+                class="waveform-marker marker-motion-start"
+                aria-hidden="true"
+                data-active="false"
+              >
+                <span>Motion start</span>
+              </div>
+              <div
+                id="waveform-motion-end-marker"
+                class="waveform-marker marker-motion-end"
+                aria-hidden="true"
+                data-active="false"
+              >
+                <span>Motion end</span>
+              </div>
+              <div
                 id="waveform-trigger-marker"
                 class="waveform-marker marker-trigger"
                 aria-hidden="true"
