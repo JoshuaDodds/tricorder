@@ -9,6 +9,7 @@ echo "[encode] Args: $@"
 which ffmpeg || echo "[encode] ffmpeg not found"
 
 # Default: denoise ON (override with DENOISE=0 to disable)
+DENOISE=0
 DENOISE="${DENOISE:-1}"
 MIN_CLIP_SECONDS="${ENCODER_MIN_CLIP_SECONDS:-0}"
 FFPROBE_WARNED=0
