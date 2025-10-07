@@ -41,7 +41,15 @@ Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` is available to you and they
 You are expected to strictly adhere to Jira API usage guidelines and not make any changes to the Jira UI. You are expected to send Jira API regularly to keep your work tracked.
 The ENV vars mentioned above are already configured for you. 
 
-Regarding time, we want actual duration between commits rounded to the minute and not an estimate of what it would have taken a human to complete the task. This means that you need to track your time spent working by starting a timer at your very first start of work and at your very last step before pushing your work check time elapsed so you know how long this task too you. 
+Regarding time, we want actual duration between commits rounded to the minute and not an estimate of what it would have taken a human to complete the task. This means that you need to track your time spent working by starting a timer at your very first start of work and at your very last step before pushing your work check time elapsed so you know how long this task too you.
+
+### Time tracking discipline (enforced for all agents)
+- Start a real timer (e.g., `time.perf_counter()` in a scratch Python shell or a physical stopwatch) **before** you run any repo command. Record the start timestamp in your scratchpad so you can recompute elapsed wall time at any moment.
+- Every time you make a commit, compute the actual minutes spent since the previous commit (or task start) and copy that exact rounded value into the `#time` smart-commit tag. Never reuse values from earlier worklogs or guess; always recompute from the timer.
+- Pause the timer and subtract any time you are idle or waiting on unrelated tasks. The value you log must reflect focused, hands-on work on this ticket only.
+- Maintain a small running log in your scratchpad (e.g., `notes/time_tracking.txt` in your workspace or your terminal notes) that lists timestamp checkpoints and the cumulative elapsed minutes. Use it to double-check that Jira worklogs and `#time` values reconcile before you finish.
+- Before your final commit, add Jira worklog entries that sum to the same total minutes as your scratch timer. If you discover a mismatch, update the worklog to the correct value and mention the adjustment in your closing Jira comment.
+- Prior to calling `make_pr`, re-read the time tracking log and confirm the total duration you plan to report matches the wall-clock elapsed time for the session (rounded to the nearest minute). If there is a discrepancy, correct the worklog and amend the commit message before proceeding.
 
 Before final commit with smart commit messages pushing:
 1. Run tests (export DEV=1 && pytest -q). All tests must pass.
