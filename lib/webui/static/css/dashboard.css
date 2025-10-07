@@ -1670,7 +1670,7 @@ button.small {
 
 .waveform-marker span {
   position: absolute;
-  top: var(--marker-label-top, 0.75rem);
+  top: var(--marker-label-top, 0.95rem);
   left: 50%;
   transform: translate(-50%, -40%);
   background: var(--dialog-surface);
@@ -1687,10 +1687,18 @@ button.small {
   white-space: nowrap;
 }
 
+.waveform-marker[data-align="left"] {
+  transform: translateX(0);
+}
+
 .waveform-marker[data-align="left"] span {
   left: 0;
   right: auto;
   transform: translate(0, -40%);
+}
+
+.waveform-marker[data-align="right"] {
+  transform: translateX(-2px);
 }
 
 .waveform-marker[data-align="right"] span {
@@ -1712,11 +1720,7 @@ button.small {
   box-shadow: 0 0 10px rgba(34, 197, 94, 0.25);
 }
 
-.waveform-marker.marker-motion-start {
-  background: rgba(59, 130, 246, 0.65);
-  box-shadow: 0 0 10px rgba(59, 130, 246, 0.25);
-}
-
+.waveform-marker.marker-motion-start,
 .waveform-marker.marker-motion-release {
   background: rgba(147, 51, 234, 0.65);
   box-shadow: 0 0 10px rgba(147, 51, 234, 0.25);
