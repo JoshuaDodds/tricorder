@@ -316,8 +316,8 @@ class AudioFilterChain:
         mags = np.abs(spectrum)
         safe_mags = np.maximum(mags, 1e-8)
         mags_db = 20.0 * np.log10(safe_mags)
-        target_db = np.minimum(mags_db, self.denoise_noise_floor_db)
-        gains_db = target_db - mags_db
+        target_db = np.maximum(mags_db, self.denoise_noise_floor_db)
+        gains_db = mags_db - target_db
         gains = 10.0 ** (gains_db / 20.0)
         spectrum *= gains
         restored = np.fft.irfft(spectrum, n=normalized.size)
