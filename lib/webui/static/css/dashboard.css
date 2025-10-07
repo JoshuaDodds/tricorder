@@ -1670,7 +1670,7 @@ button.small {
 
 .waveform-marker span {
   position: absolute;
-  top: 0.75rem;
+  top: var(--marker-label-top, 0.75rem);
   left: 50%;
   transform: translate(-50%, -40%);
   background: var(--dialog-surface);
@@ -1685,6 +1685,18 @@ button.small {
   opacity: 0;
   transition: opacity 0.2s ease;
   white-space: nowrap;
+}
+
+.waveform-marker[data-align="left"] span {
+  left: 0;
+  right: auto;
+  transform: translate(0, -40%);
+}
+
+.waveform-marker[data-align="right"] span {
+  left: auto;
+  right: 0;
+  transform: translate(0, -40%);
 }
 
 .waveform-marker[data-active="true"] {
