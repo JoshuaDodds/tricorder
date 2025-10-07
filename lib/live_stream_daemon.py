@@ -274,6 +274,11 @@ class FilterPipeline:
                 raise self._fail_with_pending("filter worker stalled (no output)")
         seq = self._next_seq
         self._next_seq += 1
+        if not self._pending:
+            # Reset the stall watchdog when new work arrives after an idle period.
+            # Otherwise long gaps between frames (e.g., while arecord is restarting)
+            # would immediately trip the timeout even though the worker is healthy.
+            self._last_progress = time.monotonic()
         self._inflight[seq] = frame
         try:
             self._input.put((seq, frame))
