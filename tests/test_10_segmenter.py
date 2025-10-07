@@ -275,6 +275,36 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         rec.flush(3)
 
 
+def test_motion_payload_includes_offsets(monkeypatch, tmp_path):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.event_started_epoch = 100.0
+        frame_span = max(1, int(round(2000 / segmenter.FRAME_MS)))
+        rec.frames_written = frame_span
+        rec._current_motion_event_start = 101.25
+        rec._current_motion_event_end = 101.75
+
+        payload = rec._current_motion_event_payload(duration_seconds=2.0)
+        assert payload["motion_started_epoch"] == pytest.approx(101.25)
+        assert payload["motion_released_epoch"] == pytest.approx(101.75)
+        assert payload["motion_trigger_offset_seconds"] == pytest.approx(1.25)
+        assert payload["motion_release_offset_seconds"] == pytest.approx(1.75)
+    finally:
+        rec.flush(0)
+
+
 def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"

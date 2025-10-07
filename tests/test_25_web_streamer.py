@@ -115,6 +115,23 @@ def test_handle_run_guard_discards_none_callbacks(caplog):
         loop.close()
 
 
+def test_handle_run_guard_ignores_cancelled_handles(caplog):
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        handle = loop.call_soon(lambda: None)
+        handle.cancel()
+
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            handle._run()
+
+        assert "Discarded asyncio handle with None callback" not in caplog.text
+    finally:
+        loop.close()
+
+
 def test_selector_transport_guard_handles_missing_protocol(caplog):
     loop = asyncio.new_event_loop()
     try:

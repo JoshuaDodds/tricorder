@@ -152,6 +152,8 @@ def _install_handle_run_guard() -> None:
     @functools.wraps(handle_run)
     def safe_run(self: asyncio.Handle) -> None:  # type: ignore[name-defined]
         if self._callback is None:
+            if getattr(self, "_cancelled", False):
+                return
             asyncio_log.error(
                 "Discarded asyncio handle with None callback; args=%r", self._args, stack_info=True
             )
@@ -2065,6 +2067,11 @@ def _scan_recordings_worker(
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
     log = logging.getLogger("web_streamer")
 
+    def _float_or_none(value: object) -> float | None:
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+        return None
+
     def _iter_candidate_files() -> Iterable[Path]:
         def _on_error(error: OSError) -> None:
             location = getattr(error, "filename", None) or recordings_root
@@ -2182,6 +2189,25 @@ def _scan_recordings_worker(
         else:
             duration = _probe_duration(path, stat)
 
+        trigger_offset = _float_or_none(
+            waveform_meta.get("trigger_offset_seconds") if waveform_meta else None
+        )
+        release_offset = _float_or_none(
+            waveform_meta.get("release_offset_seconds") if waveform_meta else None
+        )
+        motion_trigger_offset = _float_or_none(
+            waveform_meta.get("motion_trigger_offset_seconds") if waveform_meta else None
+        )
+        motion_release_offset = _float_or_none(
+            waveform_meta.get("motion_release_offset_seconds") if waveform_meta else None
+        )
+        motion_started_epoch = _float_or_none(
+            waveform_meta.get("motion_started_epoch") if waveform_meta else None
+        )
+        motion_released_epoch = _float_or_none(
+            waveform_meta.get("motion_released_epoch") if waveform_meta else None
+        )
+
         rel_posix = rel.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
@@ -2216,6 +2242,12 @@ def _scan_recordings_worker(
                 "transcript_event_type": transcript_event_type,
                 "transcript_updated": transcript_updated,
                 "transcript_updated_iso": transcript_updated_iso,
+                "trigger_offset_seconds": trigger_offset,
+                "release_offset_seconds": release_offset,
+                "motion_trigger_offset_seconds": motion_trigger_offset,
+                "motion_release_offset_seconds": motion_release_offset,
+                "motion_started_epoch": motion_started_epoch,
+                "motion_released_epoch": motion_released_epoch,
             }
         )
 
@@ -3986,6 +4018,36 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "duration_seconds": (
                     float(entry.get("duration"))
                     if isinstance(entry.get("duration"), (int, float))
+                    else None
+                ),
+                "trigger_offset_seconds": (
+                    float(entry.get("trigger_offset_seconds"))
+                    if isinstance(entry.get("trigger_offset_seconds"), (int, float))
+                    else None
+                ),
+                "release_offset_seconds": (
+                    float(entry.get("release_offset_seconds"))
+                    if isinstance(entry.get("release_offset_seconds"), (int, float))
+                    else None
+                ),
+                "motion_trigger_offset_seconds": (
+                    float(entry.get("motion_trigger_offset_seconds"))
+                    if isinstance(entry.get("motion_trigger_offset_seconds"), (int, float))
+                    else None
+                ),
+                "motion_release_offset_seconds": (
+                    float(entry.get("motion_release_offset_seconds"))
+                    if isinstance(entry.get("motion_release_offset_seconds"), (int, float))
+                    else None
+                ),
+                "motion_started_epoch": (
+                    float(entry.get("motion_started_epoch"))
+                    if isinstance(entry.get("motion_started_epoch"), (int, float))
+                    else None
+                ),
+                "motion_released_epoch": (
+                    float(entry.get("motion_released_epoch"))
+                    if isinstance(entry.get("motion_released_epoch"), (int, float))
                     else None
                 ),
                 "waveform_path": (
