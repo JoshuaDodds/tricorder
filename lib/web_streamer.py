@@ -590,8 +590,14 @@ _AUDIO_FRAME_LENGTHS = {10, 20, 30}
 _STREAMING_MODES = {"hls", "webrtc"}
 _TRANSCRIPTION_ENGINES = {"vosk"}
 AUDIO_FILTER_STAGE_SPECS: dict[str, dict[str, tuple[float | None, float | None]]] = {
+    "denoise": {
+        "noise_floor_db": (-80.0, 0.0),
+    },
     "highpass": {
         "cutoff_hz": (20.0, 2000.0),
+    },
+    "lowpass": {
+        "cutoff_hz": (1000.0, 20000.0),
     },
     "notch": {
         "freq_hz": (20.0, 20000.0),
@@ -605,8 +611,18 @@ AUDIO_FILTER_STAGE_SPECS: dict[str, dict[str, tuple[float | None, float | None]]
     },
 }
 
+AUDIO_FILTER_STAGE_ENUMS: dict[str, dict[str, set[str]]] = {
+    "denoise": {"type": {"afftdn"}},
+}
+
 AUDIO_FILTER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "denoise": {
+        "enabled": False,
+        "type": "afftdn",
+        "noise_floor_db": -30.0,
+    },
     "highpass": {"enabled": False, "cutoff_hz": 90.0},
+    "lowpass": {"enabled": False, "cutoff_hz": 10000.0},
     "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
     "spectral_gate": {
         "enabled": False,
@@ -794,6 +810,16 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
                     if max_value is not None and numeric > max_value:
                         numeric = float(max_value)
                     target[field_name] = numeric
+                enum_specs = AUDIO_FILTER_STAGE_ENUMS.get(key, {})
+                for enum_name, allowed_values in enum_specs.items():
+                    if enum_name not in payload:
+                        continue
+                    raw_value = payload.get(enum_name)
+                    if not isinstance(raw_value, str):
+                        continue
+                    normalized = raw_value.strip().lower()
+                    if normalized in allowed_values:
+                        target[enum_name] = normalized
             extra_filters = filters.get("filters")
             if isinstance(extra_filters, Sequence) and not isinstance(extra_filters, (str, bytes)):
                 copied = _copy_filter_stage_sequence(extra_filters)
@@ -1354,6 +1380,23 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
                 )
                 if candidate is not None:
                     target[field_name] = candidate
+            enum_specs = AUDIO_FILTER_STAGE_ENUMS.get(stage_key, {})
+            for enum_name, allowed_values in enum_specs.items():
+                if enum_name not in stage_payload:
+                    continue
+                raw_value = stage_payload.get(enum_name)
+                if not isinstance(raw_value, str):
+                    errors.append(
+                        f"filter_chain.{stage_key}.{enum_name} must be one of: {', '.join(sorted(allowed_values))}"
+                    )
+                    continue
+                normalized_value = raw_value.strip().lower()
+                if normalized_value not in allowed_values:
+                    errors.append(
+                        f"filter_chain.{stage_key}.{enum_name} must be one of: {', '.join(sorted(allowed_values))}"
+                    )
+                    continue
+                target[enum_name] = normalized_value
         filters_list = filters_payload.get("filters") if isinstance(filters_payload, dict) else None
         if isinstance(filters_list, Sequence) and not isinstance(filters_list, (str, bytes)):
             stages["filters"] = _copy_filter_stage_sequence(filters_list)

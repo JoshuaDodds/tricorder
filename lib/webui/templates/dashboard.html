@@ -1093,6 +1093,34 @@
               </p>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
+                  <input id="audio-filter-denoise-enabled" type="checkbox" />
+                  <label for="audio-filter-denoise-enabled">FFT denoise</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-denoise-type">Algorithm</label>
+                  <select id="audio-filter-denoise-type">
+                    <option value="afftdn">afftdn (FFT noise reducer)</option>
+                  </select>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-denoise-floor">Noise floor</label>
+                  <input
+                    id="audio-filter-denoise-floor"
+                    type="range"
+                    min="-60"
+                    max="0"
+                    step="1"
+                    value="-30"
+                  />
+                  <span id="audio-filter-denoise-floor-value" class="filter-value" aria-live="off">-30&nbsp;dB</span>
+                </div>
+                <p class="field-description">
+                  Broadband reduction tuned for steady HVAC or hiss beds. Raise the floor toward 0&nbsp;dB to keep more ambience,
+                  or lower toward −40&nbsp;dB to clamp harder.
+                </p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
                   <input id="audio-filter-highpass-enabled" type="checkbox" />
                   <label for="audio-filter-highpass-enabled">High-pass filter</label>
                 </div>
@@ -1111,6 +1139,27 @@
                 <p class="field-description">
                   Roll off sub-bass rumble from HVAC, footsteps, or desk bumps. Sweep between 80–120&nbsp;Hz; stop just before the
                   voices you care about start to thin out.
+                </p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-lowpass-enabled" type="checkbox" />
+                  <label for="audio-filter-lowpass-enabled">Low-pass filter</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-lowpass-cutoff">Cutoff</label>
+                  <input
+                    id="audio-filter-lowpass-cutoff"
+                    type="range"
+                    min="1000"
+                    max="20000"
+                    step="100"
+                    value="10000"
+                  />
+                  <span id="audio-filter-lowpass-cutoff-value" class="filter-value" aria-live="off">10&nbsp;kHz</span>
+                </div>
+                <p class="field-description">
+                  Trim brittle hiss or lighting buzz above the vocal band. Leave off unless the room has distracting top-end noise.
                 </p>
               </div>
               <div class="settings-field filter-field">
