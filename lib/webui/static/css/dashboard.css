@@ -2772,6 +2772,83 @@ body[data-scroll-locked="true"] {
   flex-wrap: wrap;
 }
 
+.cell-actions {
+  position: relative;
+}
+
+.mobile-actions {
+  display: none;
+}
+
+.mobile-actions-toggle {
+  width: 100%;
+  justify-content: center;
+  padding: 0.45rem 0.75rem;
+}
+
+.mobile-actions-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.35rem;
+  background: var(--surface);
+  border: 1px solid var(--table-row-border);
+  border-radius: 0.75rem;
+  box-shadow: 0 22px 44px -24px rgba(15, 23, 42, 0.35);
+  min-width: 11rem;
+  z-index: 40;
+}
+
+.mobile-actions-menu[hidden] {
+  display: none;
+}
+
+.mobile-actions-item {
+  border: 0;
+  background: transparent;
+  border-radius: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-actions-item:hover,
+.mobile-actions-item:focus {
+  outline: none;
+  background: var(--surface-soft);
+}
+
+.mobile-actions-item.danger {
+  color: var(--danger);
+}
+
+.mobile-actions-item.danger:hover,
+.mobile-actions-item.danger:focus {
+  background: var(--danger-bg);
+}
+
+.mobile-actions-menu-open {
+  animation: mobile-menu-fade 160ms ease-out;
+}
+
+@keyframes mobile-menu-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .action-buttons button,
 .action-buttons a {
   border-radius: 999px;
@@ -3245,17 +3322,26 @@ body[data-theme="light"] .record-in-progress {
     display: flex;
   }
 
-  .action-buttons {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.5rem;
+  .action-buttons--interactive {
+    display: none;
+  }
+
+  .mobile-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
     width: 100%;
   }
 
-  .action-buttons button,
-  .action-buttons a {
-    justify-content: center;
-    width: 100%;
+  .mobile-actions-toggle {
+    display: inline-flex;
+  }
+
+  .mobile-actions-menu {
+    left: 0;
+    right: 0;
+    margin-inline: auto;
+    width: min(14rem, 100%);
   }
 
   #recordings-table tbody tr:hover {
