@@ -115,11 +115,54 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 
 ---
 
-## Branching model
+### Branching Model
 
-Active recorder fixes graduate through the `staging-bugs-and-adjustments` branch before landing in release branches. When opening
-maintenance PRs (like the configuration comment preservation work) target `staging-bugs-and-adjustments` so reviewers see diffs
-against the latest staging state rather than the mainline release snapshot.
+The repository follows a **staging-first** workflow that mirrors production while allowing controlled integration and testing.
+
+- **`main`**  
+  Represents the production branch. All code in `main` is considered deployable and reflects what is running in production.
+
+- **`staging`**  
+  Always kept in sync with `main`. It acts as a production-equivalent environment for final validation before release.  
+  All feature and fix branches are opened against `staging` rather than `main`.
+
+- **Feature Branches**  
+  Create feature branches from `staging` for individual changes or fixes. These branches are merged back into `staging` once reviewed and approved.
+
+- **Epic / Pre-Integration Branches**  
+  For large or multi-contributor efforts, create a dedicated **pre-integration branch** from `staging`.  
+  This branch serves as a temporary integration point for multiple related feature branches.  
+  Once the combined work is stable and tested, the epic branch is merged into `staging` for final integration and testing with upstream `main`.
+
+- **Release Flow**  
+  1. Feature branches → `staging`  
+  2. Final verification → merge `staging` → `main`  
+  3. Deploy from `main`
+
+```mermaid
+gitGraph:
+    commit id: "main (prod)"
+    branch staging
+    commit id: "sync with main"
+    branch feature/awesome-change
+    commit id: "feature work"
+    checkout staging
+    merge feature/awesome-change id: "merge feature"
+    branch epic/big-initiative
+    commit id: "epic setup"
+    branch feature/subtask-A
+    commit id: "subtask A"
+    checkout epic/big-initiative
+    merge feature/subtask-A id: "integrate A"
+    branch feature/subtask-B
+    commit id: "subtask B"
+    checkout epic/big-initiative
+    merge feature/subtask-B id: "integrate B"
+    checkout staging
+    merge epic/big-initiative id: "merge epic"
+    checkout main
+    merge staging id: "release"
+```
 
 ---
 
