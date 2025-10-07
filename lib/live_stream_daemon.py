@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import multiprocessing as mp
 import os
 import signal
@@ -53,6 +54,9 @@ WEBRTC_HISTORY_SECONDS = float(STREAMING_CFG.get("webrtc_history_seconds", 8.0))
 
 AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
+MANUAL_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_record_state.json")
+MANUAL_POLL_INTERVAL = 0.5
+
 ARECORD_CMD = [
     "arecord",
     "-D", AUDIO_DEV,
@@ -68,6 +72,26 @@ ARECORD_CMD = [
 stop_requested = False
 split_requested = False
 p = None
+
+
+def _manual_record_snapshot(path: str) -> tuple[bool, float]:
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return False, 0.0
+    except OSError:
+        return False, 0.0
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False, stat.st_mtime
+    enabled = False
+    if isinstance(data, dict):
+        enabled = bool(data.get("enabled", False))
+    elif isinstance(data, bool):
+        enabled = bool(data)
+    return enabled, stat.st_mtime
 
 
 def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
@@ -372,6 +396,8 @@ def main():
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
 
+    manual_record_enabled, manual_record_mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
+
     try:
         recovery_report = perform_startup_recovery()
         if recovery_report.any_actions():
@@ -461,12 +487,24 @@ def main():
                 time.sleep(5)
                 continue
 
+            manual_record_enabled, manual_record_mtime = _manual_record_snapshot(
+                MANUAL_RECORD_PATH
+            )
             rec = TimelineRecorder()
+            if manual_record_enabled:
+                try:
+                    rec.set_manual_recording(True)
+                except Exception as exc:
+                    print(
+                        f"[live] WARN: failed to enable manual recording mode: {exc!r}",
+                        flush=True,
+                    )
             buf = bytearray()
             frame_idx = 0
             last_frame_time = time.monotonic()
             next_state_poll = 0.0
             filter_chain_error_logged = False
+            next_manual_poll = 0.0
 
             def flush_processed(frames: list[Tuple[bytes, Optional[str]]]) -> None:
                 nonlocal frame_idx, last_frame_time, filter_chain_error_logged
@@ -524,6 +562,20 @@ def main():
                         split_requested = False
 
                 now = time.monotonic()
+                if now >= next_manual_poll:
+                    next_manual_poll = now + MANUAL_POLL_INTERVAL
+                    enabled, mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
+                    if mtime != manual_record_mtime or enabled != manual_record_enabled:
+                        manual_record_enabled = enabled
+                        manual_record_mtime = mtime
+                        try:
+                            rec.set_manual_recording(manual_record_enabled)
+                        except Exception as exc:
+                            print(
+                                f"[live] WARN: failed to update manual recording mode: {exc!r}",
+                                flush=True,
+                            )
+
                 if STREAM_MODE == "hls" and now >= next_state_poll:
                     controller.refresh_from_state()
                     next_state_poll = now + STATE_POLL_INTERVAL
