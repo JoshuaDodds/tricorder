@@ -93,6 +93,7 @@ def _noop_callback(*_args, **_kwargs) -> None:
 
 _HANDLE_RUN_GUARD_INSTALLED = False
 _SELECTOR_TRANSPORT_GUARD_INSTALLED = False
+_NONE_HANDLE_LOG_REPORTED = False
 
 
 def _install_loop_callback_guard(
@@ -116,15 +117,16 @@ def _install_loop_callback_guard(
         def safe(self, callback, *args, **kwargs):
             nonlocal reported
             if callback is None:
+                log_kwargs = {"stack_info": not reported}
                 if not reported:
-                    log.error(
+                    log.warning(
                         "Ignored %s(None) scheduling attempt; replacing with no-op.",
                         method_name,
-                        stack_info=True,
+                        **log_kwargs,
                     )
                     reported = True
                 else:
-                    log.error(
+                    log.debug(
                         "Ignored %s(None) scheduling attempt; replacing with no-op.",
                         method_name,
                     )
@@ -151,18 +153,35 @@ def _install_handle_run_guard() -> None:
 
     @functools.wraps(handle_run)
     def safe_run(self: asyncio.Handle) -> None:  # type: ignore[name-defined]
+        global _NONE_HANDLE_LOG_REPORTED
         if self._callback is None:
             if getattr(self, "_cancelled", False):
                 return
-            asyncio_log.error(
-                "Discarded asyncio handle with None callback; args=%r", self._args, stack_info=True
-            )
+            if not _NONE_HANDLE_LOG_REPORTED:
+                asyncio_log.warning(
+                    "Discarded asyncio handle with None callback; args=%r",
+                    self._args,
+                    stack_info=True,
+                )
+                _NONE_HANDLE_LOG_REPORTED = True
+            else:
+                asyncio_log.debug(
+                    "Discarded asyncio handle with None callback; args=%r",
+                    self._args,
+                )
             self._callback = _noop_callback
             self._args = ()
         return handle_run(self)
 
     setattr(asyncio.Handle, "_run", safe_run)
     _HANDLE_RUN_GUARD_INSTALLED = True
+
+
+def _reset_asyncio_guard_counters_for_tests() -> None:
+    """Reset guard state so pytest cases can assert initial logging behavior."""
+
+    global _NONE_HANDLE_LOG_REPORTED
+    _NONE_HANDLE_LOG_REPORTED = False
 
 
 def _install_selector_transport_guard(log: logging.Logger) -> None:
