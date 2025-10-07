@@ -3,9 +3,7 @@
 
 import json
 import queue
-import smtplib
 import socket
-import ssl
 import threading
 import time
 from dataclasses import dataclass, field
@@ -29,6 +27,32 @@ def _as_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [item.strip() for item in value.split(",") if item.strip()]
     return []
+
+
+def _load_email_modules(require_tls: bool) -> tuple[Any | None, Any | None]:
+    """Lazily import smtplib/ssl only when email delivery is needed."""
+
+    try:
+        import smtplib as smtplib_mod
+    except ImportError:
+        print(
+            "[notifications] WARN: email notifications disabled (smtplib missing)",
+            flush=True,
+        )
+        return None, None
+
+    try:
+        import ssl as ssl_mod
+    except ImportError:
+        if require_tls:
+            print(
+                "[notifications] WARN: email notifications require TLS but ssl module is missing",
+                flush=True,
+            )
+            return None, None
+        ssl_mod = None
+
+    return smtplib_mod, ssl_mod
 
 
 @dataclass
@@ -254,17 +278,26 @@ class NotificationDispatcher:
         message["Subject"] = subject
         message.set_content(body)
 
+        require_tls = use_ssl or use_tls
+        smtplib_mod, ssl_mod = _load_email_modules(require_tls)
+        if smtplib_mod is None:
+            return
+
         try:
             if use_ssl:
-                context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(
+                if ssl_mod is None:
+                    return
+                context = ssl_mod.create_default_context()
+                with smtplib_mod.SMTP_SSL(
                     smtp_host, smtp_port, timeout=timeout, context=context
                 ) as smtp:
                     self._smtp_login_and_send(smtp, username, password, message)
             else:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=timeout) as smtp:
+                with smtplib_mod.SMTP(smtp_host, smtp_port, timeout=timeout) as smtp:
                     if use_tls:
-                        context = ssl.create_default_context()
+                        if ssl_mod is None:
+                            return
+                        context = ssl_mod.create_default_context()
                         smtp.starttls(context=context)
                     self._smtp_login_and_send(smtp, username, password, message)
         except Exception as exc:
@@ -275,7 +308,7 @@ class NotificationDispatcher:
 
     @staticmethod
     def _smtp_login_and_send(
-        smtp: smtplib.SMTP, username: str, password: Any, message: EmailMessage
+        smtp: Any, username: str, password: Any, message: EmailMessage
     ) -> None:
         if username and password:
             smtp.login(username, password)
