@@ -24,7 +24,9 @@ def test_chain_disabled_when_all_stages_off():
     chain = AudioFilterChain(
         {
             "enabled": True,
+            "denoise": {"enabled": False},
             "highpass": {"enabled": False},
+            "lowpass": {"enabled": False},
             "notch": {"enabled": False},
             "spectral_gate": {"enabled": False},
         }
@@ -33,7 +35,9 @@ def test_chain_disabled_when_all_stages_off():
 
     cfg = {
         "enabled": True,
+        "denoise": {"enabled": False},
         "highpass": {"enabled": False},
+        "lowpass": {"enabled": False},
         "notch": {"enabled": False},
         "spectral_gate": {"enabled": False},
     }
@@ -44,7 +48,9 @@ def test_highpass_attenuates_rumble():
     chain = AudioFilterChain(
         {
             "enabled": True,
+            "denoise": {"enabled": False},
             "highpass": {"enabled": True, "cutoff_hz": 70.0},
+            "lowpass": {"enabled": False},
             "notch": {"enabled": False},
             "spectral_gate": {"enabled": False},
         }
@@ -69,7 +75,9 @@ def test_notch_suppresses_mains_hum():
     chain = AudioFilterChain(
         {
             "enabled": True,
+            "denoise": {"enabled": False},
             "highpass": {"enabled": False},
+            "lowpass": {"enabled": False},
             "notch": {"enabled": True, "freq_hz": 60.0, "quality": 30.0},
             "spectral_gate": {"enabled": False},
         }
@@ -111,7 +119,9 @@ def test_spectral_gate_reduces_stationary_noise():
     chain = AudioFilterChain(
         {
             "enabled": True,
+            "denoise": {"enabled": False},
             "highpass": {"enabled": False},
+            "lowpass": {"enabled": False},
             "notch": {"enabled": False},
             "spectral_gate": {
                 "enabled": True,
@@ -142,7 +152,9 @@ def test_spectral_gate_preserves_transient_signal_after_warmup():
     chain = AudioFilterChain(
         {
             "enabled": True,
+            "denoise": {"enabled": False},
             "highpass": {"enabled": False},
+            "lowpass": {"enabled": False},
             "notch": {"enabled": False},
             "spectral_gate": {
                 "enabled": True,
@@ -181,3 +193,75 @@ def test_spectral_gate_preserves_transient_signal_after_warmup():
     # The gate should not collapse the signal to the reduction floor once
     # it has a noise profile; keep at least 60% of the original RMS.
     assert filtered_rms > original_rms * 0.6
+
+
+def test_lowpass_reduces_high_frequency_energy():
+    chain = AudioFilterChain(
+        {
+            "enabled": True,
+            "denoise": {"enabled": False},
+            "highpass": {"enabled": False},
+            "lowpass": {"enabled": True, "cutoff_hz": 4000.0},
+            "notch": {"enabled": False},
+            "spectral_gate": {"enabled": False},
+        }
+    )
+
+    t = np.arange(FRAME_SAMPLES * 12)
+    low = 0.5 * np.sin(2 * math.pi * 1000.0 * t / SAMPLE_RATE)
+    high = 0.5 * np.sin(2 * math.pi * 12000.0 * t / SAMPLE_RATE)
+    signal = low + high
+
+    frames = [float_to_pcm(signal[i : i + FRAME_SAMPLES]) for i in range(0, len(signal), FRAME_SAMPLES)]
+    filtered_chunks = []
+    for frame in frames:
+        out = chain.process(SAMPLE_RATE, FRAME_BYTES, frame)
+        filtered_chunks.append(pcm_to_float(out))
+
+    filtered = np.concatenate(filtered_chunks[2:])
+    reference = signal[FRAME_SAMPLES * 2 : FRAME_SAMPLES * 2 + filtered.size]
+
+    def peak_at(samples: np.ndarray, freq: float) -> float:
+        window = np.hanning(samples.size)
+        spec = np.fft.rfft(samples * window)
+        freqs = np.fft.rfftfreq(samples.size, d=1.0 / SAMPLE_RATE)
+        idx = np.argmin(np.abs(freqs - freq))
+        return np.abs(spec[idx])
+
+    filtered_high = peak_at(filtered, 12000.0)
+    original_high = peak_at(reference, 12000.0)
+    assert filtered_high < original_high * 0.35
+
+    filtered_low = peak_at(filtered, 1000.0)
+    original_low = peak_at(reference, 1000.0)
+    assert filtered_low > original_low * 0.7
+
+
+def test_denoise_attenuates_broadband_noise():
+    chain = AudioFilterChain(
+        {
+            "enabled": True,
+            "denoise": {
+                "enabled": True,
+                "type": "afftdn",
+                "noise_floor_db": -25.0,
+            },
+            "highpass": {"enabled": False},
+            "lowpass": {"enabled": False},
+            "notch": {"enabled": False},
+            "spectral_gate": {"enabled": False},
+        }
+    )
+
+    rng = np.random.default_rng(seed=7)
+    noise = 0.06 * rng.standard_normal(FRAME_SAMPLES * 16)
+    frames = [float_to_pcm(noise[i : i + FRAME_SAMPLES]) for i in range(0, len(noise), FRAME_SAMPLES)]
+    filtered_chunks = []
+    for frame in frames:
+        out = chain.process(SAMPLE_RATE, FRAME_BYTES, frame)
+        filtered_chunks.append(pcm_to_float(out))
+
+    filtered = np.concatenate(filtered_chunks)
+    original_rms = np.sqrt(np.mean(noise**2))
+    filtered_rms = np.sqrt(np.mean(filtered**2))
+    assert filtered_rms < original_rms * 0.35

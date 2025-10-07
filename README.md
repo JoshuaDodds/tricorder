@@ -201,7 +201,9 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 
 Open the ☰ menu → **Recorder configuration** → **Filters** to adjust the capture-time filter chain. The controls map directly to `audio.filter_chain` in `config.yaml`; the UI saves changes back to the YAML file while preserving inline comments. Suggested workflow:
 
+- **FFT denoise** – Enable the `afftdn` stage when the room has steady HVAC or fan hiss. Raise the noise floor toward 0&nbsp;dB to keep ambience, or lower toward −40&nbsp;dB for heavier suppression.
 - **High-pass filter** – Sweep the cutoff between 80–120&nbsp;Hz to remove HVAC/handling rumble. Stop once speech starts losing warmth; this keeps the VAD from chasing sub-bass energy.
+- **Low-pass filter** – Pull the cutoff down to 8–12&nbsp;kHz when overhead lights or electronics add brittle top-end noise. Leave disabled if the highs already sound natural.
 - **Notch filter** – Target persistent hums or whistles (50/60&nbsp;Hz and harmonics). Keep Q in the 20–40 range for surgical cuts and only enable the stages you need.
 - **Spectral noise gate** – This is the dashboard’s “noise gating” control. Start with sensitivity between 1.2–1.8 and reduction between −12 to −24&nbsp;dB; lower sensitivity numbers clamp harder. Use the **Noise update** slider (0.05–0.2) to decide how quickly the gate learns new noise and **Noise decay** (0.9–0.98) to smooth releases.
 - **Calibration helpers** – Enable the quick actions when you want the dashboard to capture a fresh noise profile or launch `room_tuner.py` for gain recalibration.
@@ -210,7 +212,7 @@ Waveform JSON is loaded on demand and cached client-side. Missing or stale sidec
 
 #### Filter chain coverage and segmenter denoise toggles
 
-The live recorder loads `audio.filter_chain` once on startup and runs the configured stages inside `lib.live_stream_daemon` before every frame is handed to the HLS encoder, the WebRTC ring buffer, or the `TimelineRecorder`. In practice that means any enabled high-pass, notch, or spectral gate settings shape the signal you hear on both live streaming backends *and* the audio that ultimately reaches the encoder. When all stages are disabled the worker bypasses the chain to avoid unnecessary CPU work.
+The live recorder loads `audio.filter_chain` once on startup and runs the configured stages inside `lib.live_stream_daemon` before every frame is handed to the HLS encoder, the WebRTC ring buffer, or the `TimelineRecorder`. In practice that means any enabled denoise, high-pass, low-pass, or notch settings (plus the spectral gate) shape the signal you hear on both live streaming backends *and* the audio that ultimately reaches the encoder. When all stages are disabled the worker bypasses the chain to avoid unnecessary CPU work.
 
 `segmenter.use_rnnoise` and `segmenter.use_noisereduce` operate on a different path: they only denoise the analysis frames that drive RMS/VAD decisions. Those toggles are ignored unless `segmenter.denoise_before_vad` is set to `true`, and even then they do not modify the captured audio. Expect audible changes only when the filter chain is engaged; enable the segmenter denoise options when you specifically need help with activity detection in a noisy room.
 
