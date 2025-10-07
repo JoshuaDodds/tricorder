@@ -594,6 +594,29 @@ body[data-theme="light"] .app-menu-toggle {
   transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
+.indicator-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(251, 146, 60, 0.18);
+  color: var(--warning);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.indicator-tag[hidden] {
+  display: none;
+}
+
+.indicator-tag.motion-tag {
+  background: rgba(251, 146, 60, 0.24);
+  color: var(--warning);
+}
+
 .recording-indicator[data-state="active"] {
   color: #fca5a5;
 }
@@ -2808,6 +2831,11 @@ body[data-scroll-locked="true"] {
   color: var(--danger);
 }
 
+.meta-pill.motion-pill {
+  background: rgba(251, 146, 60, 0.18);
+  color: var(--warning);
+}
+
 .record-mobile-subtext {
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -2834,6 +2862,11 @@ body[data-scroll-locked="true"] {
 .badge.badge-recording {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+.badge.badge-motion {
+  background: rgba(251, 146, 60, 0.18);
+  color: var(--warning);
 }
 
 .record-in-progress {
