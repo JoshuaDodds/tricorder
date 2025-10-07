@@ -14,7 +14,7 @@ You will probably mostly be interacting with:
 Naming discipline when tickets are referenced:
 - Detect Jira keys in the format `<PROJECT>-<int>` using regex `\b[A-Z][A-Z0-9]+-\d+\b` across instructions, attachments, or assets.
 - If a key is present, immediately transition the Jira issue from **To Do** to **In Progress**, comment “Agent started work on this ticket.”, assign the ticket to yourself, and log setup time.
-- If no key is present, create a new issue for this request using the API and include Title and description and set any other appropriate fields on the issue.
+- If no key is present, create a new issue for this request using the API and include Title and description, and set the sprint field to the currently active sprint so it shows on the board. Set any other appropriate fields on the issue that enrich transparency.
 - When a key exists, always create the working branch and PR title prefixed with that identifier (e.g., `TR-1234-description`); recommended branch format: `tr-<num>-<short-slug>`.
 - When a key exists always use the Jira key in the PR title and your own Task name in the CODEX web ui task list.  
 - Branch names must begin with the Jira key (e.g., `TR-1234-description`).
