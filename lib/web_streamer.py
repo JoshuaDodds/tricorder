@@ -152,6 +152,8 @@ def _install_handle_run_guard() -> None:
     @functools.wraps(handle_run)
     def safe_run(self: asyncio.Handle) -> None:  # type: ignore[name-defined]
         if self._callback is None:
+            if getattr(self, "_cancelled", False):
+                return
             asyncio_log.error(
                 "Discarded asyncio handle with None callback; args=%r", self._args, stack_info=True
             )
