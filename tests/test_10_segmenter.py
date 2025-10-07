@@ -275,6 +275,36 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         rec.flush(3)
 
 
+def test_motion_payload_includes_offsets(monkeypatch, tmp_path):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.event_started_epoch = 100.0
+        frame_span = max(1, int(round(2000 / segmenter.FRAME_MS)))
+        rec.frames_written = frame_span
+        rec._current_motion_event_start = 101.25
+        rec._current_motion_event_end = 101.75
+
+        payload = rec._current_motion_event_payload(duration_seconds=2.0)
+        assert payload["motion_started_epoch"] == pytest.approx(101.25)
+        assert payload["motion_released_epoch"] == pytest.approx(101.75)
+        assert payload["motion_trigger_offset_seconds"] == pytest.approx(1.25)
+        assert payload["motion_release_offset_seconds"] == pytest.approx(1.75)
+    finally:
+        rec.flush(0)
+
+
 def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"
@@ -1152,10 +1182,12 @@ def test_encoder_worker_pins_affinity(monkeypatch):
     def fake_run(cmd, *, capture_output, text, check, env, preexec_fn):  # noqa: D401 - signature matches subprocess
         calls["cmd"] = cmd
         calls["preexec_fn"] = preexec_fn
+        calls["env"] = env
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(segmenter.subprocess, "run", fake_run)
     monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "MIN_CLIP_SECONDS", 1.75)
 
     job_queue: queue.Queue = queue.Queue()
     worker = segmenter._EncoderWorker(job_queue)
@@ -1167,6 +1199,7 @@ def test_encoder_worker_pins_affinity(monkeypatch):
     assert not worker.is_alive(), "worker should exit after sentinel"
     assert calls["cmd"][0] == "/bin/true"
     assert calls["preexec_fn"] is segmenter._set_single_core_affinity
+    assert calls["env"].get("ENCODER_MIN_CLIP_SECONDS") == "1.75"
 
 
 def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
@@ -1212,3 +1245,112 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert not wav_path.exists(), "temporary WAV should be removed"
+    assert existing_opus.exists(), "existing clip should remain when threshold is disabled"
+
+
+def test_encode_script_discards_short_new_clips(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "bin" / "encode_and_store.sh"
+
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+
+    ffmpeg_stub = stub_bin / "ffmpeg"
+    ffmpeg_stub.write_text(
+        "#!/usr/bin/env bash\nout=\"${@: -1}\"\nmkdir -p \"$(dirname \"$out\")\"\nprintf 'fake' > \"$out\"\nexit 0\n",
+        encoding="utf-8",
+    )
+    ffmpeg_stub.chmod(0o755)
+
+    ffprobe_stub = stub_bin / "ffprobe"
+    ffprobe_stub.write_text("#!/usr/bin/env bash\necho 0.5\nexit 0\n", encoding="utf-8")
+    ffprobe_stub.chmod(0o755)
+
+    systemd_stub = stub_bin / "systemd-cat"
+    systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    systemd_stub.chmod(0o755)
+
+    wav_path = tmp_path / "capture.wav"
+    wav_path.write_bytes(b"wavdata")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}:{env['PATH']}"
+    env["PYTHONPATH"] = str(repo_root)
+    env["ENCODER_PYTHON"] = sys.executable
+    env["DENOISE"] = "0"
+    env["STREAMING_CONTAINER_FORMAT"] = "opus"
+    env["STREAMING_EXTENSION"] = ".opus"
+    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["ENCODER_MIN_CLIP_SECONDS"] = "1.0"
+
+    result = subprocess.run(
+        [str(script_path), str(wav_path), "sample"],
+        env=env,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not wav_path.exists(), "temporary WAV should be removed"
+    recordings_dir = tmp_path / "recordings"
+    opus_files = list(recordings_dir.rglob("*.opus"))
+    assert not opus_files, "short clips should be discarded"
+    waveform_files = list(recordings_dir.rglob("*.waveform.json"))
+    transcript_files = list(recordings_dir.rglob("*.transcript.json"))
+    assert not waveform_files, "waveforms should not be written for discarded clips"
+    assert not transcript_files, "transcripts should not be written for discarded clips"
+
+
+def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "bin" / "encode_and_store.sh"
+
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+
+    ffmpeg_stub = stub_bin / "ffmpeg"
+    ffmpeg_stub.write_text("#!/usr/bin/env bash\necho 'ffmpeg should not run' >&2\nexit 99\n", encoding="utf-8")
+    ffmpeg_stub.chmod(0o755)
+
+    ffprobe_stub = stub_bin / "ffprobe"
+    ffprobe_stub.write_text("#!/usr/bin/env bash\necho 0.6\nexit 0\n", encoding="utf-8")
+    ffprobe_stub.chmod(0o755)
+
+    systemd_stub = stub_bin / "systemd-cat"
+    systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    systemd_stub.chmod(0o755)
+
+    existing_opus = tmp_path / "stream.opus"
+    existing_opus.write_bytes(b"opus")
+    waveform = existing_opus.with_suffix(existing_opus.suffix + ".waveform.json")
+    waveform.write_text("{}", encoding="utf-8")
+    transcript = existing_opus.with_suffix(existing_opus.suffix + ".transcript.json")
+    transcript.write_text("{}", encoding="utf-8")
+    wav_path = tmp_path / "capture.wav"
+    wav_path.write_bytes(b"wavdata")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}:{env['PATH']}"
+    env["PYTHONPATH"] = str(repo_root)
+    env["ENCODER_PYTHON"] = sys.executable
+    env["DENOISE"] = "1"
+    env["STREAMING_CONTAINER_FORMAT"] = "opus"
+    env["STREAMING_EXTENSION"] = ".opus"
+    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["ENCODER_MIN_CLIP_SECONDS"] = "1.0"
+
+    result = subprocess.run(
+        [str(script_path), str(wav_path), "sample", str(existing_opus)],
+        env=env,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not wav_path.exists(), "temporary WAV should be removed"
+    assert not existing_opus.exists(), "short streaming clips should be discarded"
+    assert not waveform.exists(), "waveform sidecar should be removed for short clips"
+    assert not transcript.exists(), "transcript sidecar should be removed for short clips"
+

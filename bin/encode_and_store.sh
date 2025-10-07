@@ -10,6 +10,9 @@ which ffmpeg || echo "[encode] ffmpeg not found"
 
 # Default: denoise ON (override with DENOISE=0 to disable)
 DENOISE="${DENOISE:-1}"
+MIN_CLIP_SECONDS="${ENCODER_MIN_CLIP_SECONDS:-0}"
+FFPROBE_WARNED=0
+LAST_CLIP_DURATION=""
 
 in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1
@@ -36,6 +39,53 @@ run_python_module() {
     return 1
   fi
   "$PYTHON_BIN" -m "$module" "$@"
+}
+
+clip_too_short() {
+  local path="$1"
+  LAST_CLIP_DURATION=""
+  if [[ -z "$path" || ! -f "$path" ]]; then
+    return 1
+  fi
+  if ! awk -v min="$MIN_CLIP_SECONDS" 'BEGIN { exit !(min > 0) }'; then
+    return 1
+  fi
+  if ! command -v ffprobe >/dev/null 2>&1; then
+    if [[ "$FFPROBE_WARNED" -eq 0 ]]; then
+      echo "[encode] ffprobe unavailable; cannot enforce min clip seconds" | systemd-cat -t tricorder
+      FFPROBE_WARNED=1
+    fi
+    return 1
+  fi
+  local duration
+  duration=$(ffprobe -hide_banner -loglevel error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$path" 2>/dev/null | head -n 1 || true)
+  if [[ -z "$duration" ]]; then
+    return 1
+  fi
+  LAST_CLIP_DURATION="$duration"
+  if awk -v dur="$duration" -v min="$MIN_CLIP_SECONDS" 'BEGIN { exit !(min > 0 && dur > 0 && dur < min) }'; then
+    return 0
+  fi
+  return 1
+}
+
+discard_short_clip() {
+  local target="$1"
+  local duration="$LAST_CLIP_DURATION"
+  local formatted_duration="$duration"
+  local formatted_threshold="$MIN_CLIP_SECONDS"
+  if [[ -n "$duration" ]]; then
+    formatted_duration=$(printf '%.3f' "$duration" 2>/dev/null || echo "$duration")
+  fi
+  if [[ -n "$MIN_CLIP_SECONDS" ]]; then
+    formatted_threshold=$(printf '%.3f' "$MIN_CLIP_SECONDS" 2>/dev/null || echo "$MIN_CLIP_SECONDS")
+  fi
+  echo "[encode] Clip duration ${formatted_duration}s below minimum ${formatted_threshold}s; discarding $target" | systemd-cat -t tricorder
+  rm -f "$target"
+  rm -f "$waveform_file" "$transcript_file"
+  rm -f "$in_wav"
+  echo "[encode] Dropped short recording $target" | systemd-cat -t tricorder
+  exit 0
 }
 day="$(date +%Y%m%d)"
 recordings_root="${ENCODER_RECORDINGS_DIR:-/apps/tricorder/recordings}"
@@ -91,6 +141,9 @@ fi
 # - Use application=audio (general content), 20ms frames, VBR on, 48 kbps.
 # - One thread to reduce CPU spikes on the Zero 2 W.
 if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
+  if clip_too_short "$existing_opus"; then
+    discard_short_clip "$existing_opus"
+  fi
   if [[ "${#FILTERS[@]}" -gt 0 ]]; then
     echo "[encode] Streaming encoder provided $existing_opus; applying filters" | systemd-cat -t tricorder
     temp_outdir="$(dirname "$existing_opus")"
@@ -149,6 +202,9 @@ else
       echo "[encode] ffmpeg failed for $in_wav" | systemd-cat -t tricorder
       run_python_module lib.fault_handler encode_failure "$in_wav" "$base"
       exit 1
+  fi
+  if clip_too_short "$outfile"; then
+    discard_short_clip "$outfile"
   fi
 fi
 

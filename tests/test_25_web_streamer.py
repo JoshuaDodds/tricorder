@@ -85,7 +85,7 @@ def test_loop_callback_guard_replaces_none_callbacks(caplog):
     loop = asyncio.new_event_loop()
     try:
         logger = logging.getLogger("web_streamer")
-        with caplog.at_level(logging.ERROR, logger="web_streamer"):
+        with caplog.at_level(logging.WARNING, logger="web_streamer"):
             web_streamer._install_loop_callback_guard(loop, logger)
             loop.call_soon(None)
 
@@ -101,16 +101,35 @@ def test_handle_run_guard_discards_none_callbacks(caplog):
     loop = asyncio.new_event_loop()
     try:
         logger = logging.getLogger("web_streamer")
+        web_streamer._reset_asyncio_guard_counters_for_tests()
         web_streamer._install_loop_callback_guard(loop, logger)
 
         handle = loop.call_soon(lambda: None)
         handle._callback = None
         handle._args = ("sentinel",)
 
-        with caplog.at_level(logging.ERROR, logger="asyncio"):
+        with caplog.at_level(logging.WARNING, logger="asyncio"):
             handle._run()
 
         assert "Discarded asyncio handle with None callback" in caplog.text
+    finally:
+        loop.close()
+
+
+def test_handle_run_guard_ignores_cancelled_handles(caplog):
+    loop = asyncio.new_event_loop()
+    try:
+        logger = logging.getLogger("web_streamer")
+        web_streamer._reset_asyncio_guard_counters_for_tests()
+        web_streamer._install_loop_callback_guard(loop, logger)
+
+        handle = loop.call_soon(lambda: None)
+        handle.cancel()
+
+        with caplog.at_level(logging.WARNING, logger="asyncio"):
+            handle._run()
+
+        assert "Discarded asyncio handle with None callback" not in caplog.text
     finally:
         loop.close()
 

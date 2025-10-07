@@ -115,11 +115,54 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 
 ---
 
-## Branching model
+### Branching Model
 
-Active recorder fixes graduate through the `staging-bugs-and-adjustments` branch before landing in release branches. When opening
-maintenance PRs (like the configuration comment preservation work) target `staging-bugs-and-adjustments` so reviewers see diffs
-against the latest staging state rather than the mainline release snapshot.
+The repository follows a **staging-first** workflow that mirrors production while allowing controlled integration and testing.
+
+- **`main`**  
+  Represents the production branch. All code in `main` is considered deployable and reflects what is running in production.
+
+- **`staging`**  
+  Always kept in sync with `main`. It acts as a production-equivalent environment for final validation before release.  
+  All feature and fix branches are opened against `staging` rather than `main`.
+
+- **Feature Branches**  
+  Create feature branches from `staging` for individual changes or fixes. These branches are merged back into `staging` once reviewed and approved.
+
+- **Epic / Pre-Integration Branches**  
+  For large or multi-contributor efforts, create a dedicated **pre-integration branch** from `staging`.  
+  This branch serves as a temporary integration point for multiple related feature branches.  
+  Once the combined work is stable and tested, the epic branch is merged into `staging` for final integration and testing with upstream `main`.
+
+- **Release Flow**  
+  1. Feature branches → `staging`  
+  2. Final verification → merge `staging` → `main`  
+  3. Deploy from `main`
+
+```mermaid
+gitGraph:
+    commit id: "main (prod)"
+    branch staging
+    commit id: "sync with main"
+    branch feature/awesome-change
+    commit id: "feature work"
+    checkout staging
+    merge feature/awesome-change id: "merge feature"
+    branch epic/big-initiative
+    commit id: "epic setup"
+    branch feature/subtask-A
+    commit id: "subtask A"
+    checkout epic/big-initiative
+    merge feature/subtask-A id: "integrate A"
+    branch feature/subtask-B
+    commit id: "subtask B"
+    checkout epic/big-initiative
+    merge feature/subtask-B id: "integrate B"
+    checkout staging
+    merge epic/big-initiative id: "merge epic"
+    checkout main
+    merge staging id: "release"
+```
 
 ---
 
@@ -384,7 +427,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
-- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain.
+- `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in.
 - Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).

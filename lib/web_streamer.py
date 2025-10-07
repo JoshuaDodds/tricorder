@@ -93,6 +93,7 @@ def _noop_callback(*_args, **_kwargs) -> None:
 
 _HANDLE_RUN_GUARD_INSTALLED = False
 _SELECTOR_TRANSPORT_GUARD_INSTALLED = False
+_NONE_HANDLE_LOG_REPORTED = False
 
 
 def _install_loop_callback_guard(
@@ -116,15 +117,16 @@ def _install_loop_callback_guard(
         def safe(self, callback, *args, **kwargs):
             nonlocal reported
             if callback is None:
+                log_kwargs = {"stack_info": not reported}
                 if not reported:
-                    log.error(
+                    log.warning(
                         "Ignored %s(None) scheduling attempt; replacing with no-op.",
                         method_name,
-                        stack_info=True,
+                        **log_kwargs,
                     )
                     reported = True
                 else:
-                    log.error(
+                    log.debug(
                         "Ignored %s(None) scheduling attempt; replacing with no-op.",
                         method_name,
                     )
@@ -151,16 +153,35 @@ def _install_handle_run_guard() -> None:
 
     @functools.wraps(handle_run)
     def safe_run(self: asyncio.Handle) -> None:  # type: ignore[name-defined]
+        global _NONE_HANDLE_LOG_REPORTED
         if self._callback is None:
-            asyncio_log.error(
-                "Discarded asyncio handle with None callback; args=%r", self._args, stack_info=True
-            )
+            if getattr(self, "_cancelled", False):
+                return
+            if not _NONE_HANDLE_LOG_REPORTED:
+                asyncio_log.warning(
+                    "Discarded asyncio handle with None callback; args=%r",
+                    self._args,
+                    stack_info=True,
+                )
+                _NONE_HANDLE_LOG_REPORTED = True
+            else:
+                asyncio_log.debug(
+                    "Discarded asyncio handle with None callback; args=%r",
+                    self._args,
+                )
             self._callback = _noop_callback
             self._args = ()
         return handle_run(self)
 
     setattr(asyncio.Handle, "_run", safe_run)
     _HANDLE_RUN_GUARD_INSTALLED = True
+
+
+def _reset_asyncio_guard_counters_for_tests() -> None:
+    """Reset guard state so pytest cases can assert initial logging behavior."""
+
+    global _NONE_HANDLE_LOG_REPORTED
+    _NONE_HANDLE_LOG_REPORTED = False
 
 
 def _install_selector_transport_guard(log: logging.Logger) -> None:
@@ -635,6 +656,7 @@ def _segmenter_defaults() -> dict[str, Any]:
         "denoise_before_vad": False,
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
+        "min_clip_seconds": 0.0,
     }
 
 
@@ -823,6 +845,16 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 result[key] = int(value)
+
+        min_clip = raw.get("min_clip_seconds")
+        if isinstance(min_clip, (int, float)) and not isinstance(min_clip, bool):
+            candidate = float(min_clip)
+            if math.isfinite(candidate):
+                if candidate < 0.0:
+                    candidate = 0.0
+                if candidate > 600.0:
+                    candidate = 600.0
+                result["min_clip_seconds"] = candidate
 
         for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
             value = raw.get(key)
@@ -1382,6 +1414,16 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
         candidate = _coerce_int(payload.get(field), field, errors, min_value=min_value, max_value=max_value)
         if candidate is not None:
             normalized[field] = candidate
+
+    min_clip = _coerce_float(
+        payload.get("min_clip_seconds"),
+        "min_clip_seconds",
+        errors,
+        min_value=0.0,
+        max_value=600.0,
+    )
+    if min_clip is not None:
+        normalized["min_clip_seconds"] = min_clip
 
     for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
         normalized[field] = _bool_from_any(payload.get(field))
@@ -2044,6 +2086,11 @@ def _scan_recordings_worker(
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
     log = logging.getLogger("web_streamer")
 
+    def _float_or_none(value: object) -> float | None:
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+        return None
+
     def _iter_candidate_files() -> Iterable[Path]:
         def _on_error(error: OSError) -> None:
             location = getattr(error, "filename", None) or recordings_root
@@ -2161,6 +2208,25 @@ def _scan_recordings_worker(
         else:
             duration = _probe_duration(path, stat)
 
+        trigger_offset = _float_or_none(
+            waveform_meta.get("trigger_offset_seconds") if waveform_meta else None
+        )
+        release_offset = _float_or_none(
+            waveform_meta.get("release_offset_seconds") if waveform_meta else None
+        )
+        motion_trigger_offset = _float_or_none(
+            waveform_meta.get("motion_trigger_offset_seconds") if waveform_meta else None
+        )
+        motion_release_offset = _float_or_none(
+            waveform_meta.get("motion_release_offset_seconds") if waveform_meta else None
+        )
+        motion_started_epoch = _float_or_none(
+            waveform_meta.get("motion_started_epoch") if waveform_meta else None
+        )
+        motion_released_epoch = _float_or_none(
+            waveform_meta.get("motion_released_epoch") if waveform_meta else None
+        )
+
         rel_posix = rel.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
@@ -2195,6 +2261,12 @@ def _scan_recordings_worker(
                 "transcript_event_type": transcript_event_type,
                 "transcript_updated": transcript_updated,
                 "transcript_updated_iso": transcript_updated_iso,
+                "trigger_offset_seconds": trigger_offset,
+                "release_offset_seconds": release_offset,
+                "motion_trigger_offset_seconds": motion_trigger_offset,
+                "motion_release_offset_seconds": motion_release_offset,
+                "motion_started_epoch": motion_started_epoch,
+                "motion_released_epoch": motion_released_epoch,
             }
         )
 
@@ -3965,6 +4037,36 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "duration_seconds": (
                     float(entry.get("duration"))
                     if isinstance(entry.get("duration"), (int, float))
+                    else None
+                ),
+                "trigger_offset_seconds": (
+                    float(entry.get("trigger_offset_seconds"))
+                    if isinstance(entry.get("trigger_offset_seconds"), (int, float))
+                    else None
+                ),
+                "release_offset_seconds": (
+                    float(entry.get("release_offset_seconds"))
+                    if isinstance(entry.get("release_offset_seconds"), (int, float))
+                    else None
+                ),
+                "motion_trigger_offset_seconds": (
+                    float(entry.get("motion_trigger_offset_seconds"))
+                    if isinstance(entry.get("motion_trigger_offset_seconds"), (int, float))
+                    else None
+                ),
+                "motion_release_offset_seconds": (
+                    float(entry.get("motion_release_offset_seconds"))
+                    if isinstance(entry.get("motion_release_offset_seconds"), (int, float))
+                    else None
+                ),
+                "motion_started_epoch": (
+                    float(entry.get("motion_started_epoch"))
+                    if isinstance(entry.get("motion_started_epoch"), (int, float))
+                    else None
+                ),
+                "motion_released_epoch": (
+                    float(entry.get("motion_released_epoch"))
+                    if isinstance(entry.get("motion_released_epoch"), (int, float))
                     else None
                 ),
                 "waveform_path": (
