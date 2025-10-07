@@ -313,7 +313,7 @@ class AudioFilterChain:
             return data
         normalized = data.astype(np.float32, copy=False) / 32768.0
         spectrum = np.fft.rfft(normalized)
-        mags = np.abs(spectrum)
+        mags = np.abs(spectrum) / max(1, normalized.size)
         safe_mags = np.maximum(mags, 1e-8)
         mags_db = 20.0 * np.log10(safe_mags)
         target_db = np.maximum(mags_db, self.denoise_noise_floor_db)
