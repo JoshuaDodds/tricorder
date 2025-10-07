@@ -1014,6 +1014,17 @@ button.small {
   justify-content: flex-end;
 }
 
+#toggle-hidden[data-active="true"] {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: var(--primary, #0891b2);
+}
+
+#toggle-hidden[data-active="true"]:hover {
+  background: rgba(56, 189, 248, 0.26);
+  border-color: rgba(56, 189, 248, 0.85);
+}
+
 .filters-header {
   display: flex;
   align-items: center;
@@ -2772,6 +2783,10 @@ body[data-scroll-locked="true"] {
   flex-wrap: wrap;
 }
 
+.mobile-quick-actions {
+  display: none;
+}
+
 .action-buttons button,
 .action-buttons a {
   border-radius: 999px;
@@ -2867,6 +2882,26 @@ body[data-scroll-locked="true"] {
 .badge.badge-motion {
   background: rgba(251, 146, 60, 0.18);
   color: var(--warning);
+}
+
+.badge.badge-hidden {
+  background: rgba(148, 163, 184, 0.24);
+  color: rgba(71, 85, 105, 0.95);
+}
+
+body[data-theme="dark"] .badge.badge-hidden {
+  background: rgba(71, 85, 105, 0.32);
+  color: rgba(226, 232, 240, 0.92);
+}
+
+tr[data-hidden="true"] {
+  opacity: 0.78;
+}
+
+tr[data-hidden="true"] .record-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 
 .record-in-progress {
@@ -3190,8 +3225,8 @@ body[data-theme="light"] .record-in-progress {
   #recordings-table tbody tr {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 0.5rem 0.75rem;
-    padding: 0.9rem 1rem;
+    gap: 0.45rem 0.65rem;
+    padding: 0.75rem 0.9rem;
     border: 1px solid var(--table-row-border);
     border-radius: 1rem;
     background: var(--surface-soft);
@@ -3243,19 +3278,80 @@ body[data-theme="light"] .record-in-progress {
   .record-mobile-meta,
   .record-mobile-subtext {
     display: flex;
+    gap: 0.35rem;
   }
 
   .action-buttons {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
     gap: 0.5rem;
     width: 100%;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .action-buttons::-webkit-scrollbar {
+    height: 0.35rem;
   }
 
   .action-buttons button,
   .action-buttons a {
+    flex: 0 0 auto;
+    min-width: clamp(6.5rem, 32vw, 10rem);
+    min-height: 2.75rem;
     justify-content: center;
-    width: 100%;
+  }
+
+  .mobile-quick-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(0.4rem);
+    transition: opacity 0.18s ease, transform 0.18s ease, max-height 0.18s ease;
+  }
+
+  .mobile-quick-actions[data-visible="true"] {
+    max-height: 12rem;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .mobile-quick-action {
+    border-radius: 0.85rem;
+    border: 1px solid var(--ghost-border);
+    background: var(--surface-muted);
+    color: var(--text);
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 0.65rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 2.85rem;
+  }
+
+  .mobile-quick-action:active {
+    transform: scale(0.98);
+  }
+
+  .mobile-quick-action[data-variant="primary"] {
+    background: rgba(56, 189, 248, 0.18);
+    border-color: rgba(56, 189, 248, 0.6);
+    color: var(--primary, #0891b2);
+  }
+
+  .mobile-quick-action[data-variant="danger"] {
+    background: var(--danger-bg);
+    border-color: rgba(248, 113, 113, 0.7);
+    color: var(--danger);
   }
 
   #recordings-table tbody tr:hover {
