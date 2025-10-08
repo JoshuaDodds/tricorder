@@ -1007,6 +1007,41 @@ button.small {
   gap: 0.75rem;
 }
 
+.recordings-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.recordings-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.recordings-tab {
+  border: 1px solid var(--ghost-border);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.85rem;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.recordings-tab.active,
+.recordings-tab[data-active="true"] {
+  border-color: rgba(56, 189, 248, 0.65);
+  background: rgba(56, 189, 248, 0.18);
+  color: var(--text);
+}
+
+.recordings-tab:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.8);
+  outline-offset: 2px;
+}
+
 .table-actions {
   display: flex;
   gap: 0.5rem;
@@ -2184,6 +2219,14 @@ body[data-scroll-locked="true"] {
   }
 }
 
+@media (min-width: 720px) {
+  .recordings-heading {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.75rem;
+  }
+}
+
 .services-dialog {
   width: min(960px, 96vw);
   max-height: min(90vh, 960px);
@@ -2668,6 +2711,11 @@ body[data-scroll-locked="true"] {
   font-size: 0.95rem;
 }
 
+#recordings-table tbody td {
+  vertical-align: top;
+  padding-top: 1.25rem;
+}
+
 #recordings-table th {
   font-weight: 600;
   color: var(--text-muted);
@@ -2750,11 +2798,12 @@ body[data-scroll-locked="true"] {
 }
 
 .checkbox-cell {
-  width: 48px;
+  width: 64px;
 }
 
-#recordings-table .actions {
-  width: 160px;
+#recordings-table tbody tr .checkbox-cell input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
 }
 
 #recordings-table td.numeric {
@@ -2770,6 +2819,15 @@ body[data-scroll-locked="true"] {
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
+}
+
+.record-actions-row {
+  margin-top: 0.65rem;
+}
+
+.record-actions-row .in-progress-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .action-buttons button,
@@ -3227,9 +3285,9 @@ body[data-theme="light"] .record-in-progress {
     gap: 0.35rem;
   }
 
-  #recordings-table tbody tr .actions {
+  .record-actions-row {
     grid-column: 1 / -1;
-    margin-top: 0.35rem;
+    margin-top: 0.6rem;
   }
 
   #recordings-table tbody tr .cell-duration,

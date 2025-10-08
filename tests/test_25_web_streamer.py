@@ -356,6 +356,122 @@ async def test_integrations_motion_endpoint(monkeypatch, tmp_path, aiohttp_clien
 
 
 @pytest.mark.asyncio
+async def test_recordings_saved_collection_lists_saved_entries(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    saved_day_dir = (
+        recordings_dir
+        / web_streamer.SAVED_RECORDINGS_DIRNAME
+        / datetime.now(timezone.utc).strftime("%Y%m%d")
+    )
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    saved_day_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = saved_day_dir / "saved.opus"
+    audio_path.write_bytes(b"saved audio")
+    waveform_path = audio_path.with_suffix(".opus.waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 1.5}), encoding="utf-8")
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    saved_response = await client.get("/api/recordings?collection=saved")
+    assert saved_response.status == 200
+    payload = await saved_response.json()
+    assert payload["collection"] == "saved"
+    assert payload["available_days"] == [saved_day_dir.name]
+    assert payload["available_extensions"] == ["opus"]
+    assert payload["recordings_total_bytes"] == audio_path.stat().st_size
+
+    items = payload.get("items", [])
+    assert len(items) == 1
+    entry = items[0]
+    expected_path = f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/{saved_day_dir.name}/saved.opus"
+    assert entry["path"] == expected_path
+    assert entry["collection"] == "saved"
+    assert entry["waveform_path"].endswith("saved.opus.waveform.json")
+
+    recent_response = await client.get("/api/recordings")
+    assert recent_response.status == 200
+    recent_payload = await recent_response.json()
+    assert recent_payload.get("collection") == "recent"
+    assert recent_payload.get("items") == []
+
+
+@pytest.mark.asyncio
+async def test_recordings_save_and_unsave_moves_files(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    day_dir = recordings_dir / "20250101"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = day_dir / "clip.opus"
+    audio_path.write_bytes(b"clip audio")
+    waveform_path = audio_path.with_suffix(".opus.waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 2.0}), encoding="utf-8")
+    transcript_path = audio_path.with_suffix(".opus.transcript.json")
+    transcript_path.write_text(json.dumps({"text": "hello"}), encoding="utf-8")
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    save_response = await client.post(
+        "/api/recordings/save",
+        json={"items": ["20250101/clip.opus"]},
+    )
+    assert save_response.status == 200
+    save_payload = await save_response.json()
+    expected_saved_path = f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/20250101/clip.opus"
+    assert save_payload["saved"] == [expected_saved_path]
+    assert save_payload["errors"] == []
+
+    saved_audio = recordings_dir / expected_saved_path
+    saved_waveform = saved_audio.with_suffix(".opus.waveform.json")
+    saved_transcript = saved_audio.with_suffix(".opus.transcript.json")
+    assert saved_audio.exists()
+    assert saved_waveform.exists()
+    assert saved_transcript.exists()
+    assert not audio_path.exists()
+    assert not waveform_path.exists()
+    assert not transcript_path.exists()
+
+    unsave_response = await client.post(
+        "/api/recordings/unsave",
+        json={"items": [expected_saved_path]},
+    )
+    assert unsave_response.status == 200
+    unsave_payload = await unsave_response.json()
+    assert unsave_payload["unsaved"] == ["20250101/clip.opus"]
+    assert unsave_payload["errors"] == []
+
+    assert audio_path.exists()
+    assert waveform_path.exists()
+    assert transcript_path.exists()
+    assert not saved_audio.exists()
+    assert not saved_waveform.exists()
+    assert not saved_transcript.exists()
+
+
+@pytest.mark.asyncio
 async def test_webrtc_mode_registers_webrtc_routes(monkeypatch, tmp_path, aiohttp_client):
     monkeypatch.setenv("TRICORDER_TMP", str(tmp_path))
     from lib import config as config_module

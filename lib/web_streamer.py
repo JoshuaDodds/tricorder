@@ -81,6 +81,7 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
+SAVED_RECORDINGS_DIRNAME = "Saved"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
@@ -2125,7 +2126,12 @@ def _resolve_start_metadata(
 
 
 def _scan_recordings_worker(
-    recordings_root: Path, allowed_ext: tuple[str, ...]
+    recordings_root: Path,
+    allowed_ext: tuple[str, ...],
+    *,
+    skip_top_level: Sequence[str] | None = None,
+    path_prefix: Sequence[str] | None = None,
+    collection_label: str = "recent",
 ) -> tuple[list[dict[str, object]], list[str], list[str], int]:
     log = logging.getLogger("web_streamer")
 
@@ -2133,6 +2139,22 @@ def _scan_recordings_worker(
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             return float(value)
         return None
+
+    skip_set = {
+        str(name).strip()
+        for name in (skip_top_level or [])
+        if isinstance(name, str) and str(name).strip()
+    }
+    prefix_parts = tuple(
+        str(component).strip().strip("/\\")
+        for component in (path_prefix or [])
+        if isinstance(component, str) and str(component).strip().strip("/\\")
+    )
+
+    def _with_prefix(relative_path: Path) -> Path:
+        if prefix_parts:
+            return Path(*prefix_parts, *relative_path.parts)
+        return relative_path
 
     def _iter_candidate_files() -> Iterable[Path]:
         def _on_error(error: OSError) -> None:
@@ -2149,7 +2171,27 @@ def _scan_recordings_worker(
             dir_path = Path(dirpath)
             if RECYCLE_BIN_DIRNAME in dir_path.parts:
                 continue
-            dirnames[:] = [name for name in dirnames if name != RECYCLE_BIN_DIRNAME]
+
+            try:
+                rel_dir = dir_path.relative_to(recordings_root)
+            except ValueError:
+                rel_dir = None
+
+            if rel_dir and rel_dir.parts and rel_dir.parts[0] in skip_set:
+                dirnames[:] = []
+                continue
+
+            if dir_path == recordings_root:
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if name != RECYCLE_BIN_DIRNAME and name not in skip_set
+                ]
+            else:
+                dirnames[:] = [
+                    name for name in dirnames if name != RECYCLE_BIN_DIRNAME
+                ]
+
             for filename in filenames:
                 yield dir_path / filename
 
@@ -2192,6 +2234,12 @@ def _scan_recordings_worker(
         except ValueError:
             continue
 
+        if rel.parts and rel.parts[0] in skip_set:
+            continue
+
+        rel_with_prefix = _with_prefix(rel)
+        waveform_with_prefix = _with_prefix(waveform_rel)
+
         transcript_path_rel = ""
         transcript_text = ""
         transcript_event_type = ""
@@ -2205,7 +2253,8 @@ def _scan_recordings_worker(
             transcript_stat = None
         if transcript_stat and transcript_stat.st_size > 0:
             try:
-                transcript_path_rel = transcript_path.relative_to(recordings_root).as_posix()
+                transcript_local = transcript_path.relative_to(recordings_root)
+                transcript_path_rel = _with_prefix(transcript_local).as_posix()
             except ValueError:
                 transcript_path_rel = ""
             try:
@@ -2270,7 +2319,7 @@ def _scan_recordings_worker(
             waveform_meta.get("motion_released_epoch") if waveform_meta else None
         )
 
-        rel_posix = rel.as_posix()
+        rel_posix = rel_with_prefix.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
         start_epoch, started_at_iso = _resolve_start_metadata(
@@ -2294,7 +2343,7 @@ def _scan_recordings_worker(
                 "modified": stat.st_mtime,
                 "modified_iso": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 "duration": duration,
-                "waveform_path": waveform_rel.as_posix(),
+                "waveform_path": waveform_with_prefix.as_posix(),
                 "start_epoch": start_epoch,
                 "started_epoch": start_epoch,
                 "started_at": started_at_iso,
@@ -2310,6 +2359,7 @@ def _scan_recordings_worker(
                 "motion_release_offset_seconds": motion_release_offset,
                 "motion_started_epoch": motion_started_epoch,
                 "motion_released_epoch": motion_released_epoch,
+                "collection": collection_label,
             }
         )
 
@@ -2534,6 +2584,7 @@ def _normalize_dashboard_services(cfg: dict[str, Any]) -> tuple[list[dict[str, s
 
 SHUTDOWN_EVENT_KEY: AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 RECORDINGS_ROOT_KEY: AppKey[Path] = web.AppKey("recordings_root", Path)
+SAVED_RECORDINGS_ROOT_KEY: AppKey[Path] = web.AppKey("saved_recordings_root", Path)
 RECYCLE_BIN_ROOT_KEY: AppKey[Path] = web.AppKey("recycle_bin_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
 SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_services", list)
@@ -2891,6 +2942,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         log.warning("Unable to ensure recordings directory exists: %s", exc)
     app[RECORDINGS_ROOT_KEY] = recordings_root
 
+    saved_recordings_root = recordings_root / SAVED_RECORDINGS_DIRNAME
+    try:
+        saved_recordings_root.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # pragma: no cover - permissions issues should not crash server
+        log.warning("Unable to ensure saved recordings directory exists: %s", exc)
+    app[SAVED_RECORDINGS_ROOT_KEY] = saved_recordings_root
+
     recycle_bin_root = recordings_root / RECYCLE_BIN_DIRNAME
     app[RECYCLE_BIN_ROOT_KEY] = recycle_bin_root
 
@@ -2909,6 +2967,11 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         recordings_root_resolved = recordings_root.resolve()
     except FileNotFoundError:
         recordings_root_resolved = recordings_root
+
+    try:
+        saved_recordings_root_resolved = saved_recordings_root.resolve()
+    except FileNotFoundError:
+        saved_recordings_root_resolved = saved_recordings_root
 
     clip_safe_pattern = re.compile(r"[^A-Za-z0-9._-]+")
     MIN_CLIP_DURATION_SECONDS = 0.05
@@ -3586,11 +3649,32 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         return web.Response(text=html, content_type="text/html")
 
     def _scan_recordings_sync() -> tuple[list[dict[str, object]], list[str], list[str], int]:
-        return _scan_recordings_worker(recordings_root, allowed_ext)
+        return _scan_recordings_worker(
+            recordings_root,
+            allowed_ext,
+            skip_top_level=(SAVED_RECORDINGS_DIRNAME,),
+            collection_label="recent",
+        )
+
+    def _scan_saved_recordings_sync() -> tuple[
+        list[dict[str, object]], list[str], list[str], int
+    ]:
+        return _scan_recordings_worker(
+            saved_recordings_root,
+            allowed_ext,
+            path_prefix=(SAVED_RECORDINGS_DIRNAME,),
+            collection_label="saved",
+        )
 
     async def _scan_recordings() -> tuple[list[dict[str, object]], list[str], list[str], int]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _scan_recordings_sync)
+
+    async def _scan_saved_recordings() -> tuple[
+        list[dict[str, object]], list[str], list[str], int
+    ]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _scan_saved_recordings_sync)
 
     capture_status_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), "segmenter_status.json"
@@ -4073,6 +4157,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "name": str(entry.get("name", "")),
                 "path": str(entry.get("path", "")),
                 "day": str(entry.get("day", "")),
+                "collection": str(entry.get("collection", "")),
                 "extension": str(entry.get("extension", "")),
                 "size_bytes": int(entry.get("size_bytes", 0) or 0),
                 "modified": float(entry.get("modified", 0.0) or 0.0),
@@ -4168,8 +4253,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         }
 
     async def recordings_api(request: web.Request) -> web.Response:
-        entries, available_days, available_exts, total_bytes = await _scan_recordings()
+        raw_collection = request.rel_url.query.get("collection", "").strip().lower()
+        if raw_collection == "saved":
+            entries, available_days, available_exts, total_bytes = await _scan_saved_recordings()
+            collection = "saved"
+        else:
+            entries, available_days, available_exts, total_bytes = await _scan_recordings()
+            collection = "recent"
         payload = _filter_recordings(entries, request)
+        payload["collection"] = collection
         payload["available_days"] = available_days
         payload["available_extensions"] = available_exts
         payload["recordings_total_bytes"] = total_bytes
@@ -4402,6 +4494,268 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 break
 
         return web.json_response({"deleted": deleted, "errors": errors})
+
+    async def recordings_save(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise web.HTTPBadRequest(reason="'items' must be a list")
+
+        saved: list[str] = []
+        errors: list[dict[str, str]] = []
+
+        for raw in items:
+            if not isinstance(raw, str) or not raw.strip():
+                errors.append({"item": str(raw), "error": "invalid path"})
+                continue
+
+            rel = raw.strip().strip("/")
+            if not _is_safe_relative_path(rel):
+                errors.append({"item": rel, "error": "invalid path"})
+                continue
+
+            rel_path = Path(rel)
+            if rel_path.parts and rel_path.parts[0] == SAVED_RECORDINGS_DIRNAME:
+                errors.append({"item": rel, "error": "already saved"})
+                continue
+
+            source = recordings_root / rel_path
+            try:
+                resolved = source.resolve()
+            except FileNotFoundError:
+                errors.append({"item": rel, "error": "not found"})
+                continue
+            except Exception as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            try:
+                resolved.relative_to(recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "outside recordings directory"})
+                continue
+
+            if resolved.is_relative_to(saved_recordings_root_resolved):
+                errors.append({"item": rel, "error": "already saved"})
+                continue
+
+            if not resolved.is_file():
+                errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            if _path_is_partial(resolved):
+                errors.append({"item": rel, "error": "recording in progress"})
+                continue
+
+            target = saved_recordings_root / rel_path
+            try:
+                target_resolved = target.resolve()
+            except FileNotFoundError:
+                target_resolved = target
+
+            try:
+                target_resolved.relative_to(saved_recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "target outside saved directory"})
+                continue
+
+            if target.exists():
+                errors.append({"item": rel, "error": "already exists in saved"})
+                continue
+
+            waveform_source = resolved.with_suffix(resolved.suffix + ".waveform.json")
+            transcript_source = resolved.with_suffix(resolved.suffix + ".transcript.json")
+            moved_pairs: list[tuple[Path, Path]] = []
+            source_parent = resolved.parent
+
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(resolved), str(target))
+                moved_pairs.append((target, resolved))
+
+                if waveform_source.is_file():
+                    waveform_target = target.with_suffix(target.suffix + ".waveform.json")
+                    waveform_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(waveform_source), str(waveform_target))
+                    moved_pairs.append((waveform_target, waveform_source))
+
+                if transcript_source.is_file():
+                    transcript_target = target.with_suffix(target.suffix + ".transcript.json")
+                    transcript_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(transcript_source), str(transcript_target))
+                    moved_pairs.append((transcript_target, transcript_source))
+
+                try:
+                    rel_saved = target.resolve().relative_to(recordings_root_resolved).as_posix()
+                except Exception:
+                    rel_saved = target.relative_to(recordings_root).as_posix()
+                saved.append(rel_saved)
+            except Exception as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                for dest, original in reversed(moved_pairs):
+                    try:
+                        if dest.exists():
+                            original.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(dest), str(original))
+                    except Exception:
+                        pass
+                try:
+                    if target.exists():
+                        target.unlink()
+                except Exception:
+                    pass
+                continue
+
+            parent = source_parent
+            while parent != recordings_root and parent != parent.parent:
+                try:
+                    next(parent.iterdir())
+                except StopIteration:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+                    continue
+                except Exception:
+                    break
+                break
+
+        return web.json_response({"saved": saved, "errors": errors})
+
+    async def recordings_unsave(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(reason=f"Invalid JSON: {exc}") from exc
+
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise web.HTTPBadRequest(reason="'items' must be a list")
+
+        unsaved: list[str] = []
+        errors: list[dict[str, str]] = []
+
+        for raw in items:
+            if not isinstance(raw, str) or not raw.strip():
+                errors.append({"item": str(raw), "error": "invalid path"})
+                continue
+
+            rel = raw.strip().strip("/")
+            if not _is_safe_relative_path(rel):
+                errors.append({"item": rel, "error": "invalid path"})
+                continue
+
+            rel_path = Path(rel)
+            if not rel_path.parts or rel_path.parts[0] != SAVED_RECORDINGS_DIRNAME:
+                errors.append({"item": rel, "error": "not in saved"})
+                continue
+
+            remainder_parts = rel_path.parts[1:]
+            if not remainder_parts:
+                errors.append({"item": rel, "error": "not in saved"})
+                continue
+
+            remainder = Path(*remainder_parts)
+            source = saved_recordings_root / remainder
+            try:
+                resolved = source.resolve()
+            except FileNotFoundError:
+                errors.append({"item": rel, "error": "not found"})
+                continue
+            except Exception as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                continue
+
+            try:
+                resolved.relative_to(saved_recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "not in saved"})
+                continue
+
+            if not resolved.is_file():
+                errors.append({"item": rel, "error": "not a file"})
+                continue
+
+            target = recordings_root / remainder
+            try:
+                target_resolved = target.resolve()
+            except FileNotFoundError:
+                target_resolved = target
+
+            try:
+                target_resolved.relative_to(recordings_root_resolved)
+            except ValueError:
+                errors.append({"item": rel, "error": "target outside recordings directory"})
+                continue
+
+            if target.exists():
+                errors.append({"item": rel, "error": "destination exists"})
+                continue
+
+            waveform_source = resolved.with_suffix(resolved.suffix + ".waveform.json")
+            transcript_source = resolved.with_suffix(resolved.suffix + ".transcript.json")
+            moved_pairs: list[tuple[Path, Path]] = []
+            source_parent = resolved.parent
+
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(resolved), str(target))
+                moved_pairs.append((target, resolved))
+
+                if waveform_source.is_file():
+                    waveform_target = target.with_suffix(target.suffix + ".waveform.json")
+                    waveform_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(waveform_source), str(waveform_target))
+                    moved_pairs.append((waveform_target, waveform_source))
+
+                if transcript_source.is_file():
+                    transcript_target = target.with_suffix(target.suffix + ".transcript.json")
+                    transcript_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(transcript_source), str(transcript_target))
+                    moved_pairs.append((transcript_target, transcript_source))
+
+                try:
+                    rel_unsaved = target.resolve().relative_to(recordings_root_resolved).as_posix()
+                except Exception:
+                    rel_unsaved = target.relative_to(recordings_root).as_posix()
+                unsaved.append(rel_unsaved)
+            except Exception as exc:
+                errors.append({"item": rel, "error": str(exc)})
+                for dest, original in reversed(moved_pairs):
+                    try:
+                        if dest.exists():
+                            original.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(dest), str(original))
+                    except Exception:
+                        pass
+                try:
+                    if target.exists():
+                        target.unlink()
+                except Exception:
+                    pass
+                continue
+
+            parent = source_parent
+            while parent != saved_recordings_root and parent != parent.parent:
+                try:
+                    next(parent.iterdir())
+                except StopIteration:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+                    continue
+                except Exception:
+                    break
+                break
+
+        return web.json_response({"unsaved": unsaved, "errors": errors})
 
     async def recycle_bin_list(request: web.Request) -> web.Response:
         recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
@@ -5839,6 +6193,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/recordings", recordings_api)
     app.router.add_post("/api/recordings/delete", recordings_delete)
     app.router.add_post("/api/recordings/remove", recordings_delete)
+    app.router.add_post("/api/recordings/save", recordings_save)
+    app.router.add_post("/api/recordings/unsave", recordings_unsave)
     app.router.add_post("/api/recordings/rename", recordings_rename)
     app.router.add_post("/api/recordings/bulk-download", recordings_bulk_download)
     app.router.add_post("/api/recordings/clip", recordings_clip)

@@ -700,7 +700,31 @@
             </div>
             <div class="card-header">
               <div class="table-header-main">
-                <h2>Recent recordings</h2>
+                <div class="recordings-heading">
+                  <h2 id="recordings-heading">Recent recordings</h2>
+                  <div class="recordings-tabs" role="tablist" aria-label="Recording views">
+                    <button
+                      id="recordings-tab-recent"
+                      class="recordings-tab active"
+                      type="button"
+                      role="tab"
+                      aria-selected="true"
+                      data-collection="recent"
+                    >
+                      Recent
+                    </button>
+                    <button
+                      id="recordings-tab-saved"
+                      class="recordings-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected="false"
+                      data-collection="saved"
+                    >
+                      Saved
+                    </button>
+                  </div>
+                </div>
                 <button
                   id="filters-toggle"
                   class="ghost-button small filters-toggle"
@@ -769,7 +793,6 @@
                         <span aria-hidden="true" class="sort-indicator"></span>
                       </button>
                     </th>
-                    <th class="actions">Actions</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
