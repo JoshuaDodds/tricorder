@@ -89,7 +89,7 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 3. **Fan-out hub** – the daemon forwards filtered frames to two destinations:
    - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, notification dispatch, and coordination with `bin/encode_and_store.sh`.
    - `HLSTee` / `WebRTCBufferWriter` so live listeners can attach without disturbing capture cadence.
-4. **Encoding + storage** – the encoder script writes Opus files, waveform JSON, and transcript sidecars into `/apps/tricorder/recordings`, kicks off post-encode archival backends via `lib.archival`, and relies on `lib.fault_handler` to triage any encoding failures.
+4. **Encoding + storage** – the encoder script writes Opus files, waveform JSON, transcript sidecars, and now preserves the source WAV in `/apps/tricorder/recordings/.original_wav/<YYYYMMDD>/`. It then kicks off post-encode archival backends via `lib.archival` and relies on `lib.fault_handler` to triage any encoding failures.
 
 `lib.hls_controller` brokers HLS encoder lifecycles on behalf of the dashboard, while the WebRTC branch keeps a bounded history buffer that the browser drains when establishing a peer connection. Dropbox ingest feeds the same timeline recorder, guaranteeing that external files experience identical filtering, encoding, waveform generation, and transcription steps.
 
