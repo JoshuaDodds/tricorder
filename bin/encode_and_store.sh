@@ -8,7 +8,7 @@ echo "[encode] PATH: $PATH"
 echo "[encode] Args: $@"
 which ffmpeg || echo "[encode] ffmpeg not found"
 
-# Default: denoise ON (override with DENOISE=0 to disable)
+# Default: denoise OFF; UI will toggle on when requested (set DENOISE=1 to enable manually)
 DENOISE=0
 DENOISE="${DENOISE:-1}"
 MIN_CLIP_SECONDS="${ENCODER_MIN_CLIP_SECONDS:-0}"
