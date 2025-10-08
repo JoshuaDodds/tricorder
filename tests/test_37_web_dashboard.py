@@ -2,6 +2,8 @@ import asyncio
 import os
 
 import json
+import subprocess
+import textwrap
 import time
 from datetime import datetime, timezone
 import io
@@ -86,6 +88,46 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
         handle.setsampwidth(2)
         handle.setframerate(48000)
         handle.writeframes(b"\x00\x00" * frame_count)
+
+
+def _run_dashboard_selection_script(script: str) -> dict:
+    root = Path(__file__).resolve().parents[1]
+    node_path = shutil.which("node")
+    if node_path is None:
+        pytest.skip("Node.js binary is required for dashboard selection script tests")
+    indented_script = textwrap.indent(script, "        ")
+    template = """
+        const path = require("path");
+        const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
+        const sandbox = loadDashboard();
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        if (!state) {{
+          throw new Error("Dashboard state is unavailable for tests");
+        }}
+        state.records = [];
+        state.partialRecord = null;
+        state.recordsFingerprint = "";
+        state.selectionAnchor = "";
+        state.selectionFocus = "";
+        state.selections = new Set();
+        state.sort = {{ key: "name", direction: "asc" }};
+        state.total = 0;
+        state.filteredSize = 0;
+        const result = (() => {{
+{script}
+        }})();
+        console.log(JSON.stringify(result));
+    """
+    node_code = textwrap.dedent(template).format(script=indented_script)
+    completed = subprocess.run(
+        [node_path, "-e", node_code],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=root,
+    )
+    output = completed.stdout.strip()
+    return json.loads(output or "null")
 
 
 def test_recordings_listing_filters(dashboard_env, monkeypatch):
@@ -1462,6 +1504,76 @@ def test_transcription_settings_require_model_path(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_transcription_model_discovery(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    en_model = models_dir / "vosk-small-en"
+    (en_model / "conf").mkdir(parents=True)
+    (en_model / "conf" / "model.conf").write_text(
+        "model_name = English Small\nlang = en-US\n",
+        encoding="utf-8",
+    )
+    (en_model / "meta.json").write_text(
+        json.dumps({"title": "English Small", "lang": "en"}),
+        encoding="utf-8",
+    )
+
+    es_model = models_dir / "vosk-small-es"
+    (es_model / "conf").mkdir(parents=True)
+    (es_model / "conf" / "model.conf").write_text(
+        "model_name = Español\nlang = es\n",
+        encoding="utf-8",
+    )
+
+    legacy_model = models_dir / "vosk-model-small-tr-0.3"
+    (legacy_model / "ivector").mkdir(parents=True)
+    (legacy_model / "final.mdl").write_bytes(b"")
+    (legacy_model / "Gr.fst").write_bytes(b"")
+
+    stray_dir = models_dir / "notes"
+    stray_dir.mkdir()
+
+    config_path.write_text(
+        f"transcription:\n  vosk_model_path: {en_model}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/transcription/models")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert isinstance(payload, dict)
+            models = payload.get("models")
+            assert isinstance(models, list)
+            paths = {entry.get("path") for entry in models if isinstance(entry, dict)}
+            assert str(en_model) in paths
+            assert str(es_model) in paths
+            assert str(legacy_model) in paths
+            assert str(stray_dir) not in paths
+            searched = payload.get("searched")
+            assert isinstance(searched, list)
+            assert str(models_dir) in searched
+            assert payload.get("configured_path") == str(en_model)
+            assert payload.get("configured_exists") is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
@@ -2368,6 +2480,77 @@ def test_recordings_bulk_download_includes_sidecars(dashboard_env):
             await server.close()
 
     asyncio.run(runner())
+
+
+def test_shift_click_selects_range_between_non_adjacent_records():
+    script = textwrap.dedent(
+        """
+        const records = [
+          { path: "20240101/alpha.opus", name: "Alpha", day: "20240101", modified: 1, duration_seconds: 10, size_bytes: 100 },
+          { path: "20240101/bravo.opus", name: "Bravo", day: "20240101", modified: 2, duration_seconds: 11, size_bytes: 110 },
+          { path: "20240101/charlie.opus", name: "Charlie", day: "20240101", modified: 3, duration_seconds: 12, size_bytes: 120 },
+          { path: "20240101/delta.opus", name: "Delta", day: "20240101", modified: 4, duration_seconds: 13, size_bytes: 130 },
+          { path: "20240101/echo.opus", name: "Echo", day: "20240101", modified: 5, duration_seconds: 14, size_bytes: 140 },
+        ];
+        state.records = records;
+        state.total = records.length;
+        state.filteredSize = records.length;
+        const target = "20240101/charlie.opus";
+        state.selections = new Set(["20240101/alpha.opus", "20240101/echo.opus"]);
+        state.selectionAnchor = "";
+        state.selectionFocus = "";
+        const anchor = sandbox.resolveSelectionAnchor(target);
+        const changed = sandbox.applySelectionRange(anchor, target, true);
+        return {
+          anchor,
+          changed,
+          selections: Array.from(state.selections.values()).sort(),
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["anchor"] == "20240101/alpha.opus"
+    assert result["changed"] is True
+    assert "20240101/bravo.opus" in result["selections"]
+    assert "20240101/charlie.opus" in result["selections"]
+    assert "20240101/delta.opus" not in result["selections"]
+    assert "20240101/echo.opus" in result["selections"]
+
+
+def test_shift_click_uses_existing_anchor_when_available():
+    script = textwrap.dedent(
+        """
+        const records = [
+          { path: "20240101/alpha.opus", name: "Alpha", day: "20240101", modified: 1, duration_seconds: 10, size_bytes: 100 },
+          { path: "20240101/bravo.opus", name: "Bravo", day: "20240101", modified: 2, duration_seconds: 11, size_bytes: 110 },
+          { path: "20240101/charlie.opus", name: "Charlie", day: "20240101", modified: 3, duration_seconds: 12, size_bytes: 120 },
+          { path: "20240101/delta.opus", name: "Delta", day: "20240101", modified: 4, duration_seconds: 13, size_bytes: 130 },
+          { path: "20240101/echo.opus", name: "Echo", day: "20240101", modified: 5, duration_seconds: 14, size_bytes: 140 },
+        ];
+        state.records = records;
+        state.total = records.length;
+        state.filteredSize = records.length;
+        const target = "20240101/echo.opus";
+        state.selections = new Set(["20240101/bravo.opus"]);
+        state.selectionAnchor = "20240101/bravo.opus";
+        state.selectionFocus = "20240101/bravo.opus";
+        const anchor = sandbox.resolveSelectionAnchor(target);
+        const changed = sandbox.applySelectionRange(anchor, target, true);
+        return {
+          anchor,
+          changed,
+          selections: Array.from(state.selections.values()).sort(),
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["anchor"] == "20240101/bravo.opus"
+    assert result["changed"] is True
+    assert result["selections"].count("20240101/bravo.opus") == 1
+    assert "20240101/charlie.opus" in result["selections"]
+    assert "20240101/delta.opus" in result["selections"]
+    assert "20240101/echo.opus" in result["selections"]
+    assert "20240101/alpha.opus" not in result["selections"]
 
 
 def test_sd_card_recovery_static_doc_served(dashboard_env):

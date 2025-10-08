@@ -842,6 +842,143 @@ def test_parse_show_output_handles_blank_fields():
 
 
 @pytest.mark.asyncio
+async def test_recordings_delete_moves_raw_audio_to_recycle_bin(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = recordings_dir / "sample.opus"
+    audio_path.write_bytes(b"audio")
+
+    raw_rel = f"{web_streamer.RAW_AUDIO_DIRNAME}/20240101/sample.wav"
+    raw_path = recordings_dir / raw_rel
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(b"raw")
+
+    waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+    waveform_path.write_text(
+        json.dumps(
+            {
+                "raw_audio_path": raw_rel,
+                "duration_seconds": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    delete_response = await client.post(
+        "/api/recordings/delete",
+        json={"items": ["sample.opus"]},
+    )
+    assert delete_response.status == 200
+    delete_payload = await delete_response.json()
+    assert delete_payload["deleted"] == ["sample.opus"]
+
+    recycle_root = recordings_dir / web_streamer.RECYCLE_BIN_DIRNAME
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1
+    entry_dir = entries[0]
+    metadata_path = entry_dir / web_streamer.RECYCLE_METADATA_FILENAME
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata.get("raw_audio_path") == raw_rel
+    assert metadata.get("raw_audio_name") == raw_path.name
+
+    assert not raw_path.exists()
+    entry_raw_path = entry_dir / raw_path.name
+    assert entry_raw_path.exists()
+
+    purge_response = await client.post(
+        "/api/recycle-bin/purge",
+        json={"items": [entry_dir.name]},
+    )
+    assert purge_response.status == 200
+    purge_payload = await purge_response.json()
+    assert purge_payload["purged"] == [entry_dir.name]
+    assert purge_payload["errors"] == []
+    assert not entry_dir.exists()
+    assert not raw_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_recycle_bin_restore_reinstates_raw_audio(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = recordings_dir / "sample.opus"
+    audio_path.write_bytes(b"audio")
+
+    raw_rel = f"{web_streamer.RAW_AUDIO_DIRNAME}/20240101/sample.wav"
+    raw_path = recordings_dir / raw_rel
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(b"raw")
+
+    waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+    waveform_path.write_text(
+        json.dumps(
+            {
+                "raw_audio_path": raw_rel,
+                "duration_seconds": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    delete_response = await client.post(
+        "/api/recordings/delete",
+        json={"items": ["sample.opus"]},
+    )
+    assert delete_response.status == 200
+
+    recycle_root = recordings_dir / web_streamer.RECYCLE_BIN_DIRNAME
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1
+    entry_dir = entries[0]
+
+    assert not raw_path.exists()
+    entry_raw_path = entry_dir / raw_path.name
+    assert entry_raw_path.exists()
+
+    restore_response = await client.post(
+        "/api/recycle-bin/restore",
+        json={"items": [entry_dir.name]},
+    )
+    assert restore_response.status == 200
+    restore_payload = await restore_response.json()
+    assert restore_payload["restored"] == ["sample.opus"]
+    assert restore_payload["errors"] == []
+
+    assert audio_path.exists()
+    assert waveform_path.exists()
+    assert raw_path.exists()
+    assert not entry_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_recycle_bin_purge_removes_requested_entries(monkeypatch, tmp_path, aiohttp_client):
     recordings_dir = tmp_path / "recordings"
     tmp_dir = tmp_path / "tmp"

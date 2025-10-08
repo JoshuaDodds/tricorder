@@ -379,7 +379,13 @@
               <button id="live-stream-close" class="ghost-button small" type="button">Hide</button>
             </div>
           </div>
-          <audio id="live-stream-audio" controls preload="auto"></audio>
+          <audio
+            id="live-stream-audio"
+            preload="auto"
+            hidden
+            aria-hidden="true"
+            tabindex="-1"
+          ></audio>
           <p class="live-stream-hint">Streaming continues when backgrounded. Use the toggle to stop it.</p>
         </div>
       </section>
@@ -464,7 +470,7 @@
                     id="waveform-zoom"
                     type="range"
                     min="0.25"
-                    max="4"
+                    max="10"
                     step="0.25"
                     value="1"
                   />
@@ -749,6 +755,9 @@
                   Move to recycle bin
                 </button>
               </div>
+              <p class="table-actions-hint" id="selection-shortcut-hint">
+                Tip: Hold Shift while clicking checkboxes to select a range.
+              </p>
             </div>
             <div class="table-responsive">
               <table id="recordings-table">
@@ -1349,6 +1358,14 @@
                 <p class="field-description">How long to continue recording after activity stops.</p>
               </div>
               <div class="settings-field">
+                <label for="segmenter-motion-padding-minutes">Motion padding (min)</label>
+                <input id="segmenter-motion-padding-minutes" type="number" min="0" step="0.1" />
+                <p class="field-description">
+                  Extra minutes to keep motion-forced recordings active after motion clears so RMS and VAD regain control more
+                  gradually.
+                </p>
+              </div>
+              <div class="settings-field">
                 <label for="segmenter-threshold">RMS threshold</label>
                 <input id="segmenter-threshold" type="number" min="0" step="10" />
                 <p class="field-description">Linear RMS trigger level after gain. Dial in with <code>room_tuner.py</code>.</p>
@@ -1573,7 +1590,35 @@
               </div>
               <div class="settings-field">
                 <label for="transcription-model-path">Vosk model path</label>
-                <input id="transcription-model-path" type="text" autocomplete="off" />
+                <div class="field-input-row">
+                  <input id="transcription-model-path" type="text" autocomplete="off" />
+                  <button
+                    id="transcription-model-refresh"
+                    class="ghost-button"
+                    type="button"
+                  >
+                    Detect models
+                  </button>
+                </div>
+                <div
+                  id="transcription-model-status"
+                  class="form-status model-discovery-status"
+                  role="status"
+                  aria-live="polite"
+                  aria-hidden="true"
+                ></div>
+                <div id="transcription-model-discovery" class="model-discovery" hidden>
+                  <label for="transcription-model-options">Detected models</label>
+                  <select id="transcription-model-options" size="4"></select>
+                  <div class="button-row model-discovery-actions">
+                    <button id="transcription-model-apply" class="primary-button" type="button">
+                      Use selected model
+                    </button>
+                    <button id="transcription-model-dismiss" class="ghost-button" type="button">
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
                 <p class="field-description">
                   Absolute path to the unpacked Vosk model directory (download separately).
                 </p>
