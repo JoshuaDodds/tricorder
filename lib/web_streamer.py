@@ -4631,9 +4631,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload["collection"] = collection
         payload["available_days"] = available_days
         payload["available_extensions"] = available_exts
-        payload["recordings_total_bytes"] = _calculate_directory_usage(
-            recordings_root,
-            skip_top_level=(RECYCLE_BIN_DIRNAME,),
+        log = logging.getLogger("web_streamer")
+        loop = asyncio.get_running_loop()
+        recordings_usage_task = loop.run_in_executor(
+            None,
+            functools.partial(
+                _calculate_directory_usage,
+                recordings_root,
+                skip_top_level=(RECYCLE_BIN_DIRNAME,),
+            ),
         )
         try:
             usage = shutil.disk_usage(recordings_root)
@@ -4643,8 +4649,29 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             payload["storage_total_bytes"] = int(usage.total)
             payload["storage_used_bytes"] = int(usage.used)
             payload["storage_free_bytes"] = int(usage.free)
-        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
-        payload["recycle_bin_total_bytes"] = _calculate_recycle_bin_usage(recycle_root)
+        recycle_root = request.app.get(
+            RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME
+        )
+        recycle_usage_task = loop.run_in_executor(
+            None,
+            functools.partial(_calculate_recycle_bin_usage, recycle_root),
+        )
+        try:
+            payload["recordings_total_bytes"] = int(await recordings_usage_task)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.warning(
+                "recordings_api: unable to calculate recordings usage: %s",
+                exc,
+            )
+            payload["recordings_total_bytes"] = int(total_bytes)
+        try:
+            payload["recycle_bin_total_bytes"] = int(await recycle_usage_task)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.warning(
+                "recordings_api: unable to calculate recycle bin usage: %s",
+                exc,
+            )
+            payload["recycle_bin_total_bytes"] = 0
         payload["capture_status"] = _read_capture_status()
         payload["motion_state"] = _motion_state_snapshot()
         return web.json_response(payload)
