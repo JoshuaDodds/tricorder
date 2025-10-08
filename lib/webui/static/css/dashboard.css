@@ -2711,6 +2711,11 @@ body[data-scroll-locked="true"] {
   font-size: 0.95rem;
 }
 
+#recordings-table tbody td {
+  vertical-align: top;
+  padding-top: 1.25rem;
+}
+
 #recordings-table th {
   font-weight: 600;
   color: var(--text-muted);
@@ -2793,7 +2798,12 @@ body[data-scroll-locked="true"] {
 }
 
 .checkbox-cell {
-  width: 48px;
+  width: 64px;
+}
+
+#recordings-table tbody tr .checkbox-cell input[type="checkbox"] {
+  width: 2rem;
+  height: 2rem;
 }
 
 #recordings-table td.numeric {
