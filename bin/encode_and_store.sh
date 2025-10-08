@@ -18,6 +18,8 @@ LAST_CLIP_DURATION=""
 in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1
 existing_opus="${3:-}"
+ORIGINAL_AUDIO_DIRNAME=".original_wav"
+ORIGINAL_REL_PATH=""
 VENV="/apps/tricorder/venv"
 PYTHON_BIN="${ENCODER_PYTHON:-}";
 if [[ -z "$PYTHON_BIN" ]]; then
@@ -93,6 +95,59 @@ recordings_root="${ENCODER_RECORDINGS_DIR:-/apps/tricorder/recordings}"
 recordings_root="${recordings_root%/}"
 outdir="${recordings_root}/${day}"
 mkdir -p "$outdir"
+
+preserve_original_wav() {
+  local source="$1"
+  local day_component="$2"
+  local base_name="$3"
+  ORIGINAL_REL_PATH=""
+
+  if [[ -z "$source" || ! -f "$source" ]]; then
+    return 1
+  fi
+
+  if [[ -z "$day_component" ]]; then
+    day_component="$(date +%Y%m%d)"
+  fi
+
+  local dest_dir="${recordings_root}/${ORIGINAL_AUDIO_DIRNAME}/${day_component}"
+  if ! mkdir -p "$dest_dir"; then
+    echo "[encode] WARN: unable to prepare original WAV directory $dest_dir" | systemd-cat -t tricorder
+    return 1
+  fi
+
+  local candidate="${dest_dir}/${base_name}.wav"
+  if [[ -e "$candidate" ]]; then
+    local suffix=1
+    while [[ -e "$candidate" && $suffix -lt 100 ]]; do
+      candidate="${dest_dir}/${base_name}.${suffix}.wav"
+      suffix=$((suffix + 1))
+    done
+    if [[ -e "$candidate" ]]; then
+      candidate="${dest_dir}/${base_name}.$(date +%s).wav"
+    fi
+  fi
+
+  if mv -f "$source" "$candidate"; then
+    ORIGINAL_REL_PATH="${ORIGINAL_AUDIO_DIRNAME}/${day_component}/$(basename "$candidate")"
+    echo "[encode] Preserved original WAV at ${candidate}" | systemd-cat -t tricorder
+    return 0
+  fi
+
+  echo "[encode] WARN: failed to preserve original WAV $source" | systemd-cat -t tricorder
+  return 1
+}
+
+annotate_original_wav() {
+  local waveform_path="$1"
+  local relative_path="$2"
+  if [[ -z "$waveform_path" || -z "$relative_path" ]]; then
+    return
+  fi
+  if ! run_python_module lib.recording_metadata set_original_path "$waveform_path" "$relative_path"; then
+    echo "[encode] WARN: unable to update waveform metadata with original path" | systemd-cat -t tricorder
+  fi
+}
 
 if [[ -n "$existing_opus" ]]; then
   outfile="$existing_opus"
@@ -185,7 +240,10 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
     if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; then
       echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
     fi
-    rm -f "$in_wav"
+    if ! preserve_original_wav "$in_wav" "$day" "$base"; then
+      rm -f "$in_wav"
+    fi
+    annotate_original_wav "$waveform_file" "$ORIGINAL_REL_PATH"
     if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
       echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder
     fi
@@ -225,7 +283,11 @@ if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; t
   echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
 fi
 
-rm -f "$in_wav"
+if ! preserve_original_wav "$in_wav" "$day" "$base"; then
+  rm -f "$in_wav"
+fi
+
+annotate_original_wav "$waveform_file" "$ORIGINAL_REL_PATH"
 
 if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
   echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder

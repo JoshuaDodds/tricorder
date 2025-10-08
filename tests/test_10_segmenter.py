@@ -1341,6 +1341,15 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     assert not wav_path.exists(), "temporary WAV should be removed"
     assert existing_opus.exists(), "existing clip should remain when threshold is disabled"
 
+    day = time.strftime("%Y%m%d", time.localtime())
+    raw_dir = tmp_path / "recordings" / ".original_wav" / day
+    raw_files = list(raw_dir.glob("sample*.wav"))
+    assert len(raw_files) == 1, "original WAV should be preserved"
+
+    metadata = json.loads(waveform.read_text(encoding="utf-8"))
+    expected_rel = f".original_wav/{day}/{raw_files[0].name}"
+    assert metadata.get("raw_audio_path") == expected_rel
+
 
 def test_encode_script_discards_short_new_clips(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
@@ -1394,6 +1403,8 @@ def test_encode_script_discards_short_new_clips(tmp_path):
     transcript_files = list(recordings_dir.rglob("*.transcript.json"))
     assert not waveform_files, "waveforms should not be written for discarded clips"
     assert not transcript_files, "transcripts should not be written for discarded clips"
+    raw_dir = recordings_dir / ".original_wav"
+    assert not raw_dir.exists(), "original WAVs should not be preserved for discarded clips"
 
 
 def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
@@ -1447,4 +1458,7 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
     assert not existing_opus.exists(), "short streaming clips should be discarded"
     assert not waveform.exists(), "waveform sidecar should be removed for short clips"
     assert not transcript.exists(), "transcript sidecar should be removed for short clips"
+    raw_dir = tmp_path / "recordings" / ".original_wav"
+    if raw_dir.exists():
+        assert not any(raw_dir.rglob("*.wav")), "no original WAV should remain for discarded streaming clips"
 

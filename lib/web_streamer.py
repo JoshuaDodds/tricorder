@@ -81,6 +81,7 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
+RAW_AUDIO_DIRNAME = ".original_wav"
 SAVED_RECORDINGS_DIRNAME = "Saved"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -2177,6 +2178,8 @@ def _scan_recordings_worker(
             dir_path = Path(dirpath)
             if RECYCLE_BIN_DIRNAME in dir_path.parts:
                 continue
+            if RAW_AUDIO_DIRNAME in dir_path.parts:
+                continue
 
             try:
                 rel_dir = dir_path.relative_to(recordings_root)
@@ -2187,15 +2190,17 @@ def _scan_recordings_worker(
                 dirnames[:] = []
                 continue
 
+            exclude_names = {RECYCLE_BIN_DIRNAME, RAW_AUDIO_DIRNAME}
+
             if dir_path == recordings_root:
                 dirnames[:] = [
                     name
                     for name in dirnames
-                    if name != RECYCLE_BIN_DIRNAME and name not in skip_set
+                    if name not in exclude_names and name not in skip_set
                 ]
             else:
                 dirnames[:] = [
-                    name for name in dirnames if name != RECYCLE_BIN_DIRNAME
+                    name for name in dirnames if name not in exclude_names
                 ]
 
             for filename in filenames:
@@ -2306,6 +2311,14 @@ def _scan_recordings_worker(
         else:
             duration = _probe_duration(path, stat)
 
+        raw_audio_rel = ""
+        if waveform_meta is not None:
+            raw_candidate = waveform_meta.get("raw_audio_path")
+            if isinstance(raw_candidate, str):
+                raw_audio_rel = raw_candidate.strip()
+                if raw_audio_rel and not _is_safe_relative_path(raw_audio_rel):
+                    raw_audio_rel = ""
+
         trigger_offset = _float_or_none(
             waveform_meta.get("trigger_offset_seconds") if waveform_meta else None
         )
@@ -2353,6 +2366,7 @@ def _scan_recordings_worker(
                 "start_epoch": start_epoch,
                 "started_epoch": start_epoch,
                 "started_at": started_at_iso,
+                "raw_audio_path": raw_audio_rel,
                 "has_transcript": bool(transcript_path_rel),
                 "transcript_path": transcript_path_rel,
                 "transcript_text": transcript_text,
@@ -2472,6 +2486,20 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         except (OverflowError, OSError, ValueError):
             started_at_value = ""
 
+    raw_audio_name_raw = metadata.get("raw_audio_name")
+    if isinstance(raw_audio_name_raw, str):
+        raw_audio_name = raw_audio_name_raw.strip()
+    else:
+        raw_audio_name = ""
+
+    raw_audio_path_raw = metadata.get("raw_audio_path")
+    if isinstance(raw_audio_path_raw, str):
+        raw_audio_path = raw_audio_path_raw.strip()
+    else:
+        raw_audio_path = ""
+    if raw_audio_path and not _is_safe_relative_path(raw_audio_path):
+        raw_audio_path = ""
+
     return {
         "id": entry_id,
         "dir": entry_dir,
@@ -2489,6 +2517,8 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "start_epoch": start_epoch,
         "started_epoch": start_epoch,
         "started_at": started_at_value,
+        "raw_audio_name": raw_audio_name,
+        "raw_audio_path": raw_audio_path,
     }
 
 
@@ -4391,6 +4421,22 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 except (OSError, json.JSONDecodeError):
                     waveform_meta = None
 
+            raw_audio_rel = ""
+            raw_audio_source: Path | None = None
+            if waveform_meta is not None:
+                raw_candidate = waveform_meta.get("raw_audio_path")
+                if isinstance(raw_candidate, str):
+                    candidate_str = raw_candidate.strip()
+                    if candidate_str and _is_safe_relative_path(candidate_str):
+                        candidate_path = recordings_root / candidate_str
+                        try:
+                            candidate_path.relative_to(recordings_root_resolved)
+                        except Exception:
+                            raw_audio_source = None
+                        else:
+                            raw_audio_rel = candidate_str
+                            raw_audio_source = candidate_path
+
             now = datetime.now(timezone.utc)
             entry_dir: Path | None = None
             entry_id = ""
@@ -4419,6 +4465,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             audio_destination = entry_dir / resolved.name
             waveform_name = ""
             transcript_name = ""
+            raw_audio_name = ""
             duration_value: float | None = None
 
             if waveform_meta is not None:
@@ -4445,11 +4492,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     shutil.move(str(transcript_sidecar), str(transcript_destination))
                     moved_pairs.append((transcript_destination, transcript_sidecar))
 
+                if raw_audio_source and raw_audio_source.exists():
+                    raw_audio_name = raw_audio_source.name
+                    raw_destination = entry_dir / raw_audio_name
+                    shutil.move(str(raw_audio_source), str(raw_destination))
+                    moved_pairs.append((raw_destination, raw_audio_source))
+
                 metadata = {
                     "id": entry_id,
                     "stored_name": resolved.name,
                     "original_name": resolved.name,
                     "original_path": rel_posix,
+                    "raw_audio_path": raw_audio_rel,
+                    "raw_audio_name": raw_audio_name,
                     "deleted_at": now.isoformat(),
                     "deleted_at_epoch": now.timestamp(),
                     "size_bytes": int(getattr(stat_result, "st_size", 0)),
@@ -4483,6 +4538,27 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 except Exception:
                     pass
                 continue
+
+            if raw_audio_name and raw_audio_source:
+                raw_root = recordings_root / RAW_AUDIO_DIRNAME
+                raw_parent = raw_audio_source.parent
+                while (
+                    raw_parent != raw_root
+                    and raw_parent != recordings_root
+                    and raw_parent != raw_parent.parent
+                ):
+                    try:
+                        next(raw_parent.iterdir())
+                    except StopIteration:
+                        try:
+                            raw_parent.rmdir()
+                        except OSError:
+                            break
+                        raw_parent = raw_parent.parent
+                        continue
+                    except Exception:
+                        break
+                    break
 
             parent = resolved.parent
             while parent != recordings_root and parent != parent.parent:
@@ -4950,6 +5026,24 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         shutil.move(str(source), str(destination))
                     except Exception as exc:
                         sidecar_errors.append(f"transcript: {exc}")
+
+            raw_audio_name = data.get("raw_audio_name")
+            raw_audio_rel = data.get("raw_audio_path")
+            if (
+                isinstance(raw_audio_name, str)
+                and raw_audio_name
+                and isinstance(raw_audio_rel, str)
+                and raw_audio_rel
+                and _is_safe_relative_path(raw_audio_rel)
+            ):
+                raw_source = data["dir"] / raw_audio_name
+                raw_destination = recordings_root / raw_audio_rel
+                if raw_source.exists():
+                    try:
+                        raw_destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(raw_source), str(raw_destination))
+                    except Exception as exc:
+                        sidecar_errors.append(f"raw audio: {exc}")
 
             try:
                 metadata_path = data.get("metadata_path")
