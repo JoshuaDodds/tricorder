@@ -2622,6 +2622,54 @@ def test_recording_indicator_motion_badge_tracks_live_flag():
     assert result["state"] == "active"
 
 
+def test_recording_indicator_motion_uses_snapshot_flag_immediately():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        sandbox.setRecordingIndicatorStatus(
+          {
+            capturing: true,
+            event: {
+              motion_trigger_offset_seconds: 0.5,
+              motion_release_offset_seconds: 2.0,
+            }
+          },
+          { motion_active: true }
+        );
+        const shownWithSnapshot = motionBadge.hidden === false;
+        sandbox.setRecordingIndicatorStatus(
+          {
+            capturing: true,
+            event: {
+              motion_trigger_offset_seconds: 0.5,
+              motion_release_offset_seconds: 2.0,
+            }
+          },
+          { motion_active: false }
+        );
+        const hiddenAfterSnapshot = motionBadge.hidden === true;
+        return {
+          shownWithSnapshot,
+          hiddenAfterSnapshot,
+          state: indicator.dataset.state,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["shownWithSnapshot"] is True
+    assert result["hiddenAfterSnapshot"] is True
+    assert result["state"] == "active"
+
+
 def test_motion_trigger_detection_persists_for_recordings():
     script = textwrap.dedent(
         """
