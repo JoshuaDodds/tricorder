@@ -2084,6 +2084,57 @@ body[data-scroll-locked="true"] {
   resize: vertical;
 }
 
+.settings-field .field-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-field .field-input-row input[type="text"] {
+  flex: 1 1 16rem;
+}
+
+.settings-field .field-input-row button {
+  flex: 0 0 auto;
+}
+
+.model-discovery {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--card-border);
+  background: var(--surface-overlay);
+}
+
+.model-discovery label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.model-discovery select {
+  min-height: 6.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--card-border);
+  background: var(--surface-muted);
+  color: var(--text);
+  padding: 0.5rem;
+}
+
+.model-discovery-actions {
+  justify-content: flex-start;
+}
+
+.model-discovery-status {
+  min-height: 0;
+}
+
+.model-discovery-status[aria-hidden="true"] {
+  display: none;
+}
+
 .checkbox-field .field-control {
   display: flex;
   align-items: center;

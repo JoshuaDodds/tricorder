@@ -87,6 +87,217 @@ RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
 
+DEFAULT_VOSK_MODEL_ROOT = Path("/apps/tricorder/models")
+
+
+def _transcription_model_search_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(candidate: Path | str | None) -> None:
+        if not candidate:
+            return
+        try:
+            path = Path(candidate).expanduser()
+        except (TypeError, ValueError):
+            return
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            resolved = path
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    cfg = get_cfg()
+    transcription_cfg: Mapping[str, Any] | None = None
+    try:
+        raw_cfg = cfg.get("transcription")
+        if isinstance(raw_cfg, Mapping):
+            transcription_cfg = raw_cfg
+    except Exception:
+        transcription_cfg = None
+
+    if transcription_cfg:
+        model_path = (
+            transcription_cfg.get("vosk_model_path")
+            or transcription_cfg.get("model_path")
+        )
+        if isinstance(model_path, str) and model_path.strip():
+            model_dir = Path(model_path.strip()).expanduser()
+            add(model_dir)
+            add(model_dir.parent)
+
+    env_model = os.environ.get("VOSK_MODEL_PATH")
+    if env_model:
+        env_dir = Path(env_model).expanduser()
+        add(env_dir)
+        add(env_dir.parent)
+
+    add(DEFAULT_VOSK_MODEL_ROOT)
+    add(DEFAULT_VOSK_MODEL_ROOT.parent)
+
+    return roots
+
+
+def _looks_like_vosk_model(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if (path / "conf").is_dir():
+        return True
+    if (path / "model.conf").is_file():
+        return True
+
+    sentinel_hits = 0
+    directory_sentinels = ("am", "graph", "rescore", "ivector")
+    file_sentinels = ("final.mdl", "Gr.fst", "HCLr.fst", "mfcc.conf")
+
+    for name in directory_sentinels:
+        child = path / name
+        try:
+            exists = child.is_dir()
+        except OSError:
+            exists = False
+        if exists:
+            sentinel_hits += 1
+
+    for name in file_sentinels:
+        child = path / name
+        try:
+            exists = child.is_file()
+        except OSError:
+            exists = False
+        if exists:
+            sentinel_hits += 1
+
+    return sentinel_hits >= 2
+
+
+def _extract_vosk_metadata(model_dir: Path) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    meta_path = model_dir / "meta.json"
+    if meta_path.is_file():
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, Mapping):
+            for key in ("title", "name", "model_name"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    metadata["title"] = value.strip()
+                    break
+            lang_value = (
+                payload.get("lang")
+                or payload.get("language")
+                or payload.get("locale")
+            )
+            if isinstance(lang_value, str) and lang_value.strip():
+                metadata["language"] = lang_value.strip()
+
+    conf_path = model_dir / "conf" / "model.conf"
+    if "title" not in metadata and conf_path.is_file():
+        try:
+            lines = conf_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            lines = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip().lower()
+            value = value.strip()
+            if not value:
+                continue
+            if key in {"model_name", "model", "name"} and "title" not in metadata:
+                metadata["title"] = value
+            elif key in {"lang", "language"} and "language" not in metadata:
+                metadata["language"] = value
+    return metadata
+
+
+def _discover_transcription_models() -> dict[str, Any]:
+    roots = _transcription_model_search_roots()
+    models: list[dict[str, Any]] = []
+    errors: list[str] = []
+    searched: list[str] = []
+    seen_models: set[Path] = set()
+
+    for root in roots:
+        try:
+            exists = root.exists()
+        except OSError:
+            exists = False
+        if not exists or not root.is_dir():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError as exc:
+            errors.append(f"Unable to read {root}: {exc}")
+            continue
+        searched.append(str(root))
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            if not is_dir:
+                continue
+            if not _looks_like_vosk_model(entry):
+                continue
+            try:
+                resolved = entry.resolve()
+            except (OSError, RuntimeError):
+                resolved = entry
+            if resolved in seen_models:
+                continue
+            seen_models.add(resolved)
+            meta = _extract_vosk_metadata(entry)
+            label = meta.get("title") or entry.name
+            language = meta.get("language", "")
+            if language and language.lower() not in label.lower():
+                label = f"{label} ({language})"
+            models.append(
+                {
+                    "name": entry.name,
+                    "path": str(resolved),
+                    "label": label,
+                    "language": language or None,
+                }
+            )
+
+    models.sort(key=lambda item: (item.get("label") or item.get("name") or "").lower())
+
+    configured_path = ""
+    configured_exists = False
+    try:
+        cfg = get_cfg()
+        transcription_cfg = cfg.get("transcription")
+    except Exception:
+        transcription_cfg = None
+
+    if isinstance(transcription_cfg, Mapping):
+        raw_path = transcription_cfg.get("vosk_model_path") or transcription_cfg.get("model_path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            normalized = Path(raw_path.strip()).expanduser()
+            configured_path = str(normalized)
+            try:
+                configured_exists = normalized.exists()
+            except OSError:
+                configured_exists = False
+
+    return {
+        "models": models,
+        "searched": searched,
+        "configured_path": configured_path,
+        "configured_exists": configured_exists,
+        "errors": errors,
+    }
+
 
 def _noop_callback(*_args, **_kwargs) -> None:
     """Fallback callable used when defensive guards replace invalid callbacks."""
@@ -5766,6 +5977,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             canonical_fn=_canonical_transcription_settings,
         )
 
+    async def transcription_models_get(request: web.Request) -> web.Response:
+        payload = _discover_transcription_models()
+        return web.json_response(payload)
+
     async def config_logging_get(request: web.Request) -> web.Response:
         return await _settings_get("logging", _canonical_logging_settings)
 
@@ -6245,6 +6460,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/config/ingest", config_ingest_update)
     app.router.add_get("/api/config/transcription", config_transcription_get)
     app.router.add_post("/api/config/transcription", config_transcription_update)
+    app.router.add_get("/api/transcription/models", transcription_models_get)
     app.router.add_get("/api/config/logging", config_logging_get)
     app.router.add_post("/api/config/logging", config_logging_update)
     app.router.add_get("/api/config/streaming", config_streaming_get)
