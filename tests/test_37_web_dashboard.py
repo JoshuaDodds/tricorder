@@ -90,16 +90,24 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
         handle.writeframes(b"\x00\x00" * frame_count)
 
 
-def _run_dashboard_selection_script(script: str) -> dict:
+def _run_dashboard_selection_script(
+    script: str, *, elements: dict[str, object] | None = None
+) -> dict:
     root = Path(__file__).resolve().parents[1]
     node_path = shutil.which("node")
     if node_path is None:
         pytest.skip("Node.js binary is required for dashboard selection script tests")
     indented_script = textwrap.indent(script, "        ")
+    overrides = json.dumps(elements or {})
     template = """
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
+        const overrides = {overrides};
+        if (overrides && Object.keys(overrides).length > 0) {{
+          global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
+        }}
         const sandbox = loadDashboard();
+        delete global.__DASHBOARD_ELEMENT_OVERRIDES;
         const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
         if (!state) {{
           throw new Error("Dashboard state is unavailable for tests");
@@ -118,7 +126,9 @@ def _run_dashboard_selection_script(script: str) -> dict:
         }})();
         console.log(JSON.stringify(result));
     """
-    node_code = textwrap.dedent(template).format(script=indented_script)
+    node_code = textwrap.dedent(template).format(
+        script=indented_script, overrides=overrides
+    )
     completed = subprocess.run(
         [node_path, "-e", node_code],
         capture_output=True,
@@ -2491,6 +2501,79 @@ def test_recordings_bulk_download_includes_sidecars(dashboard_env):
             await server.close()
 
     asyncio.run(runner())
+
+
+def test_recording_indicator_motion_badge_tracks_live_flag():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        sandbox.setRecordingIndicatorStatus({
+          capturing: true,
+          motion_active: true,
+          event: { motion_trigger_offset_seconds: 0.25 }
+        });
+        const shownDuringMotion = motionBadge.hidden === false;
+        sandbox.setRecordingIndicatorStatus({
+          capturing: true,
+          motion_active: false,
+          event: {
+            motion_trigger_offset_seconds: 0.25,
+            motion_release_offset_seconds: 0.75
+          }
+        });
+        const hiddenAfterRelease = motionBadge.hidden === true;
+        sandbox.setRecordingIndicatorStatus({
+          capturing: true,
+          motion_active: true,
+          event: {
+            motion_trigger_offset_seconds: 0.25,
+            motion_release_offset_seconds: 0.75
+          }
+        });
+        const shownAfterReturn = motionBadge.hidden === false;
+        return {
+          shownDuringMotion,
+          hiddenAfterRelease,
+          shownAfterReturn,
+          state: indicator.dataset.state,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["shownDuringMotion"] is True
+    assert result["hiddenAfterRelease"] is True
+    assert result["shownAfterReturn"] is True
+    assert result["state"] == "active"
+
+
+def test_motion_trigger_detection_persists_for_recordings():
+    script = textwrap.dedent(
+        """
+        const releaseOnly = sandbox.isMotionTriggeredEvent({
+          motion_release_offset_seconds: 1.25,
+          motion_active: false
+        });
+        const startedEpoch = sandbox.isMotionTriggeredEvent({
+          motion_started_epoch: 1700000000,
+          motion_active: false
+        });
+        const none = sandbox.isMotionTriggeredEvent({ motion_active: false });
+        return { releaseOnly, startedEpoch, none };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["releaseOnly"] is True
+    assert result["startedEpoch"] is True
+    assert result["none"] is False
 
 
 def test_shift_click_selects_range_between_non_adjacent_records():
