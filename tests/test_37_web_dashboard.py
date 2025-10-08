@@ -1485,6 +1485,11 @@ def test_transcription_model_discovery(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
+    legacy_model = models_dir / "vosk-model-small-tr-0.3"
+    (legacy_model / "ivector").mkdir(parents=True)
+    (legacy_model / "final.mdl").write_bytes(b"")
+    (legacy_model / "Gr.fst").write_bytes(b"")
+
     stray_dir = models_dir / "notes"
     stray_dir.mkdir()
 
@@ -1513,6 +1518,7 @@ def test_transcription_model_discovery(tmp_path, monkeypatch):
             paths = {entry.get("path") for entry in models if isinstance(entry, dict)}
             assert str(en_model) in paths
             assert str(es_model) in paths
+            assert str(legacy_model) in paths
             assert str(stray_dir) not in paths
             searched = payload.get("searched")
             assert isinstance(searched, list)

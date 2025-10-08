@@ -148,15 +148,29 @@ def _looks_like_vosk_model(path: Path) -> bool:
         return True
     if (path / "model.conf").is_file():
         return True
+
     sentinel_hits = 0
-    for name in ("am", "graph", "rescore", "ivector"):
+    directory_sentinels = ("am", "graph", "rescore", "ivector")
+    file_sentinels = ("final.mdl", "Gr.fst", "HCLr.fst", "mfcc.conf")
+
+    for name in directory_sentinels:
         child = path / name
         try:
-            exists = child.exists()
+            exists = child.is_dir()
         except OSError:
             exists = False
         if exists:
             sentinel_hits += 1
+
+    for name in file_sentinels:
+        child = path / name
+        try:
+            exists = child.is_file()
+        except OSError:
+            exists = False
+        if exists:
+            sentinel_hits += 1
+
     return sentinel_hits >= 2
 
 
