@@ -379,7 +379,13 @@
               <button id="live-stream-close" class="ghost-button small" type="button">Hide</button>
             </div>
           </div>
-          <audio id="live-stream-audio" controls preload="auto"></audio>
+          <audio
+            id="live-stream-audio"
+            preload="auto"
+            hidden
+            aria-hidden="true"
+            tabindex="-1"
+          ></audio>
           <p class="live-stream-hint">Streaming continues when backgrounded. Use the toggle to stop it.</p>
         </div>
       </section>
