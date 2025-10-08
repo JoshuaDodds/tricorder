@@ -230,6 +230,8 @@ Transcripts default to Human-tagged events only; adjust `transcription.types` to
 
 Open the dashboard’s ☰ menu → **Recorder configuration** → **Transcription** to adjust these settings without editing YAML; changes remain synchronized with `config.yaml`.
 
+The web UI also offers a **Detect models** action that scans common directories (including the currently configured location) for unpacked Vosk models. When a match is found you can select it from the list to populate `transcription.vosk_model_path`, and the status message warns if the configured directory is missing on disk.
+
 ### Running locally
 
 ```bash

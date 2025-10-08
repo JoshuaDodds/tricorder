@@ -1573,7 +1573,35 @@
               </div>
               <div class="settings-field">
                 <label for="transcription-model-path">Vosk model path</label>
-                <input id="transcription-model-path" type="text" autocomplete="off" />
+                <div class="field-input-row">
+                  <input id="transcription-model-path" type="text" autocomplete="off" />
+                  <button
+                    id="transcription-model-refresh"
+                    class="ghost-button"
+                    type="button"
+                  >
+                    Detect models
+                  </button>
+                </div>
+                <div
+                  id="transcription-model-status"
+                  class="form-status model-discovery-status"
+                  role="status"
+                  aria-live="polite"
+                  aria-hidden="true"
+                ></div>
+                <div id="transcription-model-discovery" class="model-discovery" hidden>
+                  <label for="transcription-model-options">Detected models</label>
+                  <select id="transcription-model-options" size="4"></select>
+                  <div class="button-row model-discovery-actions">
+                    <button id="transcription-model-apply" class="primary-button" type="button">
+                      Use selected model
+                    </button>
+                    <button id="transcription-model-dismiss" class="ghost-button" type="button">
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
                 <p class="field-description">
                   Absolute path to the unpacked Vosk model directory (download separately).
                 </p>

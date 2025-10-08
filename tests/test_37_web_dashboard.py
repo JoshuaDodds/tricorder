@@ -1462,6 +1462,70 @@ def test_transcription_settings_require_model_path(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_transcription_model_discovery(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    en_model = models_dir / "vosk-small-en"
+    (en_model / "conf").mkdir(parents=True)
+    (en_model / "conf" / "model.conf").write_text(
+        "model_name = English Small\nlang = en-US\n",
+        encoding="utf-8",
+    )
+    (en_model / "meta.json").write_text(
+        json.dumps({"title": "English Small", "lang": "en"}),
+        encoding="utf-8",
+    )
+
+    es_model = models_dir / "vosk-small-es"
+    (es_model / "conf").mkdir(parents=True)
+    (es_model / "conf" / "model.conf").write_text(
+        "model_name = Español\nlang = es\n",
+        encoding="utf-8",
+    )
+
+    stray_dir = models_dir / "notes"
+    stray_dir.mkdir()
+
+    config_path.write_text(
+        f"transcription:\n  vosk_model_path: {en_model}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/transcription/models")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert isinstance(payload, dict)
+            models = payload.get("models")
+            assert isinstance(models, list)
+            paths = {entry.get("path") for entry in models if isinstance(entry, dict)}
+            assert str(en_model) in paths
+            assert str(es_model) in paths
+            assert str(stray_dir) not in paths
+            searched = payload.get("searched")
+            assert isinstance(searched, list)
+            assert str(models_dir) in searched
+            assert payload.get("configured_path") == str(en_model)
+            assert payload.get("configured_exists") is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
