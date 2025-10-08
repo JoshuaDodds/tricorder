@@ -50,7 +50,7 @@ import time
 import types
 import wave
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -2866,6 +2866,87 @@ LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
 )
 
+_TIMEZONE_ABBREVIATION_OFFSETS: dict[str, int] = {
+    "UTC": 0,
+    "UT": 0,
+    "GMT": 0,
+    "Z": 0,
+    "CET": 3600,
+    "CEST": 2 * 3600,
+    "BST": 3600,
+    "WET": 0,
+    "WEST": 3600,
+    "EET": 2 * 3600,
+    "EEST": 3 * 3600,
+    "MSK": 3 * 3600,
+    "SAMT": 4 * 3600,
+    "IST": 5 * 3600 + 1800,
+    "CST": -6 * 3600,
+    "CDT": -5 * 3600,
+    "EST": -5 * 3600,
+    "EDT": -4 * 3600,
+    "PST": -8 * 3600,
+    "PDT": -7 * 3600,
+    "MST": -7 * 3600,
+    "MDT": -6 * 3600,
+    "AKST": -9 * 3600,
+    "AKDT": -8 * 3600,
+    "HST": -10 * 3600,
+    "KST": 9 * 3600,
+    "JST": 9 * 3600,
+    "AEST": 10 * 3600,
+    "AEDT": 11 * 3600,
+    "ACST": 9 * 3600 + 1800,
+    "ACDT": 10 * 3600 + 1800,
+    "AWST": 8 * 3600,
+    "NZST": 12 * 3600,
+    "NZDT": 13 * 3600,
+}
+
+_TZ_OFFSET_PATTERN = re.compile(r"^(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?$")
+
+
+def _resolve_timezone_token(token: str) -> timezone | None:
+    token = (token or "").strip()
+    if not token:
+        return None
+
+    upper = token.upper()
+    if upper in {"UTC", "UT", "GMT", "Z"}:
+        return timezone.utc
+
+    try:
+        return ZoneInfo(token)
+    except Exception:
+        pass
+
+    offset_seconds: int | None = None
+    match = _TZ_OFFSET_PATTERN.match(token)
+    if match:
+        sign, hours_str, minutes_str = match.groups()
+        hours = int(hours_str)
+        minutes = int(minutes_str) if minutes_str else 0
+        offset_seconds = hours * 3600 + minutes * 60
+        if sign == "-":
+            offset_seconds = -offset_seconds
+    elif upper in _TIMEZONE_ABBREVIATION_OFFSETS:
+        offset_seconds = _TIMEZONE_ABBREVIATION_OFFSETS[upper]
+    else:
+        try:
+            if token in time.tzname:
+                if time.daylight and token == time.tzname[1]:
+                    offset_seconds = -time.altzone
+                else:
+                    offset_seconds = -time.timezone
+        except Exception:
+            offset_seconds = None
+
+    if offset_seconds is None:
+        return None
+
+    return timezone(timedelta(seconds=offset_seconds))
+
+
 _SYSTEMCTL_PROPERTIES = [
     "LoadState",
     "ActiveState",
@@ -2959,13 +3040,11 @@ def _parse_systemd_timestamp(raw: str | None) -> float | None:
     if not value or value.lower() in {"n/a", "0"}:
         return None
 
-    candidates = [value]
-    # systemd prefixes timestamps with the weekday (e.g. "Mon 2024-05-13 …").
-    # Include a variant without the weekday to simplify parsing on systems
-    # where locale-specific names might not round-trip through strptime.
     parts = value.split()
+    candidates = [value]
     if len(parts) > 1:
         candidates.append(" ".join(parts[1:]))
+    tz_token = parts[-1] if len(parts) > 1 else ""
 
     formats = (
         "%a %Y-%m-%d %H:%M:%S %z",
@@ -2983,16 +3062,7 @@ def _parse_systemd_timestamp(raw: str | None) -> float | None:
 
             tzinfo = parsed.tzinfo
             if tzinfo is None:
-                tz_token = candidate.rsplit(" ", 1)[-1]
-                if tz_token and tz_token.upper() in {"UTC", "GMT", "UT"}:
-                    tzinfo = timezone.utc
-                elif tz_token and tz_token != candidate:
-                    try:
-                        tzinfo = ZoneInfo(tz_token)
-                    except Exception:
-                        tzinfo = timezone.utc
-                else:
-                    tzinfo = timezone.utc
+                tzinfo = _resolve_timezone_token(tz_token) or timezone.utc
                 parsed = parsed.replace(tzinfo=tzinfo)
 
             try:
@@ -3001,14 +3071,27 @@ def _parse_systemd_timestamp(raw: str | None) -> float | None:
                 return None
 
     # Fallback: attempt to parse without any timezone data and assume UTC.
+    fallback_candidates: list[str] = []
+    if tz_token:
+        without_tz = " ".join(parts[:-1])
+        if without_tz:
+            fallback_candidates.append(without_tz)
+        if len(parts) > 2:
+            fallback_candidates.append(" ".join(parts[1:-1]))
+    else:
+        fallback_candidates.extend(candidates)
+
     fallback_formats = ("%a %Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S")
-    for candidate in candidates:
+    for candidate in fallback_candidates:
+        if not candidate:
+            continue
         for fmt in fallback_formats:
             try:
                 parsed = datetime.strptime(candidate, fmt)
             except ValueError:
                 continue
-            return parsed.replace(tzinfo=timezone.utc).timestamp()
+            tzinfo = _resolve_timezone_token(tz_token) or timezone.utc
+            return parsed.replace(tzinfo=tzinfo).timestamp()
 
     return None
 
