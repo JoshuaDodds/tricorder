@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import contextlib
 import copy
+import errno
 import functools
 import io
 import json
@@ -50,9 +51,10 @@ import time
 import types
 import wave
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
@@ -81,11 +83,223 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
+RAW_AUDIO_DIRNAME = ".original_wav"
 SAVED_RECORDINGS_DIRNAME = "Saved"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
+
+DEFAULT_VOSK_MODEL_ROOT = Path("/apps/tricorder/models")
+
+
+def _transcription_model_search_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(candidate: Path | str | None) -> None:
+        if not candidate:
+            return
+        try:
+            path = Path(candidate).expanduser()
+        except (TypeError, ValueError):
+            return
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            resolved = path
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    cfg = get_cfg()
+    transcription_cfg: Mapping[str, Any] | None = None
+    try:
+        raw_cfg = cfg.get("transcription")
+        if isinstance(raw_cfg, Mapping):
+            transcription_cfg = raw_cfg
+    except Exception:
+        transcription_cfg = None
+
+    if transcription_cfg:
+        model_path = (
+            transcription_cfg.get("vosk_model_path")
+            or transcription_cfg.get("model_path")
+        )
+        if isinstance(model_path, str) and model_path.strip():
+            model_dir = Path(model_path.strip()).expanduser()
+            add(model_dir)
+            add(model_dir.parent)
+
+    env_model = os.environ.get("VOSK_MODEL_PATH")
+    if env_model:
+        env_dir = Path(env_model).expanduser()
+        add(env_dir)
+        add(env_dir.parent)
+
+    add(DEFAULT_VOSK_MODEL_ROOT)
+    add(DEFAULT_VOSK_MODEL_ROOT.parent)
+
+    return roots
+
+
+def _looks_like_vosk_model(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if (path / "conf").is_dir():
+        return True
+    if (path / "model.conf").is_file():
+        return True
+
+    sentinel_hits = 0
+    directory_sentinels = ("am", "graph", "rescore", "ivector")
+    file_sentinels = ("final.mdl", "Gr.fst", "HCLr.fst", "mfcc.conf")
+
+    for name in directory_sentinels:
+        child = path / name
+        try:
+            exists = child.is_dir()
+        except OSError:
+            exists = False
+        if exists:
+            sentinel_hits += 1
+
+    for name in file_sentinels:
+        child = path / name
+        try:
+            exists = child.is_file()
+        except OSError:
+            exists = False
+        if exists:
+            sentinel_hits += 1
+
+    return sentinel_hits >= 2
+
+
+def _extract_vosk_metadata(model_dir: Path) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    meta_path = model_dir / "meta.json"
+    if meta_path.is_file():
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, Mapping):
+            for key in ("title", "name", "model_name"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    metadata["title"] = value.strip()
+                    break
+            lang_value = (
+                payload.get("lang")
+                or payload.get("language")
+                or payload.get("locale")
+            )
+            if isinstance(lang_value, str) and lang_value.strip():
+                metadata["language"] = lang_value.strip()
+
+    conf_path = model_dir / "conf" / "model.conf"
+    if "title" not in metadata and conf_path.is_file():
+        try:
+            lines = conf_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            lines = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip().lower()
+            value = value.strip()
+            if not value:
+                continue
+            if key in {"model_name", "model", "name"} and "title" not in metadata:
+                metadata["title"] = value
+            elif key in {"lang", "language"} and "language" not in metadata:
+                metadata["language"] = value
+    return metadata
+
+
+def _discover_transcription_models() -> dict[str, Any]:
+    roots = _transcription_model_search_roots()
+    models: list[dict[str, Any]] = []
+    errors: list[str] = []
+    searched: list[str] = []
+    seen_models: set[Path] = set()
+
+    for root in roots:
+        try:
+            exists = root.exists()
+        except OSError:
+            exists = False
+        if not exists or not root.is_dir():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError as exc:
+            errors.append(f"Unable to read {root}: {exc}")
+            continue
+        searched.append(str(root))
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            if not is_dir:
+                continue
+            if not _looks_like_vosk_model(entry):
+                continue
+            try:
+                resolved = entry.resolve()
+            except (OSError, RuntimeError):
+                resolved = entry
+            if resolved in seen_models:
+                continue
+            seen_models.add(resolved)
+            meta = _extract_vosk_metadata(entry)
+            label = meta.get("title") or entry.name
+            language = meta.get("language", "")
+            if language and language.lower() not in label.lower():
+                label = f"{label} ({language})"
+            models.append(
+                {
+                    "name": entry.name,
+                    "path": str(resolved),
+                    "label": label,
+                    "language": language or None,
+                }
+            )
+
+    models.sort(key=lambda item: (item.get("label") or item.get("name") or "").lower())
+
+    configured_path = ""
+    configured_exists = False
+    try:
+        cfg = get_cfg()
+        transcription_cfg = cfg.get("transcription")
+    except Exception:
+        transcription_cfg = None
+
+    if isinstance(transcription_cfg, Mapping):
+        raw_path = transcription_cfg.get("vosk_model_path") or transcription_cfg.get("model_path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            normalized = Path(raw_path.strip()).expanduser()
+            configured_path = str(normalized)
+            try:
+                configured_exists = normalized.exists()
+            except OSError:
+                configured_exists = False
+
+    return {
+        "models": models,
+        "searched": searched,
+        "configured_path": configured_path,
+        "configured_exists": configured_exists,
+        "errors": errors,
+    }
 
 
 def _noop_callback(*_args, **_kwargs) -> None:
@@ -670,6 +884,7 @@ def _segmenter_defaults() -> dict[str, Any]:
     return {
         "pre_pad_ms": 2000,
         "post_pad_ms": 3000,
+        "motion_release_padding_minutes": 0.0,
         "rms_threshold": 300,
         "keep_window_frames": 30,
         "start_consecutive": 25,
@@ -888,6 +1103,16 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
                 if candidate > 600.0:
                     candidate = 600.0
                 result["min_clip_seconds"] = candidate
+
+        padding_minutes = raw.get("motion_release_padding_minutes")
+        if isinstance(padding_minutes, (int, float)) and not isinstance(padding_minutes, bool):
+            candidate = float(padding_minutes)
+            if math.isfinite(candidate):
+                if candidate < 0.0:
+                    candidate = 0.0
+                if candidate > 30.0:
+                    candidate = 30.0
+                result["motion_release_padding_minutes"] = candidate
 
         for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
             value = raw.get(key)
@@ -1474,6 +1699,16 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
     )
     if min_clip is not None:
         normalized["min_clip_seconds"] = min_clip
+
+    motion_padding = _coerce_float(
+        payload.get("motion_release_padding_minutes"),
+        "motion_release_padding_minutes",
+        errors,
+        min_value=0.0,
+        max_value=30.0,
+    )
+    if motion_padding is not None:
+        normalized["motion_release_padding_minutes"] = motion_padding
 
     for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
         normalized[field] = _bool_from_any(payload.get(field))
@@ -2177,6 +2412,8 @@ def _scan_recordings_worker(
             dir_path = Path(dirpath)
             if RECYCLE_BIN_DIRNAME in dir_path.parts:
                 continue
+            if RAW_AUDIO_DIRNAME in dir_path.parts:
+                continue
 
             try:
                 rel_dir = dir_path.relative_to(recordings_root)
@@ -2187,15 +2424,17 @@ def _scan_recordings_worker(
                 dirnames[:] = []
                 continue
 
+            exclude_names = {RECYCLE_BIN_DIRNAME, RAW_AUDIO_DIRNAME}
+
             if dir_path == recordings_root:
                 dirnames[:] = [
                     name
                     for name in dirnames
-                    if name != RECYCLE_BIN_DIRNAME and name not in skip_set
+                    if name not in exclude_names and name not in skip_set
                 ]
             else:
                 dirnames[:] = [
-                    name for name in dirnames if name != RECYCLE_BIN_DIRNAME
+                    name for name in dirnames if name not in exclude_names
                 ]
 
             for filename in filenames:
@@ -2306,6 +2545,14 @@ def _scan_recordings_worker(
         else:
             duration = _probe_duration(path, stat)
 
+        raw_audio_rel = ""
+        if waveform_meta is not None:
+            raw_candidate = waveform_meta.get("raw_audio_path")
+            if isinstance(raw_candidate, str):
+                raw_audio_rel = raw_candidate.strip()
+                if raw_audio_rel and not _is_safe_relative_path(raw_audio_rel):
+                    raw_audio_rel = ""
+
         trigger_offset = _float_or_none(
             waveform_meta.get("trigger_offset_seconds") if waveform_meta else None
         )
@@ -2353,6 +2600,7 @@ def _scan_recordings_worker(
                 "start_epoch": start_epoch,
                 "started_epoch": start_epoch,
                 "started_at": started_at_iso,
+                "raw_audio_path": raw_audio_rel,
                 "has_transcript": bool(transcript_path_rel),
                 "transcript_path": transcript_path_rel,
                 "transcript_text": transcript_text,
@@ -2472,6 +2720,20 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         except (OverflowError, OSError, ValueError):
             started_at_value = ""
 
+    raw_audio_name_raw = metadata.get("raw_audio_name")
+    if isinstance(raw_audio_name_raw, str):
+        raw_audio_name = raw_audio_name_raw.strip()
+    else:
+        raw_audio_name = ""
+
+    raw_audio_path_raw = metadata.get("raw_audio_path")
+    if isinstance(raw_audio_path_raw, str):
+        raw_audio_path = raw_audio_path_raw.strip()
+    else:
+        raw_audio_path = ""
+    if raw_audio_path and not _is_safe_relative_path(raw_audio_path):
+        raw_audio_path = ""
+
     return {
         "id": entry_id,
         "dir": entry_dir,
@@ -2489,32 +2751,101 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "start_epoch": start_epoch,
         "started_epoch": start_epoch,
         "started_at": started_at_value,
+        "raw_audio_name": raw_audio_name,
+        "raw_audio_path": raw_audio_path,
     }
 
 
-def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
+def _calculate_directory_usage(
+    root: Path,
+    *,
+    skip_top_level: Collection[str] | None = None,
+) -> int:
     total = 0
-    if not recycle_root.exists():
-        return 0
+
+    log = logging.getLogger("web_streamer")
+
     try:
-        candidates = list(recycle_root.iterdir())
-    except OSError:
+        if not root.exists():
+            return 0
+    except OSError as error:
+        log.warning("storage usage: unable to access %s (%s)", root, error)
         return 0
-    for entry_dir in candidates:
-        data = _read_recycle_entry(entry_dir)
-        if not data:
+
+    try:
+        with os.scandir(root):
+            pass
+    except FileNotFoundError:
+        return 0
+    except NotADirectoryError as error:
+        log.warning("storage usage: %s is not a directory (%s)", root, error)
+        return 0
+    except OSError as error:
+        errno_value = getattr(error, "errno", None)
+        if errno_value == errno.ENOENT:
+            return 0
+        log.warning("storage usage: unable to access %s (%s)", root, error)
+        return 0
+
+    skip = {
+        str(name).strip()
+        for name in (skip_top_level or [])
+        if isinstance(name, str) and str(name).strip()
+    }
+
+    def _on_error(error: OSError) -> None:
+        location = Path(getattr(error, "filename", None) or root)
+        errno_value = getattr(error, "errno", None)
+        if isinstance(error, FileNotFoundError) or errno_value in {errno.ENOENT, errno.ENOTDIR}:
+            log.debug("storage usage: %s disappeared before it could be scanned (%s)", location, error)
+            return
+        log.warning("storage usage: unable to access %s (%s)", location, error)
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_error):
+        dir_path = Path(dirpath)
+        try:
+            rel_parts = dir_path.relative_to(root).parts
+        except ValueError:
+            rel_parts = ()
+
+        if rel_parts and rel_parts[0] in skip:
+            dirnames[:] = []
             continue
-        size_bytes = data.get("size_bytes")
-        if isinstance(size_bytes, (int, float)):
-            total += int(size_bytes)
-            continue
-        audio_path = data.get("audio_path")
-        if isinstance(audio_path, Path):
+
+        dirnames[:] = [name for name in dirnames if name not in skip]
+
+        for filename in filenames:
+            candidate = dir_path / filename
             try:
-                total += int(audio_path.stat().st_size)
-            except OSError:
+                total += max(int(candidate.stat().st_size), 0)
+            except FileNotFoundError as error:
+                log.debug(
+                    "storage usage: %s disappeared before stat (%s)",
+                    candidate,
+                    error,
+                )
                 continue
+            except OSError as error:
+                errno_value = getattr(error, "errno", None)
+                if errno_value == errno.ENOENT:
+                    log.debug(
+                        "storage usage: %s disappeared before stat (%s)",
+                        candidate,
+                        error,
+                    )
+                    continue
+                log.warning(
+                    "storage usage: unable to stat %s (%s)",
+                    candidate,
+                    error,
+                )
+                continue
+
     return max(total, 0)
+
+
+def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
+    return _calculate_directory_usage(recycle_root)
 
 def _service_label_from_unit(unit: str) -> str:
     base = unit.split(".", 1)[0]
@@ -2603,6 +2934,87 @@ LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
 )
 
+_TIMEZONE_ABBREVIATION_OFFSETS: dict[str, int] = {
+    "UTC": 0,
+    "UT": 0,
+    "GMT": 0,
+    "Z": 0,
+    "CET": 3600,
+    "CEST": 2 * 3600,
+    "BST": 3600,
+    "WET": 0,
+    "WEST": 3600,
+    "EET": 2 * 3600,
+    "EEST": 3 * 3600,
+    "MSK": 3 * 3600,
+    "SAMT": 4 * 3600,
+    "IST": 5 * 3600 + 1800,
+    "CST": -6 * 3600,
+    "CDT": -5 * 3600,
+    "EST": -5 * 3600,
+    "EDT": -4 * 3600,
+    "PST": -8 * 3600,
+    "PDT": -7 * 3600,
+    "MST": -7 * 3600,
+    "MDT": -6 * 3600,
+    "AKST": -9 * 3600,
+    "AKDT": -8 * 3600,
+    "HST": -10 * 3600,
+    "KST": 9 * 3600,
+    "JST": 9 * 3600,
+    "AEST": 10 * 3600,
+    "AEDT": 11 * 3600,
+    "ACST": 9 * 3600 + 1800,
+    "ACDT": 10 * 3600 + 1800,
+    "AWST": 8 * 3600,
+    "NZST": 12 * 3600,
+    "NZDT": 13 * 3600,
+}
+
+_TZ_OFFSET_PATTERN = re.compile(r"^(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?$")
+
+
+def _resolve_timezone_token(token: str) -> timezone | None:
+    token = (token or "").strip()
+    if not token:
+        return None
+
+    upper = token.upper()
+    if upper in {"UTC", "UT", "GMT", "Z"}:
+        return timezone.utc
+
+    try:
+        return ZoneInfo(token)
+    except Exception:
+        pass
+
+    offset_seconds: int | None = None
+    match = _TZ_OFFSET_PATTERN.match(token)
+    if match:
+        sign, hours_str, minutes_str = match.groups()
+        hours = int(hours_str)
+        minutes = int(minutes_str) if minutes_str else 0
+        offset_seconds = hours * 3600 + minutes * 60
+        if sign == "-":
+            offset_seconds = -offset_seconds
+    elif upper in _TIMEZONE_ABBREVIATION_OFFSETS:
+        offset_seconds = _TIMEZONE_ABBREVIATION_OFFSETS[upper]
+    else:
+        try:
+            if token in time.tzname:
+                if time.daylight and token == time.tzname[1]:
+                    offset_seconds = -time.altzone
+                else:
+                    offset_seconds = -time.timezone
+        except Exception:
+            offset_seconds = None
+
+    if offset_seconds is None:
+        return None
+
+    return timezone(timedelta(seconds=offset_seconds))
+
+
 _SYSTEMCTL_PROPERTIES = [
     "LoadState",
     "ActiveState",
@@ -2614,6 +3026,7 @@ _SYSTEMCTL_PROPERTIES = [
     "CanReload",
     "CanRestart",
     "TriggeredBy",
+    "ActiveEnterTimestamp",
 ]
 
 
@@ -2690,6 +3103,67 @@ def _summarize_state(load_state: str, active_state: str, sub_state: str) -> str:
     return "Unknown"
 
 
+def _parse_systemd_timestamp(raw: str | None) -> float | None:
+    value = str(raw or "").strip()
+    if not value or value.lower() in {"n/a", "0"}:
+        return None
+
+    parts = value.split()
+    candidates = [value]
+    if len(parts) > 1:
+        candidates.append(" ".join(parts[1:]))
+    tz_token = parts[-1] if len(parts) > 1 else ""
+
+    formats = (
+        "%a %Y-%m-%d %H:%M:%S %z",
+        "%a %Y-%m-%d %H:%M:%S %Z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%d %H:%M:%S %Z",
+    )
+
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+
+            tzinfo = parsed.tzinfo
+            if tzinfo is None:
+                tzinfo = _resolve_timezone_token(tz_token) or timezone.utc
+                parsed = parsed.replace(tzinfo=tzinfo)
+
+            try:
+                return parsed.timestamp()
+            except (OverflowError, OSError):  # pragma: no cover - platform dependent
+                return None
+
+    # Fallback: attempt to parse without any timezone data and assume UTC.
+    fallback_candidates: list[str] = []
+    if tz_token:
+        without_tz = " ".join(parts[:-1])
+        if without_tz:
+            fallback_candidates.append(without_tz)
+        if len(parts) > 2:
+            fallback_candidates.append(" ".join(parts[1:-1]))
+    else:
+        fallback_candidates.extend(candidates)
+
+    fallback_formats = ("%a %Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S")
+    for candidate in fallback_candidates:
+        if not candidate:
+            continue
+        for fmt in fallback_formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            tzinfo = _resolve_timezone_token(tz_token) or timezone.utc
+            return parsed.replace(tzinfo=tzinfo).timestamp()
+
+    return None
+
+
 async def _fetch_service_status(unit: str) -> dict[str, Any]:
     code, stdout, stderr = await _run_systemctl([
         "show",
@@ -2713,6 +3187,8 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
             "status_text": f"Unavailable ({error})",
             "is_active": False,
             "triggered_by": [],
+            "active_enter_timestamp": "",
+            "active_enter_epoch": None,
         }
 
     data = _parse_show_output(stdout, _SYSTEMCTL_PROPERTIES)
@@ -2727,6 +3203,13 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
     can_restart = data.get("CanRestart", "no").lower() == "yes"
     triggered_raw = data.get("TriggeredBy", "")
     triggered = [token.strip() for token in triggered_raw.split() if token.strip()]
+    active_enter_epoch = _parse_systemd_timestamp(data.get("ActiveEnterTimestamp"))
+    if active_enter_epoch is not None:
+        active_enter_timestamp = datetime.fromtimestamp(
+            active_enter_epoch, tz=timezone.utc
+        ).isoformat()
+    else:
+        active_enter_timestamp = ""
     return {
         "available": True,
         "error": "",
@@ -2742,6 +3225,8 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
         "status_text": summary,
         "is_active": active_state.lower() in {"active", "reloading", "activating"},
         "triggered_by": triggered,
+        "active_enter_timestamp": active_enter_timestamp,
+        "active_enter_epoch": active_enter_epoch,
     }
 
 
@@ -4270,7 +4755,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload["collection"] = collection
         payload["available_days"] = available_days
         payload["available_extensions"] = available_exts
-        payload["recordings_total_bytes"] = total_bytes
+        log = logging.getLogger("web_streamer")
+        loop = asyncio.get_running_loop()
+        recordings_usage_task = loop.run_in_executor(
+            None,
+            functools.partial(
+                _calculate_directory_usage,
+                recordings_root,
+                skip_top_level=(RECYCLE_BIN_DIRNAME,),
+            ),
+        )
         try:
             usage = shutil.disk_usage(recordings_root)
         except (FileNotFoundError, PermissionError, OSError):
@@ -4279,8 +4773,29 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             payload["storage_total_bytes"] = int(usage.total)
             payload["storage_used_bytes"] = int(usage.used)
             payload["storage_free_bytes"] = int(usage.free)
-        recycle_root = request.app.get(RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME)
-        payload["recycle_bin_total_bytes"] = _calculate_recycle_bin_usage(recycle_root)
+        recycle_root = request.app.get(
+            RECYCLE_BIN_ROOT_KEY, recordings_root / RECYCLE_BIN_DIRNAME
+        )
+        recycle_usage_task = loop.run_in_executor(
+            None,
+            functools.partial(_calculate_recycle_bin_usage, recycle_root),
+        )
+        try:
+            payload["recordings_total_bytes"] = int(await recordings_usage_task)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.warning(
+                "recordings_api: unable to calculate recordings usage: %s",
+                exc,
+            )
+            payload["recordings_total_bytes"] = int(total_bytes)
+        try:
+            payload["recycle_bin_total_bytes"] = int(await recycle_usage_task)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.warning(
+                "recordings_api: unable to calculate recycle bin usage: %s",
+                exc,
+            )
+            payload["recycle_bin_total_bytes"] = 0
         payload["capture_status"] = _read_capture_status()
         payload["motion_state"] = _motion_state_snapshot()
         return web.json_response(payload)
@@ -4391,6 +4906,22 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 except (OSError, json.JSONDecodeError):
                     waveform_meta = None
 
+            raw_audio_rel = ""
+            raw_audio_source: Path | None = None
+            if waveform_meta is not None:
+                raw_candidate = waveform_meta.get("raw_audio_path")
+                if isinstance(raw_candidate, str):
+                    candidate_str = raw_candidate.strip()
+                    if candidate_str and _is_safe_relative_path(candidate_str):
+                        candidate_path = recordings_root / candidate_str
+                        try:
+                            candidate_path.relative_to(recordings_root_resolved)
+                        except Exception:
+                            raw_audio_source = None
+                        else:
+                            raw_audio_rel = candidate_str
+                            raw_audio_source = candidate_path
+
             now = datetime.now(timezone.utc)
             entry_dir: Path | None = None
             entry_id = ""
@@ -4419,6 +4950,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             audio_destination = entry_dir / resolved.name
             waveform_name = ""
             transcript_name = ""
+            raw_audio_name = ""
             duration_value: float | None = None
 
             if waveform_meta is not None:
@@ -4445,11 +4977,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     shutil.move(str(transcript_sidecar), str(transcript_destination))
                     moved_pairs.append((transcript_destination, transcript_sidecar))
 
+                if raw_audio_source and raw_audio_source.exists():
+                    raw_audio_name = raw_audio_source.name
+                    raw_destination = entry_dir / raw_audio_name
+                    shutil.move(str(raw_audio_source), str(raw_destination))
+                    moved_pairs.append((raw_destination, raw_audio_source))
+
                 metadata = {
                     "id": entry_id,
                     "stored_name": resolved.name,
                     "original_name": resolved.name,
                     "original_path": rel_posix,
+                    "raw_audio_path": raw_audio_rel,
+                    "raw_audio_name": raw_audio_name,
                     "deleted_at": now.isoformat(),
                     "deleted_at_epoch": now.timestamp(),
                     "size_bytes": int(getattr(stat_result, "st_size", 0)),
@@ -4483,6 +5023,27 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 except Exception:
                     pass
                 continue
+
+            if raw_audio_name and raw_audio_source:
+                raw_root = recordings_root / RAW_AUDIO_DIRNAME
+                raw_parent = raw_audio_source.parent
+                while (
+                    raw_parent != raw_root
+                    and raw_parent != recordings_root
+                    and raw_parent != raw_parent.parent
+                ):
+                    try:
+                        next(raw_parent.iterdir())
+                    except StopIteration:
+                        try:
+                            raw_parent.rmdir()
+                        except OSError:
+                            break
+                        raw_parent = raw_parent.parent
+                        continue
+                    except Exception:
+                        break
+                    break
 
             parent = resolved.parent
             while parent != recordings_root and parent != parent.parent:
@@ -4950,6 +5511,24 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         shutil.move(str(source), str(destination))
                     except Exception as exc:
                         sidecar_errors.append(f"transcript: {exc}")
+
+            raw_audio_name = data.get("raw_audio_name")
+            raw_audio_rel = data.get("raw_audio_path")
+            if (
+                isinstance(raw_audio_name, str)
+                and raw_audio_name
+                and isinstance(raw_audio_rel, str)
+                and raw_audio_rel
+                and _is_safe_relative_path(raw_audio_rel)
+            ):
+                raw_source = data["dir"] / raw_audio_name
+                raw_destination = recordings_root / raw_audio_rel
+                if raw_source.exists():
+                    try:
+                        raw_destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(raw_source), str(raw_destination))
+                    except Exception as exc:
+                        sidecar_errors.append(f"raw audio: {exc}")
 
             try:
                 metadata_path = data.get("metadata_path")
@@ -5745,6 +6324,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             canonical_fn=_canonical_transcription_settings,
         )
 
+    async def transcription_models_get(request: web.Request) -> web.Response:
+        payload = _discover_transcription_models()
+        return web.json_response(payload)
+
     async def config_logging_get(request: web.Request) -> web.Response:
         return await _settings_get("logging", _canonical_logging_settings)
 
@@ -6224,6 +6807,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/config/ingest", config_ingest_update)
     app.router.add_get("/api/config/transcription", config_transcription_get)
     app.router.add_post("/api/config/transcription", config_transcription_update)
+    app.router.add_get("/api/transcription/models", transcription_models_get)
     app.router.add_get("/api/config/logging", config_logging_get)
     app.router.add_post("/api/config/logging", config_logging_update)
     app.router.add_get("/api/config/streaming", config_streaming_get)

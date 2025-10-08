@@ -90,16 +90,24 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
         handle.writeframes(b"\x00\x00" * frame_count)
 
 
-def _run_dashboard_selection_script(script: str) -> dict:
+def _run_dashboard_selection_script(
+    script: str, *, elements: dict[str, object] | None = None
+) -> dict:
     root = Path(__file__).resolve().parents[1]
     node_path = shutil.which("node")
     if node_path is None:
         pytest.skip("Node.js binary is required for dashboard selection script tests")
     indented_script = textwrap.indent(script, "        ")
+    overrides = json.dumps(elements or {})
     template = """
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
+        const overrides = {overrides};
+        if (overrides && Object.keys(overrides).length > 0) {{
+          global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
+        }}
         const sandbox = loadDashboard();
+        delete global.__DASHBOARD_ELEMENT_OVERRIDES;
         const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
         if (!state) {{
           throw new Error("Dashboard state is unavailable for tests");
@@ -118,7 +126,9 @@ def _run_dashboard_selection_script(script: str) -> dict:
         }})();
         console.log(JSON.stringify(result));
     """
-    node_code = textwrap.dedent(template).format(script=indented_script)
+    node_code = textwrap.dedent(template).format(
+        script=indented_script, overrides=overrides
+    )
     completed = subprocess.run(
         [node_path, "-e", node_code],
         capture_output=True,
@@ -1504,6 +1514,76 @@ def test_transcription_settings_require_model_path(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_transcription_model_discovery(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    en_model = models_dir / "vosk-small-en"
+    (en_model / "conf").mkdir(parents=True)
+    (en_model / "conf" / "model.conf").write_text(
+        "model_name = English Small\nlang = en-US\n",
+        encoding="utf-8",
+    )
+    (en_model / "meta.json").write_text(
+        json.dumps({"title": "English Small", "lang": "en"}),
+        encoding="utf-8",
+    )
+
+    es_model = models_dir / "vosk-small-es"
+    (es_model / "conf").mkdir(parents=True)
+    (es_model / "conf" / "model.conf").write_text(
+        "model_name = Español\nlang = es\n",
+        encoding="utf-8",
+    )
+
+    legacy_model = models_dir / "vosk-model-small-tr-0.3"
+    (legacy_model / "ivector").mkdir(parents=True)
+    (legacy_model / "final.mdl").write_bytes(b"")
+    (legacy_model / "Gr.fst").write_bytes(b"")
+
+    stray_dir = models_dir / "notes"
+    stray_dir.mkdir()
+
+    config_path.write_text(
+        f"transcription:\n  vosk_model_path: {en_model}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/transcription/models")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert isinstance(payload, dict)
+            models = payload.get("models")
+            assert isinstance(models, list)
+            paths = {entry.get("path") for entry in models if isinstance(entry, dict)}
+            assert str(en_model) in paths
+            assert str(es_model) in paths
+            assert str(legacy_model) in paths
+            assert str(stray_dir) not in paths
+            searched = payload.get("searched")
+            assert isinstance(searched, list)
+            assert str(models_dir) in searched
+            assert payload.get("configured_path") == str(en_model)
+            assert payload.get("configured_exists") is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not available")
@@ -1973,6 +2053,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 12:34:56 UTC",
             ),
             "web-streamer.service": (
                 "loaded",
@@ -1985,6 +2066,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 11:22:33 UTC",
             ),
         }
 
@@ -2003,6 +2085,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                         "no",
                         "no",
                         "no",
+                        "",
                         "",
                     ),
                 )
@@ -2027,6 +2110,76 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
             recorder = next((item for item in services if item["unit"] == "voice-recorder.service"), None)
             assert recorder is not None
             assert recorder["status_text"].startswith("Active")
+            expected_epoch = datetime(2024, 5, 14, 12, 34, 56, tzinfo=timezone.utc).timestamp()
+            assert recorder.get("active_enter_epoch") == pytest.approx(expected_epoch)
+            assert recorder.get("active_enter_timestamp", "").startswith("2024-05-14T12:34:56")
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_services_endpoint_parses_dst_timezone_epoch(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Voice Recorder",
+                "yes",
+                "yes",
+                "yes",
+                "no",
+                "",
+                "Wed 2025-10-08 16:33:00 CEST",
+            )
+        }
+
+        async def fake_systemctl(args):
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = show_map.get(
+                    unit,
+                    (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "no",
+                        "no",
+                        "no",
+                        "no",
+                        "",
+                        "",
+                    ),
+                )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            payload = await resp.json()
+            services = payload.get("services", [])
+            assert isinstance(services, list) and services, "Expected services in payload"
+            recorder = next((item for item in services if item["unit"] == "voice-recorder.service"), None)
+            assert recorder is not None
+            expected_epoch = datetime(2025, 10, 8, 14, 33, tzinfo=timezone.utc).timestamp()
+            assert recorder.get("active_enter_epoch") == pytest.approx(expected_epoch)
+            assert recorder.get("active_enter_timestamp", "").startswith("2025-10-08T14:33:00")
         finally:
             await client.close()
             await server.close()
@@ -2048,6 +2201,7 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 11:22:33 UTC",
             )
         }
 
@@ -2066,6 +2220,7 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
                         "yes",
                         "no",
                         "yes",
+                        "",
                         "",
                     ),
                 )
@@ -2125,6 +2280,7 @@ def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 12:34:56 UTC",
             ),
             "web-streamer.service": (
                 "loaded",
@@ -2137,6 +2293,7 @@ def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 11:22:33 UTC",
             ),
         }
 
@@ -2159,6 +2316,7 @@ def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_
                         "yes",
                         "no",
                         "yes",
+                        "",
                         "",
                     )
                 payload = "\n".join(
@@ -2410,6 +2568,127 @@ def test_recordings_bulk_download_includes_sidecars(dashboard_env):
             await server.close()
 
     asyncio.run(runner())
+
+
+def test_recording_indicator_motion_badge_tracks_live_flag():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        sandbox.setRecordingIndicatorStatus({
+          capturing: true,
+          motion_active: true,
+          event: { motion_trigger_offset_seconds: 0.25 }
+        });
+        const shownDuringMotion = motionBadge.hidden === false;
+        sandbox.setRecordingIndicatorStatus({
+          capturing: true,
+          motion_active: false,
+          event: {
+            motion_trigger_offset_seconds: 0.25,
+            motion_release_offset_seconds: 0.75
+          }
+        });
+        const hiddenAfterRelease = motionBadge.hidden === true;
+        sandbox.setRecordingIndicatorStatus({
+          capturing: true,
+          motion_active: true,
+          event: {
+            motion_trigger_offset_seconds: 0.25,
+            motion_release_offset_seconds: 0.75
+          }
+        });
+        const shownAfterReturn = motionBadge.hidden === false;
+        return {
+          shownDuringMotion,
+          hiddenAfterRelease,
+          shownAfterReturn,
+          state: indicator.dataset.state,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["shownDuringMotion"] is True
+    assert result["hiddenAfterRelease"] is True
+    assert result["shownAfterReturn"] is True
+    assert result["state"] == "active"
+
+
+def test_recording_indicator_motion_uses_snapshot_flag_immediately():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        sandbox.setRecordingIndicatorStatus(
+          {
+            capturing: true,
+            event: {
+              motion_trigger_offset_seconds: 0.5,
+              motion_release_offset_seconds: 2.0,
+            }
+          },
+          { motion_active: true }
+        );
+        const shownWithSnapshot = motionBadge.hidden === false;
+        sandbox.setRecordingIndicatorStatus(
+          {
+            capturing: true,
+            event: {
+              motion_trigger_offset_seconds: 0.5,
+              motion_release_offset_seconds: 2.0,
+            }
+          },
+          { motion_active: false }
+        );
+        const hiddenAfterSnapshot = motionBadge.hidden === true;
+        return {
+          shownWithSnapshot,
+          hiddenAfterSnapshot,
+          state: indicator.dataset.state,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["shownWithSnapshot"] is True
+    assert result["hiddenAfterSnapshot"] is True
+    assert result["state"] == "active"
+
+
+def test_motion_trigger_detection_persists_for_recordings():
+    script = textwrap.dedent(
+        """
+        const releaseOnly = sandbox.isMotionTriggeredEvent({
+          motion_release_offset_seconds: 1.25,
+          motion_active: false
+        });
+        const startedEpoch = sandbox.isMotionTriggeredEvent({
+          motion_started_epoch: 1700000000,
+          motion_active: false
+        });
+        const none = sandbox.isMotionTriggeredEvent({ motion_active: false });
+        return { releaseOnly, startedEpoch, none };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["releaseOnly"] is True
+    assert result["startedEpoch"] is True
+    assert result["none"] is False
 
 
 def test_shift_click_selects_range_between_non_adjacent_records():

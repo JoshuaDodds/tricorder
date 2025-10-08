@@ -89,7 +89,7 @@ Frames originate on the USB microphone (or other ALSA device) and are pulled acr
 3. **Fan-out hub** – the daemon forwards filtered frames to two destinations:
    - `TimelineRecorder` in `lib.segmenter` for event detection, WAV staging, notification dispatch, and coordination with `bin/encode_and_store.sh`.
    - `HLSTee` / `WebRTCBufferWriter` so live listeners can attach without disturbing capture cadence.
-4. **Encoding + storage** – the encoder script writes Opus files, waveform JSON, and transcript sidecars into `/apps/tricorder/recordings`, kicks off post-encode archival backends via `lib.archival`, and relies on `lib.fault_handler` to triage any encoding failures.
+4. **Encoding + storage** – the encoder script writes Opus files, waveform JSON, transcript sidecars, and now preserves the source WAV in `/apps/tricorder/recordings/.original_wav/<YYYYMMDD>/`. It then kicks off post-encode archival backends via `lib.archival` and relies on `lib.fault_handler` to triage any encoding failures.
 
 `lib.hls_controller` brokers HLS encoder lifecycles on behalf of the dashboard, while the WebRTC branch keeps a bounded history buffer that the browser drains when establishing a peer connection. Dropbox ingest feeds the same timeline recorder, guaranteeing that external files experience identical filtering, encoding, waveform generation, and transcription steps.
 
@@ -185,6 +185,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 `lib/web_streamer.py` + `lib/webui` expose a dashboard at `/` with the following capabilities:
 
 - Live recorder status and listener counts with encoder start/stop controls.
+- Recorder uptime tile showing how long `voice-recorder.service` has been active since the last start.
 - Manual **Split Event** control to finalize the current recording and immediately begin a new segment without interrupting encoding.
 - Manual **Record** toggle to force continuous recording and skip offline filter passes when you need uninterrupted capture.
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
@@ -229,6 +230,8 @@ The live recorder loads `audio.filter_chain` once on startup and runs the config
 Transcripts default to Human-tagged events only; adjust `transcription.types` to include other event tags such as `Both` if desired. The web dashboard exposes `transcript_excerpt`, `transcript_path`, and timestamps through `/api/recordings`, and searches include transcript text in addition to filenames. Because Vosk models are not bundled with the project, download the desired language model separately and update `transcription.vosk_model_path` to point at the unpacked folder.
 
 Open the dashboard’s ☰ menu → **Recorder configuration** → **Transcription** to adjust these settings without editing YAML; changes remain synchronized with `config.yaml`.
+
+The web UI also offers a **Detect models** action that scans common directories (including the currently configured location) for unpacked Vosk models. When a match is found you can select it from the list to populate `transcription.vosk_model_path`, and the status message warns if the configured directory is missing on disk. The discovery heuristics cover both modern Vosk layouts (`conf/` + `model.conf`) and legacy tarballs that only include decoder assets such as `final.mdl`/`Gr.fst`, so older language packs appear alongside the latest builds.
 
 ### Running locally
 
@@ -429,6 +432,7 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in.
+- `segmenter.motion_release_padding_minutes` keeps motion-forced recordings alive for the configured minutes after the motion integration clears, delaying the hand-off back to RMS/adaptive/VAD gating so conversation tails are not clipped.
 - Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).

@@ -118,6 +118,7 @@ _DEFAULTS: Dict[str, Any] = {
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
         "min_clip_seconds": 0.0,
+        "motion_release_padding_minutes": 0.0,
         "event_tags": EVENT_TAG_DEFAULTS.copy(),
     },
     "adaptive_rms": {

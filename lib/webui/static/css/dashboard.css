@@ -778,6 +778,17 @@ body[data-theme="light"] .app-menu-toggle {
   margin-top: 0.35rem;
 }
 
+.stat-uptime .value {
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-uptime .hint {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
 .main-grid {
   display: flex;
   flex-direction: column;
@@ -1410,6 +1421,21 @@ button.small {
   min-height: 1rem;
   font-size: 0.85rem;
   color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.clipper-status[data-state="pending"]::before {
+  content: "";
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-right-color: transparent;
+  animation: clipper-status-spin 0.85s linear infinite;
 }
 
 .clipper-container[data-enabled="false"] .clipper-status {
@@ -1422,6 +1448,23 @@ button.small {
 
 .clipper-status[data-state="success"] {
   color: rgba(52, 211, 153, 0.9);
+}
+
+.clipper-container[data-busy="true"] {
+  cursor: progress;
+}
+
+.clipper-container[data-busy="true"] button {
+  cursor: progress;
+}
+
+@keyframes clipper-status-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .clipper-summary {
@@ -2082,6 +2125,57 @@ body[data-scroll-locked="true"] {
 .settings-field textarea {
   min-height: 3.5rem;
   resize: vertical;
+}
+
+.settings-field .field-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-field .field-input-row input[type="text"] {
+  flex: 1 1 16rem;
+}
+
+.settings-field .field-input-row button {
+  flex: 0 0 auto;
+}
+
+.model-discovery {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--card-border);
+  background: var(--surface-overlay);
+}
+
+.model-discovery label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.model-discovery select {
+  min-height: 6.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--card-border);
+  background: var(--surface-muted);
+  color: var(--text);
+  padding: 0.5rem;
+}
+
+.model-discovery-actions {
+  justify-content: flex-start;
+}
+
+.model-discovery-status {
+  min-height: 0;
+}
+
+.model-discovery-status[aria-hidden="true"] {
+  display: none;
 }
 
 .checkbox-field .field-control {
