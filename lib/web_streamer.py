@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import contextlib
 import copy
+import errno
 import functools
 import io
 import json
@@ -2761,10 +2762,31 @@ def _calculate_directory_usage(
     skip_top_level: Collection[str] | None = None,
 ) -> int:
     total = 0
-    if not root.exists():
-        return 0
 
     log = logging.getLogger("web_streamer")
+
+    try:
+        if not root.exists():
+            return 0
+    except OSError as error:
+        log.warning("storage usage: unable to access %s (%s)", root, error)
+        return 0
+
+    try:
+        with os.scandir(root):
+            pass
+    except FileNotFoundError:
+        return 0
+    except NotADirectoryError as error:
+        log.warning("storage usage: %s is not a directory (%s)", root, error)
+        return 0
+    except OSError as error:
+        errno_value = getattr(error, "errno", None)
+        if errno_value == errno.ENOENT:
+            return 0
+        log.warning("storage usage: unable to access %s (%s)", root, error)
+        return 0
+
     skip = {
         str(name).strip()
         for name in (skip_top_level or [])
@@ -2772,7 +2794,11 @@ def _calculate_directory_usage(
     }
 
     def _on_error(error: OSError) -> None:
-        location = getattr(error, "filename", None) or root
+        location = Path(getattr(error, "filename", None) or root)
+        errno_value = getattr(error, "errno", None)
+        if isinstance(error, FileNotFoundError) or errno_value in {errno.ENOENT, errno.ENOTDIR}:
+            log.debug("storage usage: %s disappeared before it could be scanned (%s)", location, error)
+            return
         log.warning("storage usage: unable to access %s (%s)", location, error)
 
     for dirpath, dirnames, filenames in os.walk(root, onerror=_on_error):
@@ -2792,7 +2818,22 @@ def _calculate_directory_usage(
             candidate = dir_path / filename
             try:
                 total += max(int(candidate.stat().st_size), 0)
+            except FileNotFoundError as error:
+                log.debug(
+                    "storage usage: %s disappeared before stat (%s)",
+                    candidate,
+                    error,
+                )
+                continue
             except OSError as error:
+                errno_value = getattr(error, "errno", None)
+                if errno_value == errno.ENOENT:
+                    log.debug(
+                        "storage usage: %s disappeared before stat (%s)",
+                        candidate,
+                        error,
+                    )
+                    continue
                 log.warning(
                     "storage usage: unable to stat %s (%s)",
                     candidate,
