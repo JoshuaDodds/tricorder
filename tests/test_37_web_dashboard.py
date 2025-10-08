@@ -92,6 +92,9 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
 
 def _run_dashboard_selection_script(script: str) -> dict:
     root = Path(__file__).resolve().parents[1]
+    node_path = shutil.which("node")
+    if node_path is None:
+        pytest.skip("Node.js binary is required for dashboard selection script tests")
     indented_script = textwrap.indent(script, "        ")
     template = """
         const path = require("path");
@@ -117,7 +120,7 @@ def _run_dashboard_selection_script(script: str) -> dict:
     """
     node_code = textwrap.dedent(template).format(script=indented_script)
     completed = subprocess.run(
-        ["node", "-e", node_code],
+        [node_path, "-e", node_code],
         capture_output=True,
         text=True,
         check=True,
