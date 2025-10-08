@@ -306,8 +306,7 @@ tricorder/
 │   └── Dockerfile
 ├── config.yaml                # Default configuration shipped with the repo
 ├── docs/
-│   ├── tr-17-investigation.md
-│   └── tr-28-plan.md
+│   └── SETUP_JIRA.md          # Instructions to setup Jira integration with Codex
 ├── install.sh
 ├── clear_logs.sh
 ├── lib/
