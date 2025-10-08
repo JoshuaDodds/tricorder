@@ -268,6 +268,13 @@
               >
                 <span class="indicator-dot" aria-hidden="true"></span>
                 <span
+                  id="recording-indicator-motion"
+                  class="indicator-tag motion-tag"
+                  hidden
+                >
+                  Motion
+                </span>
+                <span
                   id="rms-indicator"
                   class="rms-indicator"
                   aria-hidden="true"
@@ -372,7 +379,13 @@
               <button id="live-stream-close" class="ghost-button small" type="button">Hide</button>
             </div>
           </div>
-          <audio id="live-stream-audio" controls preload="auto"></audio>
+          <audio
+            id="live-stream-audio"
+            preload="auto"
+            hidden
+            aria-hidden="true"
+            tabindex="-1"
+          ></audio>
           <p class="live-stream-hint">Streaming continues when backgrounded. Use the toggle to stop it.</p>
         </div>
       </section>
@@ -457,7 +470,7 @@
                     id="waveform-zoom"
                     type="range"
                     min="0.25"
-                    max="4"
+                    max="10"
                     step="0.25"
                     value="1"
                   />
@@ -693,7 +706,31 @@
             </div>
             <div class="card-header">
               <div class="table-header-main">
-                <h2>Recent recordings</h2>
+                <div class="recordings-heading">
+                  <h2 id="recordings-heading">Recent recordings</h2>
+                  <div class="recordings-tabs" role="tablist" aria-label="Recording views">
+                    <button
+                      id="recordings-tab-recent"
+                      class="recordings-tab active"
+                      type="button"
+                      role="tab"
+                      aria-selected="true"
+                      data-collection="recent"
+                    >
+                      Recent
+                    </button>
+                    <button
+                      id="recordings-tab-saved"
+                      class="recordings-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected="false"
+                      data-collection="saved"
+                    >
+                      Saved
+                    </button>
+                  </div>
+                </div>
                 <button
                   id="filters-toggle"
                   class="ghost-button small filters-toggle"
@@ -718,6 +755,9 @@
                   Move to recycle bin
                 </button>
               </div>
+              <p class="table-actions-hint" id="selection-shortcut-hint">
+                Tip: Hold Shift while clicking checkboxes to select a range.
+              </p>
             </div>
             <div class="table-responsive">
               <table id="recordings-table">
@@ -762,7 +802,6 @@
                         <span aria-hidden="true" class="sort-indicator"></span>
                       </button>
                     </th>
-                    <th class="actions">Actions</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -1093,6 +1132,34 @@
               </p>
               <div class="settings-field filter-field">
                 <div class="filter-toggle field-control">
+                  <input id="audio-filter-denoise-enabled" type="checkbox" />
+                  <label for="audio-filter-denoise-enabled">FFT denoise</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-denoise-type">Algorithm</label>
+                  <select id="audio-filter-denoise-type">
+                    <option value="afftdn">afftdn (FFT noise reducer)</option>
+                  </select>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-denoise-floor">Noise floor</label>
+                  <input
+                    id="audio-filter-denoise-floor"
+                    type="range"
+                    min="-60"
+                    max="0"
+                    step="1"
+                    value="-30"
+                  />
+                  <span id="audio-filter-denoise-floor-value" class="filter-value" aria-live="off">-30&nbsp;dB</span>
+                </div>
+                <p class="field-description">
+                  Broadband reduction tuned for steady HVAC or hiss beds. Raise the floor toward 0&nbsp;dB to keep more ambience,
+                  or lower toward −40&nbsp;dB to clamp harder.
+                </p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
                   <input id="audio-filter-highpass-enabled" type="checkbox" />
                   <label for="audio-filter-highpass-enabled">High-pass filter</label>
                 </div>
@@ -1111,6 +1178,27 @@
                 <p class="field-description">
                   Roll off sub-bass rumble from HVAC, footsteps, or desk bumps. Sweep between 80–120&nbsp;Hz; stop just before the
                   voices you care about start to thin out.
+                </p>
+              </div>
+              <div class="settings-field filter-field">
+                <div class="filter-toggle field-control">
+                  <input id="audio-filter-lowpass-enabled" type="checkbox" />
+                  <label for="audio-filter-lowpass-enabled">Low-pass filter</label>
+                </div>
+                <div class="filter-slider">
+                  <label class="filter-slider-label" for="audio-filter-lowpass-cutoff">Cutoff</label>
+                  <input
+                    id="audio-filter-lowpass-cutoff"
+                    type="range"
+                    min="1000"
+                    max="20000"
+                    step="100"
+                    value="10000"
+                  />
+                  <span id="audio-filter-lowpass-cutoff-value" class="filter-value" aria-live="off">10&nbsp;kHz</span>
+                </div>
+                <p class="field-description">
+                  Trim brittle hiss or lighting buzz above the vocal band. Leave off unless the room has distracting top-end noise.
                 </p>
               </div>
               <div class="settings-field filter-field">

@@ -2,6 +2,8 @@ import asyncio
 import os
 
 import json
+import subprocess
+import textwrap
 import time
 from datetime import datetime, timezone
 import io
@@ -86,6 +88,46 @@ def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
         handle.setsampwidth(2)
         handle.setframerate(48000)
         handle.writeframes(b"\x00\x00" * frame_count)
+
+
+def _run_dashboard_selection_script(script: str) -> dict:
+    root = Path(__file__).resolve().parents[1]
+    node_path = shutil.which("node")
+    if node_path is None:
+        pytest.skip("Node.js binary is required for dashboard selection script tests")
+    indented_script = textwrap.indent(script, "        ")
+    template = """
+        const path = require("path");
+        const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
+        const sandbox = loadDashboard();
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        if (!state) {{
+          throw new Error("Dashboard state is unavailable for tests");
+        }}
+        state.records = [];
+        state.partialRecord = null;
+        state.recordsFingerprint = "";
+        state.selectionAnchor = "";
+        state.selectionFocus = "";
+        state.selections = new Set();
+        state.sort = {{ key: "name", direction: "asc" }};
+        state.total = 0;
+        state.filteredSize = 0;
+        const result = (() => {{
+{script}
+        }})();
+        console.log(JSON.stringify(result));
+    """
+    node_code = textwrap.dedent(template).format(script=indented_script)
+    completed = subprocess.run(
+        [node_path, "-e", node_code],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=root,
+    )
+    output = completed.stdout.strip()
+    return json.loads(output or "null")
 
 
 def test_recordings_listing_filters(dashboard_env, monkeypatch):
@@ -719,9 +761,16 @@ audio:
   gain: 2.0
   vad_aggressiveness: 2
   filter_chain:
+    denoise:
+      enabled: false
+      type: afftdn
+      noise_floor_db: -30.0
     highpass:
       enabled: true
       cutoff_hz: 110.0
+    lowpass:
+      enabled: false
+      cutoff_hz: 9500.0
     notch:
       enabled: true
       freq_hz: 120.0
@@ -766,10 +815,17 @@ audio:
             payload = await resp.json()
             assert payload["audio"]["device"] == "hw:1,0"
             assert payload["audio"]["sample_rate"] == 32000
+            assert payload["audio"]["filter_chain"]["denoise"]["enabled"] is False
+            assert payload["audio"]["filter_chain"]["denoise"]["type"] == "afftdn"
             assert payload["audio"]["filter_chain"]["highpass"]["enabled"] is True
             assert (
                 payload["audio"]["filter_chain"]["highpass"]["cutoff_hz"]
                 == pytest.approx(110.0)
+            )
+            assert payload["audio"]["filter_chain"]["lowpass"]["enabled"] is False
+            assert (
+                payload["audio"]["filter_chain"]["lowpass"]["cutoff_hz"]
+                == pytest.approx(9500.0)
             )
             assert payload["audio"]["calibration"]["auto_noise_profile"] is True
 
@@ -780,7 +836,13 @@ audio:
                 "gain": 1.5,
                 "vad_aggressiveness": 3,
                 "filter_chain": {
+                    "denoise": {
+                        "enabled": True,
+                        "type": "afftdn",
+                        "noise_floor_db": -25.0,
+                    },
                     "highpass": {"enabled": True, "cutoff_hz": 140.0},
+                    "lowpass": {"enabled": True, "cutoff_hz": 10800.0},
                     "notch": {"enabled": False, "freq_hz": 180.0, "quality": 28.0},
                     "spectral_gate": {
                         "enabled": True,
@@ -799,10 +861,20 @@ audio:
             assert updated["audio"]["frame_ms"] == 10
             assert updated["audio"]["gain"] == pytest.approx(1.5)
             assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
+            assert updated["audio"]["filter_chain"]["denoise"]["enabled"] is True
+            assert (
+                updated["audio"]["filter_chain"]["denoise"]["noise_floor_db"]
+                == pytest.approx(-25.0)
+            )
             assert updated["audio"]["filter_chain"]["notch"]["enabled"] is False
             assert (
                 updated["audio"]["filter_chain"]["notch"]["freq_hz"]
                 == pytest.approx(180.0)
+            )
+            assert updated["audio"]["filter_chain"]["lowpass"]["enabled"] is True
+            assert (
+                updated["audio"]["filter_chain"]["lowpass"]["cutoff_hz"]
+                == pytest.approx(10800.0)
             )
             assert updated["audio"]["filter_chain"]["spectral_gate"]["enabled"] is True
             assert (
@@ -820,10 +892,20 @@ audio:
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["audio"]["gain"] == 1.5
             assert persisted["audio"]["frame_ms"] == 10
+            assert persisted["audio"]["filter_chain"]["denoise"]["enabled"] is True
+            assert (
+                persisted["audio"]["filter_chain"]["denoise"]["noise_floor_db"]
+                == pytest.approx(-25.0)
+            )
             assert persisted["audio"]["filter_chain"]["highpass"]["enabled"] is True
             assert (
                 persisted["audio"]["filter_chain"]["highpass"]["cutoff_hz"]
                 == pytest.approx(140.0)
+            )
+            assert persisted["audio"]["filter_chain"]["lowpass"]["enabled"] is True
+            assert (
+                persisted["audio"]["filter_chain"]["lowpass"]["cutoff_hz"]
+                == pytest.approx(10800.0)
             )
             assert persisted["audio"]["filter_chain"]["notch"]["enabled"] is False
             assert persisted["audio"]["filter_chain"]["spectral_gate"]["enabled"] is True
@@ -2328,6 +2410,77 @@ def test_recordings_bulk_download_includes_sidecars(dashboard_env):
             await server.close()
 
     asyncio.run(runner())
+
+
+def test_shift_click_selects_range_between_non_adjacent_records():
+    script = textwrap.dedent(
+        """
+        const records = [
+          { path: "20240101/alpha.opus", name: "Alpha", day: "20240101", modified: 1, duration_seconds: 10, size_bytes: 100 },
+          { path: "20240101/bravo.opus", name: "Bravo", day: "20240101", modified: 2, duration_seconds: 11, size_bytes: 110 },
+          { path: "20240101/charlie.opus", name: "Charlie", day: "20240101", modified: 3, duration_seconds: 12, size_bytes: 120 },
+          { path: "20240101/delta.opus", name: "Delta", day: "20240101", modified: 4, duration_seconds: 13, size_bytes: 130 },
+          { path: "20240101/echo.opus", name: "Echo", day: "20240101", modified: 5, duration_seconds: 14, size_bytes: 140 },
+        ];
+        state.records = records;
+        state.total = records.length;
+        state.filteredSize = records.length;
+        const target = "20240101/charlie.opus";
+        state.selections = new Set(["20240101/alpha.opus", "20240101/echo.opus"]);
+        state.selectionAnchor = "";
+        state.selectionFocus = "";
+        const anchor = sandbox.resolveSelectionAnchor(target);
+        const changed = sandbox.applySelectionRange(anchor, target, true);
+        return {
+          anchor,
+          changed,
+          selections: Array.from(state.selections.values()).sort(),
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["anchor"] == "20240101/alpha.opus"
+    assert result["changed"] is True
+    assert "20240101/bravo.opus" in result["selections"]
+    assert "20240101/charlie.opus" in result["selections"]
+    assert "20240101/delta.opus" not in result["selections"]
+    assert "20240101/echo.opus" in result["selections"]
+
+
+def test_shift_click_uses_existing_anchor_when_available():
+    script = textwrap.dedent(
+        """
+        const records = [
+          { path: "20240101/alpha.opus", name: "Alpha", day: "20240101", modified: 1, duration_seconds: 10, size_bytes: 100 },
+          { path: "20240101/bravo.opus", name: "Bravo", day: "20240101", modified: 2, duration_seconds: 11, size_bytes: 110 },
+          { path: "20240101/charlie.opus", name: "Charlie", day: "20240101", modified: 3, duration_seconds: 12, size_bytes: 120 },
+          { path: "20240101/delta.opus", name: "Delta", day: "20240101", modified: 4, duration_seconds: 13, size_bytes: 130 },
+          { path: "20240101/echo.opus", name: "Echo", day: "20240101", modified: 5, duration_seconds: 14, size_bytes: 140 },
+        ];
+        state.records = records;
+        state.total = records.length;
+        state.filteredSize = records.length;
+        const target = "20240101/echo.opus";
+        state.selections = new Set(["20240101/bravo.opus"]);
+        state.selectionAnchor = "20240101/bravo.opus";
+        state.selectionFocus = "20240101/bravo.opus";
+        const anchor = sandbox.resolveSelectionAnchor(target);
+        const changed = sandbox.applySelectionRange(anchor, target, true);
+        return {
+          anchor,
+          changed,
+          selections: Array.from(state.selections.values()).sort(),
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["anchor"] == "20240101/bravo.opus"
+    assert result["changed"] is True
+    assert result["selections"].count("20240101/bravo.opus") == 1
+    assert "20240101/charlie.opus" in result["selections"]
+    assert "20240101/delta.opus" in result["selections"]
+    assert "20240101/echo.opus" in result["selections"]
+    assert "20240101/alpha.opus" not in result["selections"]
 
 
 def test_sd_card_recovery_static_doc_served(dashboard_env):
