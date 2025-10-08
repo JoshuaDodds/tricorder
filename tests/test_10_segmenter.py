@@ -275,6 +275,66 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         rec.flush(3)
 
 
+def test_motion_padding_delays_release(monkeypatch, tmp_path):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+    monkeypatch.setattr(segmenter, "MOTION_RELEASE_PADDING_SECONDS", 120.0)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=100.0)
+
+    clock = {"now": 100.0}
+
+    def fake_time():
+        return clock["now"]
+
+    monkeypatch.setattr(segmenter.time, "time", fake_time)
+    monkeypatch.setattr(segmenter.time, "monotonic", fake_time)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.ingest(make_frame(0), 0)
+        assert rec._motion_forced_active is True
+
+        clock["now"] = 130.0
+        store_motion_state(motion_state_path, motion_active=False, timestamp=130.0)
+        rec._motion_watcher.force_refresh()
+        rec._refresh_motion_state()
+        assert rec._motion_forced_active is True
+        deadline = getattr(rec, "_motion_release_deadline", None)
+        assert deadline is not None
+        assert deadline == pytest.approx(250.0, rel=0.001)
+
+        clock["now"] = 249.0
+        rec._refresh_motion_state()
+        assert rec._motion_forced_active is True
+        remaining = rec._motion_status_extra().get("motion_padding_seconds_remaining")
+        assert remaining is not None and remaining > 0
+
+        clock["now"] = 252.5
+        rec._refresh_motion_state()
+        assert rec._motion_forced_active is False
+        assert getattr(rec, "_motion_release_deadline", None) is None
+        assert rec._motion_status_extra().get("motion_padding_seconds_remaining") == 0.0
+    finally:
+        rec.flush(3)
+
+
 def test_manual_stop_clears_motion_when_release_seen(monkeypatch, tmp_path):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"

@@ -311,6 +311,14 @@ try:
 except (TypeError, ValueError):
     MIN_CLIP_SECONDS = 0.0
 
+_MOTION_PADDING_MINUTES_RAW = cfg["segmenter"].get("motion_release_padding_minutes", 0.0)
+try:
+    MOTION_RELEASE_PADDING_SECONDS = max(
+        0.0, float(_MOTION_PADDING_MINUTES_RAW) * 60.0
+    )
+except (TypeError, ValueError):
+    MOTION_RELEASE_PADDING_SECONDS = 0.0
+
 STREAMING_ENCODE_ENABLED = bool(
     cfg["segmenter"].get("streaming_encode", False)
 )
@@ -1838,6 +1846,9 @@ class TimelineRecorder:
             motion_state.active_since if motion_state.active else None
         )
         self._current_motion_event_end: float | None = None
+        self._motion_release_padding_seconds = float(MOTION_RELEASE_PADDING_SECONDS)
+        self._motion_release_deadline: float | None = None
+        self._motion_padding_started_at: float | None = None
         if self._motion_pending_start and START_CONSECUTIVE > 0:
             self.consec_active = max(self.consec_active, START_CONSECUTIVE - 1)
             self.consec_inactive = 0
@@ -1988,6 +1999,26 @@ class TimelineRecorder:
             payload["motion_active_since"] = float(since)
         else:
             payload["motion_active_since"] = None
+        padding_seconds = float(getattr(self, "_motion_release_padding_seconds", 0.0))
+        payload["motion_padding_config_seconds"] = padding_seconds
+        deadline = getattr(self, "_motion_release_deadline", None)
+        if deadline is not None:
+            remaining = float(deadline - time.time())
+            payload["motion_padding_seconds_remaining"] = max(0.0, remaining)
+            try:
+                payload["motion_padding_deadline_epoch"] = float(deadline)
+            except (TypeError, ValueError):
+                payload.pop("motion_padding_deadline_epoch", None)
+            started = getattr(self, "_motion_padding_started_at", None)
+            if started is not None:
+                try:
+                    payload["motion_padding_started_epoch"] = float(started)
+                except (TypeError, ValueError):
+                    payload.pop("motion_padding_started_epoch", None)
+        else:
+            payload["motion_padding_seconds_remaining"] = 0.0
+            payload.pop("motion_padding_deadline_epoch", None)
+            payload.pop("motion_padding_started_epoch", None)
         return payload
 
     def _motion_offset_values(
@@ -2060,6 +2091,26 @@ class TimelineRecorder:
         motion_state = watcher.state if watcher is not None else None
         if motion_state is not None:
             payload["motion_sequence"] = int(motion_state.sequence)
+        padding_seconds = float(getattr(self, "_motion_release_padding_seconds", 0.0))
+        payload["motion_padding_config_seconds"] = padding_seconds
+        deadline = getattr(self, "_motion_release_deadline", None)
+        if deadline is not None:
+            remaining = float(deadline - time.time())
+            payload["motion_padding_seconds_remaining"] = max(0.0, remaining)
+            try:
+                payload["motion_padding_deadline_epoch"] = float(deadline)
+            except (TypeError, ValueError):
+                payload.pop("motion_padding_deadline_epoch", None)
+            started = getattr(self, "_motion_padding_started_at", None)
+            if started is not None:
+                try:
+                    payload["motion_padding_started_epoch"] = float(started)
+                except (TypeError, ValueError):
+                    payload.pop("motion_padding_started_epoch", None)
+        else:
+            payload["motion_padding_seconds_remaining"] = 0.0
+            payload.pop("motion_padding_deadline_epoch", None)
+            payload.pop("motion_padding_started_epoch", None)
         if for_last_event or getattr(self, '_motion_forced_active', False):
             payload["motion_active"] = bool(getattr(self, '_motion_forced_active', False))
         return payload
@@ -2092,18 +2143,29 @@ class TimelineRecorder:
         watcher = getattr(self, '_motion_watcher', None)
         if watcher is None:
             return
+        padding_seconds = float(getattr(self, "_motion_release_padding_seconds", 0.0))
+        now = time.time()
+        deadline = getattr(self, "_motion_release_deadline", None)
         updated = watcher.poll()
         state = watcher.state
         previous_forced = getattr(self, '_motion_forced_active', False)
         if updated is None:
-            if state.sequence == self._motion_sequence and state.active == self._motion_forced_active:
+            if (
+                state.sequence == self._motion_sequence
+                and state.active == self._motion_forced_active
+                and deadline is None
+            ):
                 return
             updated = state
         self._motion_sequence = updated.sequence
+        hold_active = False
+        effective_active = bool(updated.active)
         if updated.active:
             start_epoch = updated.active_since or updated.updated_at
             self._motion_forced_active = True
             self._motion_active_since = start_epoch
+            self._motion_release_deadline = None
+            self._motion_padding_started_at = None
             if self._current_motion_event_start is None:
                 self._current_motion_event_start = start_epoch
             self._current_motion_event_end = None
@@ -2115,28 +2177,58 @@ class TimelineRecorder:
             if getattr(self, "_manual_recording", False):
                 self._manual_motion_released = False
         else:
-            self._motion_forced_active = False
-            self._motion_active_since = None
-            self._motion_pending_start = False
-            release_epoch = updated.updated_at if updated.updated_at else time.time()
-            if self.active and self._current_motion_event_start is not None:
-                try:
-                    self._current_motion_event_end = float(release_epoch)
-                except (TypeError, ValueError):
-                    self._current_motion_event_end = time.time()
+            release_epoch = updated.updated_at if updated.updated_at else now
+            try:
+                release_epoch = float(release_epoch)
+            except (TypeError, ValueError):
+                release_epoch = now
+            if padding_seconds > 0.0:
+                deadline = getattr(self, "_motion_release_deadline", None)
+                if deadline is None:
+                    deadline = release_epoch + padding_seconds
+                    self._motion_release_deadline = deadline
+                    self._motion_padding_started_at = release_epoch
+                if deadline is not None and now < deadline:
+                    hold_active = True
+                    effective_active = True
+                else:
+                    self._motion_release_deadline = None
+                    self._motion_padding_started_at = None
             else:
-                self._current_motion_event_start = None
-                self._current_motion_event_end = None
-            if previous_forced:
-                try:
-                    self.recent_active.clear()
-                except AttributeError:
-                    pass
-                self.consec_active = 0
-                self.consec_inactive = 0
-            if getattr(self, "_manual_recording", False):
-                self._manual_motion_released = True
-        if updated.active and self.active and self._current_motion_event_start is None:
+                self._motion_release_deadline = None
+                self._motion_padding_started_at = None
+
+            if hold_active:
+                self._motion_forced_active = True
+                if self._motion_active_since is None:
+                    self._motion_active_since = updated.active_since or updated.updated_at
+                if self._current_motion_event_start is None:
+                    self._current_motion_event_start = updated.active_since or updated.updated_at
+                if self.active and self._current_motion_event_start is not None:
+                    self._current_motion_event_end = release_epoch
+                else:
+                    if not self.active:
+                        self._current_motion_event_start = None
+                        self._current_motion_event_end = None
+            else:
+                self._motion_forced_active = False
+                self._motion_active_since = None
+                self._motion_pending_start = False
+                if self.active and self._current_motion_event_start is not None:
+                    self._current_motion_event_end = release_epoch
+                else:
+                    self._current_motion_event_start = None
+                    self._current_motion_event_end = None
+                if previous_forced:
+                    try:
+                        self.recent_active.clear()
+                    except AttributeError:
+                        pass
+                    self.consec_active = 0
+                    self.consec_inactive = 0
+                if getattr(self, "_manual_recording", False):
+                    self._manual_motion_released = True
+        if effective_active and self.active and self._current_motion_event_start is None:
             self._current_motion_event_start = updated.active_since or updated.updated_at
         self._publish_motion_status()
 
@@ -2176,6 +2268,8 @@ class TimelineRecorder:
             self._motion_pending_start = False
             self._current_motion_event_start = None
             self._current_motion_event_end = None
+            self._motion_release_deadline = None
+            self._motion_padding_started_at = None
             if previously_active or previous_pending or had_start or had_end:
                 self._publish_motion_status()
 
