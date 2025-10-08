@@ -670,6 +670,7 @@ def _segmenter_defaults() -> dict[str, Any]:
     return {
         "pre_pad_ms": 2000,
         "post_pad_ms": 3000,
+        "motion_release_padding_minutes": 0.0,
         "rms_threshold": 300,
         "keep_window_frames": 30,
         "start_consecutive": 25,
@@ -888,6 +889,16 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
                 if candidate > 600.0:
                     candidate = 600.0
                 result["min_clip_seconds"] = candidate
+
+        padding_minutes = raw.get("motion_release_padding_minutes")
+        if isinstance(padding_minutes, (int, float)) and not isinstance(padding_minutes, bool):
+            candidate = float(padding_minutes)
+            if math.isfinite(candidate):
+                if candidate < 0.0:
+                    candidate = 0.0
+                if candidate > 30.0:
+                    candidate = 30.0
+                result["motion_release_padding_minutes"] = candidate
 
         for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
             value = raw.get(key)
@@ -1474,6 +1485,16 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
     )
     if min_clip is not None:
         normalized["min_clip_seconds"] = min_clip
+
+    motion_padding = _coerce_float(
+        payload.get("motion_release_padding_minutes"),
+        "motion_release_padding_minutes",
+        errors,
+        min_value=0.0,
+        max_value=30.0,
+    )
+    if motion_padding is not None:
+        normalized["motion_release_padding_minutes"] = motion_padding
 
     for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
         normalized[field] = _bool_from_any(payload.get(field))

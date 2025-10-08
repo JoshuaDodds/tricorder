@@ -141,6 +141,10 @@ segmenter:
   # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
   post_pad_ms: 3000
 
+  # Extra duration to keep motion-forced recordings alive after the motion integration clears (minutes).
+  # Helpful when the external motion sensor tends to flicker but you still want RMS/VAD to wait.
+  motion_release_padding_minutes: 0.0
+
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
   rms_threshold: 300
