@@ -64,7 +64,13 @@ _DEFAULTS: Dict[str, Any] = {
         "gain": 2.5,
         "vad_aggressiveness": 3,
         "filter_chain": {
+            "denoise": {
+                "enabled": False,
+                "type": "afftdn",
+                "noise_floor_db": -30.0,
+            },
             "highpass": {"enabled": False, "cutoff_hz": 90.0},
+            "lowpass": {"enabled": False, "cutoff_hz": 10000.0},
             "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
             "spectral_gate": {
                 "enabled": False,

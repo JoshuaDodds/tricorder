@@ -1794,6 +1794,7 @@ class TimelineRecorder:
         self._manual_split_requested = False
         self._manual_recording = False
         self._event_manual_recording = False
+        self._manual_motion_released = False
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -2111,6 +2112,8 @@ class TimelineRecorder:
                 if START_CONSECUTIVE > 0:
                     self.consec_active = max(self.consec_active, START_CONSECUTIVE - 1)
                     self.consec_inactive = 0
+            if getattr(self, "_manual_recording", False):
+                self._manual_motion_released = False
         else:
             self._motion_forced_active = False
             self._motion_active_since = None
@@ -2131,6 +2134,8 @@ class TimelineRecorder:
                     pass
                 self.consec_active = 0
                 self.consec_inactive = 0
+            if getattr(self, "_manual_recording", False):
+                self._manual_motion_released = True
         if updated.active and self.active and self._current_motion_event_start is None:
             self._current_motion_event_start = updated.active_since or updated.updated_at
         self._publish_motion_status()
@@ -2143,12 +2148,36 @@ class TimelineRecorder:
         if next_state:
             if self.active:
                 self._event_manual_recording = True
+            self._manual_motion_released = False
             self._refresh_capture_status()
             return
+        watcher = getattr(self, "_motion_watcher", None)
+        manual_release_seen = bool(getattr(self, "_manual_motion_released", False))
+        motion_active = bool(getattr(self, "_motion_forced_active", False))
+        if watcher is not None:
+            try:
+                watcher.force_refresh()
+            except Exception:
+                pass
+            self._refresh_motion_state()
+            motion_active = bool(getattr(self, "_motion_forced_active", False))
         if self.active:
             self._finalize_event(reason="manual recording stopped")
         else:
             self._refresh_capture_status()
+        self._manual_motion_released = False
+        if not motion_active or manual_release_seen:
+            previously_active = bool(getattr(self, "_motion_forced_active", False))
+            previous_pending = bool(getattr(self, "_motion_pending_start", False))
+            had_start = getattr(self, "_current_motion_event_start", None) is not None
+            had_end = getattr(self, "_current_motion_event_end", None) is not None
+            self._motion_forced_active = False
+            self._motion_active_since = None
+            self._motion_pending_start = False
+            self._current_motion_event_start = None
+            self._current_motion_event_end = None
+            if previously_active or previous_pending or had_start or had_end:
+                self._publish_motion_status()
 
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
         with self._status_lock:
@@ -3180,6 +3209,7 @@ class TimelineRecorder:
         self._ingest_hint_used = True
         self._manual_split_requested = False
         self._event_manual_recording = False
+        self._manual_motion_released = False
         self._current_motion_event_start = None
         self._current_motion_event_end = None
         self._cleanup_live_waveform()
