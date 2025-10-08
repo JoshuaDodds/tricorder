@@ -390,7 +390,8 @@ async def test_recordings_saved_collection_lists_saved_entries(
     assert payload["collection"] == "saved"
     assert payload["available_days"] == [saved_day_dir.name]
     assert payload["available_extensions"] == ["opus"]
-    assert payload["recordings_total_bytes"] == audio_path.stat().st_size
+    expected_storage = audio_path.stat().st_size + waveform_path.stat().st_size
+    assert payload["recordings_total_bytes"] == expected_storage
 
     items = payload.get("items", [])
     assert len(items) == 1
@@ -405,6 +406,7 @@ async def test_recordings_saved_collection_lists_saved_entries(
     recent_payload = await recent_response.json()
     assert recent_payload.get("collection") == "recent"
     assert recent_payload.get("items") == []
+    assert recent_payload.get("recordings_total_bytes") == expected_storage
 
 
 @pytest.mark.asyncio
