@@ -160,10 +160,16 @@ def _install_handle_run_guard() -> None:
                 return
             if not _NONE_HANDLE_LOG_REPORTED:
                 asyncio_log.warning(
-                    "Discarded asyncio handle with None callback; args=%r",
+                    "Discarded asyncio handle with None callback; args=%r. "
+                    "Guard replaced it with a no-op callback.",
                     self._args,
-                    stack_info=True,
                 )
+                if asyncio_log.isEnabledFor(logging.DEBUG):
+                    asyncio_log.debug(
+                        "Discarded asyncio handle with None callback; args=%r",
+                        self._args,
+                        stack_info=True,
+                    )
                 _NONE_HANDLE_LOG_REPORTED = True
             else:
                 asyncio_log.debug(
