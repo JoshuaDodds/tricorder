@@ -2110,6 +2110,73 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
     asyncio.run(runner())
 
 
+def test_services_endpoint_parses_dst_timezone_epoch(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Voice Recorder",
+                "yes",
+                "yes",
+                "yes",
+                "no",
+                "",
+                "Wed 2025-10-08 16:33:00 CEST",
+            )
+        }
+
+        async def fake_systemctl(args):
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = show_map.get(
+                    unit,
+                    (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "no",
+                        "no",
+                        "no",
+                        "no",
+                        "",
+                        "",
+                    ),
+                )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            payload = await resp.json()
+            services = payload.get("services", [])
+            assert isinstance(services, list) and services, "Expected services in payload"
+            recorder = next((item for item in services if item["unit"] == "voice-recorder.service"), None)
+            assert recorder is not None
+            expected_epoch = datetime(2025, 10, 8, 14, 33, tzinfo=timezone.utc).timestamp()
+            assert recorder.get("active_enter_epoch") == pytest.approx(expected_epoch)
+            assert recorder.get("active_enter_timestamp", "").startswith("2025-10-08T14:33:00")
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_service_action_auto_restart(monkeypatch, dashboard_env):
     async def runner():
         show_map = {
