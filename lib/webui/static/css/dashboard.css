@@ -1049,6 +1049,13 @@ button.small {
   justify-content: flex-end;
 }
 
+.table-actions-hint {
+  margin: 0.25rem 0 0;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
 .filters-header {
   display: flex;
   align-items: center;
@@ -3115,6 +3122,10 @@ body[data-theme="light"] .record-in-progress {
   .table-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .table-actions-hint {
+    text-align: left;
   }
 }
 
