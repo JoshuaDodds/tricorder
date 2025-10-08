@@ -2762,6 +2762,173 @@ def test_shift_click_uses_existing_anchor_when_available():
     assert "20240101/alpha.opus" not in result["selections"]
 
 
+def test_playback_source_defaults_to_processed_when_raw_available():
+    script = textwrap.dedent(
+        """
+        const group = sandbox.window.document.__getMockElement("playback-source-group");
+        sandbox.window.document.__getMockElement("playback-source-processed");
+        const raw = sandbox.window.document.__getMockElement("playback-source-raw");
+        const active = sandbox.window.document.__getMockElement("playback-source-active");
+        const hint = sandbox.window.document.__getMockElement("playback-source-hint");
+        const player = sandbox.window.document.__getMockElement("preview-player");
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+
+        player.currentTime = 0;
+        player.paused = true;
+        player.ended = false;
+        player._listeners = {};
+        player.addEventListener = (event, handler) => {
+          player._listeners[event] = handler;
+        };
+        player.removeEventListener = (event) => {
+          delete player._listeners[event];
+        };
+        player.play = () => {
+          player.paused = false;
+          return Promise.resolve();
+        };
+        player.pause = () => {
+          player.paused = true;
+        };
+        player.load = () => {};
+
+        state.current = {
+          path: "20240101/foo.opus",
+          raw_audio_path: "raw/20240101/foo.wav",
+        };
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: false });
+
+        return {
+          state: sandbox.getPlaybackSourceState(),
+          groupHidden: group.hidden === true,
+          groupSource: group.dataset.source,
+          rawDisabled: raw.disabled === true,
+          hintHidden: hint.hidden === true,
+          activeLabel: active.textContent,
+          rawAvailableFlag: group.dataset.rawAvailable,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "preview-player": True,
+            "player-meta": True,
+            "player-meta-text": True,
+            "player-meta-actions": True,
+            "player-download": True,
+            "player-rename": True,
+            "player-delete": True,
+            "player-transport": True,
+            "playback-source-group": True,
+            "playback-source-processed": True,
+            "playback-source-raw": True,
+            "playback-source-active": True,
+            "playback-source-hint": True,
+        },
+    )
+
+    assert result["state"]["mode"] == "processed"
+    assert result["state"]["hasRaw"] is True
+    assert result["groupHidden"] is False
+    assert result["groupSource"] == "processed"
+    assert result["rawAvailableFlag"] == "true"
+    assert result["rawDisabled"] is False
+    assert result["hintHidden"] is True
+    assert result["activeLabel"] == "Processed (Opus)"
+
+
+def test_playback_source_reverts_when_raw_unavailable():
+    script = textwrap.dedent(
+        """
+        const group = sandbox.window.document.__getMockElement("playback-source-group");
+        const raw = sandbox.window.document.__getMockElement("playback-source-raw");
+        const hint = sandbox.window.document.__getMockElement("playback-source-hint");
+        const player = sandbox.window.document.__getMockElement("preview-player");
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+
+        player.currentTime = 1.25;
+        player.paused = false;
+        player.ended = false;
+        player._listeners = {};
+        player.addEventListener = (event, handler) => {
+          player._listeners[event] = handler;
+        };
+        player.removeEventListener = (event) => {
+          delete player._listeners[event];
+        };
+        player.play = () => {
+          player.paused = false;
+          return Promise.resolve();
+        };
+        player.pause = () => {
+          player.paused = true;
+        };
+        player.load = () => {};
+
+        state.current = {
+          path: "20240101/bar.opus",
+          raw_audio_path: "raw/20240101/bar.wav",
+        };
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: false });
+        sandbox.setPlaybackSource("raw", { userInitiated: true });
+        if (player._listeners.loadedmetadata) {
+          player._listeners.loadedmetadata();
+        }
+
+        const afterRaw = sandbox.getPlaybackSourceState();
+
+        state.current = {
+          path: "20240101/bar.opus",
+          raw_audio_path: "",
+        };
+        const updateInfo = sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: true });
+
+        return {
+          afterRaw,
+          afterRemoval: {
+            state: sandbox.getPlaybackSourceState(),
+            rawDisabled: raw.disabled === true,
+            hintHidden: hint.hidden === true,
+            groupSource: group.dataset.source,
+            rawAvailableFlag: group.dataset.rawAvailable,
+          },
+          updateInfo,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "preview-player": True,
+            "player-meta": True,
+            "player-meta-text": True,
+            "player-meta-actions": True,
+            "player-download": True,
+            "player-rename": True,
+            "player-delete": True,
+            "player-transport": True,
+            "playback-source-group": True,
+            "playback-source-processed": True,
+            "playback-source-raw": True,
+            "playback-source-active": True,
+            "playback-source-hint": True,
+        },
+    )
+
+    assert result["afterRaw"]["mode"] == "raw"
+    assert result["afterRemoval"]["state"]["mode"] == "processed"
+    assert result["afterRemoval"]["state"]["hasRaw"] is False
+    assert result["afterRemoval"]["rawDisabled"] is True
+    assert result["afterRemoval"]["hintHidden"] is False
+    assert result["afterRemoval"]["groupSource"] == "processed"
+    assert result["afterRemoval"]["rawAvailableFlag"] == "false"
+    assert result["updateInfo"]["previousMode"] == "raw"
+    assert result["updateInfo"]["nextMode"] == "processed"
+
+
 def test_sd_card_recovery_static_doc_served(dashboard_env):
     async def runner():
         app = web_streamer.build_app()

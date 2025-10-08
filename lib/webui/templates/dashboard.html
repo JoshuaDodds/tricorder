@@ -463,6 +463,53 @@
                   <option value="2">2×</option>
                 </select>
               </label>
+              <div
+                class="transport-source"
+                id="playback-source-group"
+                data-active="false"
+                hidden
+              >
+                <span class="transport-source-label" id="playback-source-label"
+                  >Source</span
+                >
+                <div
+                  class="transport-source-toggle"
+                  role="radiogroup"
+                  aria-labelledby="playback-source-label"
+                >
+                  <button
+                    id="playback-source-processed"
+                    class="transport-source-option"
+                    type="button"
+                    data-source="processed"
+                    aria-pressed="true"
+                  >
+                    Processed (Opus)
+                  </button>
+                  <button
+                    id="playback-source-raw"
+                    class="transport-source-option"
+                    type="button"
+                    data-source="raw"
+                    aria-pressed="false"
+                    aria-disabled="true"
+                  >
+                    Raw capture (PCM)
+                  </button>
+                </div>
+                <span
+                  id="playback-source-active"
+                  class="transport-source-active"
+                  aria-live="polite"
+                >Processed (Opus)</span>
+                <span
+                  id="playback-source-hint"
+                  class="transport-source-hint"
+                  hidden
+                  aria-live="polite"
+                  >Raw capture unavailable</span
+                >
+              </div>
             </div>
           </div>
           <div class="waveform-section" id="waveform-section">
