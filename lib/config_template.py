@@ -42,11 +42,23 @@ audio:
   # Optional filter stages applied to the live capture stream. Each stage can be enabled
   # independently to tame troublesome frequency bands before event detection.
   filter_chain:
+    denoise:
+      # FFT-based denoise trims broadband hiss and HVAC noise. "afftdn" mirrors the
+      # ffmpeg filter; raise noise_floor_db toward 0 to keep more ambience, lower it
+      # toward −40 dB for heavier suppression.
+      enabled: false
+      type: afftdn
+      noise_floor_db: -30.0
     highpass:
       # Remove low-frequency rumble from HVAC systems or desk bumps. 80–120 Hz
       # keeps voices intact while taming sub-bass energy.
       enabled: false
       cutoff_hz: 90.0
+    lowpass:
+      # Trim ultra-high content (10–15 kHz) to soften hiss or harsh lighting buzz.
+      # Leave disabled unless you hear brittle noise above the vocal range.
+      enabled: false
+      cutoff_hz: 10000.0
     notch:
       # Carve out a narrow band (e.g., mains hum). Aim the frequency at the
       # offending tone (50/60 Hz and harmonics) and keep Q between 20–40 for

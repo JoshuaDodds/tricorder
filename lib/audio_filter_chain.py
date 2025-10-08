@@ -22,6 +22,11 @@ class HighPassState:
 
 
 @dataclass
+class LowPassState:
+    prev_output: float = 0.0
+
+
+@dataclass
 class NotchState:
     prev_input: complex = 0.0 + 0.0j
     prev_stage1: complex = 0.0 + 0.0j
@@ -34,6 +39,7 @@ class FilterState:
     sample_rate: int
     frame_bytes: int
     highpass_state: HighPassState
+    lowpass_state: LowPassState
     notch_states: List[NotchState]
     notch_coeffs: List[Optional["_NotchFilterParams"]]
     noise_estimate: Optional[np.ndarray] = None
@@ -70,6 +76,21 @@ class AudioFilterChain:
             raw_cfg = {}
 
         self.enabled = bool(raw_cfg.get("enabled", True))
+
+        denoise_cfg = raw_cfg.get("denoise", {})
+        denoise_type = str(denoise_cfg.get("type", "afftdn")).strip().lower()
+        if denoise_type not in {"afftdn"}:
+            denoise_type = "afftdn"
+            denoise_enabled = False
+        else:
+            denoise_enabled = bool(denoise_cfg.get("enabled", False))
+        self.denoise_type = denoise_type
+        self.denoise_noise_floor_db = float(denoise_cfg.get("noise_floor_db", -30.0))
+        self.denoise_enabled = denoise_enabled
+
+        lowpass_cfg = raw_cfg.get("lowpass", {})
+        self.lowpass_enabled = bool(lowpass_cfg.get("enabled", False))
+        self.lowpass_cutoff_hz = float(lowpass_cfg.get("cutoff_hz", 10000.0))
 
         highpass_cfg = raw_cfg.get("highpass", {})
         self.highpass_enabled = bool(highpass_cfg.get("enabled", True))
@@ -117,7 +138,11 @@ class AudioFilterChain:
         # top-level "enabled" flag as an override when at least one stage is
         # active.
         if self.enabled and not (
-            self.highpass_enabled or self.notch_enabled or self.spectral_gate_enabled
+            self.denoise_enabled
+            or self.highpass_enabled
+            or self.lowpass_enabled
+            or self.notch_enabled
+            or self.spectral_gate_enabled
         ):
             self.enabled = False
 
@@ -198,8 +223,14 @@ class AudioFilterChain:
 
         pcm = np.frombuffer(frame, dtype="<i2").astype(np.float32)
 
+        if self.denoise_enabled:
+            pcm = self._apply_denoise(pcm)
+
         if self.highpass_enabled:
             pcm = self._apply_highpass(pcm, state.highpass_state, sample_rate)
+
+        if self.lowpass_enabled:
+            pcm = self._apply_lowpass(pcm, state.lowpass_state, sample_rate)
 
         if self.notch_enabled:
             pcm = self._apply_notch(pcm, state, sample_rate)
@@ -231,6 +262,7 @@ class AudioFilterChain:
             sample_rate=sample_rate,
             frame_bytes=frame_bytes,
             highpass_state=HighPassState(),
+            lowpass_state=LowPassState(),
             notch_states=[NotchState() for _ in range(notch_count)],
             notch_coeffs=[None for _ in range(notch_count)],
             noise_history=gate_history,
@@ -258,6 +290,39 @@ class AudioFilterChain:
         state.prev_input = float(data[-1])
         state.prev_output = float(result[-1])
         return result
+
+    def _apply_lowpass(
+        self, data: np.ndarray, state: LowPassState, sample_rate: int
+    ) -> np.ndarray:
+        if self.lowpass_cutoff_hz <= 0:
+            return data
+        rc = 1.0 / (2.0 * math.pi * self.lowpass_cutoff_hz)
+        dt = 1.0 / float(sample_rate)
+        alpha = dt / (rc + dt)
+        coeff = 1.0 - alpha
+        if not data.size:
+            return data
+        drive = (alpha * data).astype(data.dtype, copy=False)
+        result = self._solve_first_order_recursive(coeff, drive, state.prev_output)
+        if result.size:
+            state.prev_output = float(result[-1])
+        return result
+
+    def _apply_denoise(self, data: np.ndarray) -> np.ndarray:
+        if self.denoise_type != "afftdn" or not data.size:
+            return data
+        normalized = data.astype(np.float32, copy=False) / 32768.0
+        spectrum = np.fft.rfft(normalized)
+        mags = np.abs(spectrum) / max(1, normalized.size)
+        safe_mags = np.maximum(mags, 1e-8)
+        mags_db = 20.0 * np.log10(safe_mags)
+        target_db = np.maximum(mags_db, self.denoise_noise_floor_db)
+        gains_db = mags_db - target_db
+        gains = 10.0 ** (gains_db / 20.0)
+        spectrum *= gains
+        restored = np.fft.irfft(spectrum, n=normalized.size)
+        restored *= 32768.0
+        return restored.astype(data.dtype, copy=False)
 
     @staticmethod
     def _solve_first_order_recursive(
