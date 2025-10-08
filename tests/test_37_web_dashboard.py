@@ -1973,6 +1973,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 12:34:56 UTC",
             ),
             "web-streamer.service": (
                 "loaded",
@@ -1985,6 +1986,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 11:22:33 UTC",
             ),
         }
 
@@ -2003,6 +2005,7 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
                         "no",
                         "no",
                         "no",
+                        "",
                         "",
                     ),
                 )
@@ -2027,6 +2030,9 @@ def test_services_listing_reports_status(monkeypatch, dashboard_env):
             recorder = next((item for item in services if item["unit"] == "voice-recorder.service"), None)
             assert recorder is not None
             assert recorder["status_text"].startswith("Active")
+            expected_epoch = datetime(2024, 5, 14, 12, 34, 56, tzinfo=timezone.utc).timestamp()
+            assert recorder.get("active_enter_epoch") == pytest.approx(expected_epoch)
+            assert recorder.get("active_enter_timestamp", "").startswith("2024-05-14T12:34:56")
         finally:
             await client.close()
             await server.close()
@@ -2048,6 +2054,7 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 11:22:33 UTC",
             )
         }
 
@@ -2066,6 +2073,7 @@ def test_service_action_auto_restart(monkeypatch, dashboard_env):
                         "yes",
                         "no",
                         "yes",
+                        "",
                         "",
                     ),
                 )
@@ -2125,6 +2133,7 @@ def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 12:34:56 UTC",
             ),
             "web-streamer.service": (
                 "loaded",
@@ -2137,6 +2146,7 @@ def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_
                 "no",
                 "yes",
                 "",
+                "Tue 2024-05-14 11:22:33 UTC",
             ),
         }
 
@@ -2159,6 +2169,7 @@ def test_service_action_recorder_restart_keeps_dashboard(monkeypatch, dashboard_
                         "yes",
                         "no",
                         "yes",
+                        "",
                         "",
                     )
                 payload = "\n".join(

@@ -53,6 +53,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
@@ -2635,6 +2636,7 @@ _SYSTEMCTL_PROPERTIES = [
     "CanReload",
     "CanRestart",
     "TriggeredBy",
+    "ActiveEnterTimestamp",
 ]
 
 
@@ -2711,6 +2713,65 @@ def _summarize_state(load_state: str, active_state: str, sub_state: str) -> str:
     return "Unknown"
 
 
+def _parse_systemd_timestamp(raw: str | None) -> float | None:
+    value = str(raw or "").strip()
+    if not value or value.lower() in {"n/a", "0"}:
+        return None
+
+    candidates = [value]
+    # systemd prefixes timestamps with the weekday (e.g. "Mon 2024-05-13 …").
+    # Include a variant without the weekday to simplify parsing on systems
+    # where locale-specific names might not round-trip through strptime.
+    parts = value.split()
+    if len(parts) > 1:
+        candidates.append(" ".join(parts[1:]))
+
+    formats = (
+        "%a %Y-%m-%d %H:%M:%S %z",
+        "%a %Y-%m-%d %H:%M:%S %Z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%d %H:%M:%S %Z",
+    )
+
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+
+            tzinfo = parsed.tzinfo
+            if tzinfo is None:
+                tz_token = candidate.rsplit(" ", 1)[-1]
+                if tz_token and tz_token.upper() in {"UTC", "GMT", "UT"}:
+                    tzinfo = timezone.utc
+                elif tz_token and tz_token != candidate:
+                    try:
+                        tzinfo = ZoneInfo(tz_token)
+                    except Exception:
+                        tzinfo = timezone.utc
+                else:
+                    tzinfo = timezone.utc
+                parsed = parsed.replace(tzinfo=tzinfo)
+
+            try:
+                return parsed.timestamp()
+            except (OverflowError, OSError):  # pragma: no cover - platform dependent
+                return None
+
+    # Fallback: attempt to parse without any timezone data and assume UTC.
+    fallback_formats = ("%a %Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S")
+    for candidate in candidates:
+        for fmt in fallback_formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+            return parsed.replace(tzinfo=timezone.utc).timestamp()
+
+    return None
+
+
 async def _fetch_service_status(unit: str) -> dict[str, Any]:
     code, stdout, stderr = await _run_systemctl([
         "show",
@@ -2734,6 +2795,8 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
             "status_text": f"Unavailable ({error})",
             "is_active": False,
             "triggered_by": [],
+            "active_enter_timestamp": "",
+            "active_enter_epoch": None,
         }
 
     data = _parse_show_output(stdout, _SYSTEMCTL_PROPERTIES)
@@ -2748,6 +2811,13 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
     can_restart = data.get("CanRestart", "no").lower() == "yes"
     triggered_raw = data.get("TriggeredBy", "")
     triggered = [token.strip() for token in triggered_raw.split() if token.strip()]
+    active_enter_epoch = _parse_systemd_timestamp(data.get("ActiveEnterTimestamp"))
+    if active_enter_epoch is not None:
+        active_enter_timestamp = datetime.fromtimestamp(
+            active_enter_epoch, tz=timezone.utc
+        ).isoformat()
+    else:
+        active_enter_timestamp = ""
     return {
         "available": True,
         "error": "",
@@ -2763,6 +2833,8 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
         "status_text": summary,
         "is_active": active_state.lower() in {"active", "reloading", "activating"},
         "triggered_by": triggered,
+        "active_enter_timestamp": active_enter_timestamp,
+        "active_enter_epoch": active_enter_epoch,
     }
 
 

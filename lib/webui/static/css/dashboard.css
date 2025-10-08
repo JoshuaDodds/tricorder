@@ -778,6 +778,17 @@ body[data-theme="light"] .app-menu-toggle {
   margin-top: 0.35rem;
 }
 
+.stat-uptime .value {
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-uptime .hint {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
 .main-grid {
   display: flex;
   flex-direction: column;
