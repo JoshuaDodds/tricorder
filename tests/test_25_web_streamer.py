@@ -829,6 +829,7 @@ def test_parse_show_output_handles_blank_fields():
             "CanReload=no",
             "CanRestart=yes",
             "TriggeredBy=",
+            "ActiveEnterTimestamp=",
         ]
     )
 

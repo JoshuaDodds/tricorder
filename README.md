@@ -185,6 +185,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 `lib/web_streamer.py` + `lib/webui` expose a dashboard at `/` with the following capabilities:
 
 - Live recorder status and listener counts with encoder start/stop controls.
+- Recorder uptime tile showing how long `voice-recorder.service` has been active since the last start.
 - Manual **Split Event** control to finalize the current recording and immediately begin a new segment without interrupting encoding.
 - Manual **Record** toggle to force continuous recording and skip offline filter passes when you need uninterrupted capture.
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
