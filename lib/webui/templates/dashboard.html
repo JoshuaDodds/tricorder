@@ -449,7 +449,51 @@
                 <span class="transport-button-text sr-only">Skip to end</span>
               </button>
             </div>
+            <div class="transport-timeline" role="group" aria-label="Playback position">
+              <span id="transport-current" class="transport-time" aria-live="off">0:00</span>
+              <input
+                id="transport-scrubber"
+                class="transport-scrubber"
+                type="range"
+                min="0"
+                max="1000"
+                step="1"
+                value="0"
+                aria-label="Playback position"
+                aria-valuemin="0"
+                aria-valuemax="1000"
+                aria-valuenow="0"
+                aria-valuetext="0:00"
+              />
+              <span id="transport-duration" class="transport-time">0:00</span>
+            </div>
             <div class="transport-options">
+              <div class="transport-volume" role="group" aria-label="Volume">
+                <button
+                  id="transport-mute"
+                  class="transport-button transport-volume-button"
+                  type="button"
+                  aria-pressed="false"
+                  aria-label="Mute"
+                >
+                  <span class="transport-button-icon" aria-hidden="true">🔊</span>
+                  <span class="transport-button-text sr-only">Mute</span>
+                </button>
+                <label class="sr-only" for="transport-volume">Volume</label>
+                <input
+                  id="transport-volume"
+                  class="transport-volume-slider"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="100"
+                  aria-valuetext="100%"
+                />
+              </div>
               <label class="transport-speed" for="transport-speed-select">
                 <span class="transport-speed-label">Speed</span>
                 <select id="transport-speed-select">
