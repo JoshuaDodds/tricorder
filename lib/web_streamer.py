@@ -52,7 +52,7 @@ import wave
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
@@ -2755,29 +2755,56 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     }
 
 
-def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
+def _calculate_directory_usage(
+    root: Path,
+    *,
+    skip_top_level: Collection[str] | None = None,
+) -> int:
     total = 0
-    if not recycle_root.exists():
+    if not root.exists():
         return 0
-    try:
-        candidates = list(recycle_root.iterdir())
-    except OSError:
-        return 0
-    for entry_dir in candidates:
-        data = _read_recycle_entry(entry_dir)
-        if not data:
+
+    log = logging.getLogger("web_streamer")
+    skip = {
+        str(name).strip()
+        for name in (skip_top_level or [])
+        if isinstance(name, str) and str(name).strip()
+    }
+
+    def _on_error(error: OSError) -> None:
+        location = getattr(error, "filename", None) or root
+        log.warning("storage usage: unable to access %s (%s)", location, error)
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_error):
+        dir_path = Path(dirpath)
+        try:
+            rel_parts = dir_path.relative_to(root).parts
+        except ValueError:
+            rel_parts = ()
+
+        if rel_parts and rel_parts[0] in skip:
+            dirnames[:] = []
             continue
-        size_bytes = data.get("size_bytes")
-        if isinstance(size_bytes, (int, float)):
-            total += int(size_bytes)
-            continue
-        audio_path = data.get("audio_path")
-        if isinstance(audio_path, Path):
+
+        dirnames[:] = [name for name in dirnames if name not in skip]
+
+        for filename in filenames:
+            candidate = dir_path / filename
             try:
-                total += int(audio_path.stat().st_size)
-            except OSError:
+                total += max(int(candidate.stat().st_size), 0)
+            except OSError as error:
+                log.warning(
+                    "storage usage: unable to stat %s (%s)",
+                    candidate,
+                    error,
+                )
                 continue
+
     return max(total, 0)
+
+
+def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
+    return _calculate_directory_usage(recycle_root)
 
 def _service_label_from_unit(unit: str) -> str:
     base = unit.split(".", 1)[0]
@@ -4604,7 +4631,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload["collection"] = collection
         payload["available_days"] = available_days
         payload["available_extensions"] = available_exts
-        payload["recordings_total_bytes"] = total_bytes
+        payload["recordings_total_bytes"] = _calculate_directory_usage(
+            recordings_root,
+            skip_top_level=(RECYCLE_BIN_DIRNAME,),
+        )
         try:
             usage = shutil.disk_usage(recordings_root)
         except (FileNotFoundError, PermissionError, OSError):
