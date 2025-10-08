@@ -1410,6 +1410,21 @@ button.small {
   min-height: 1rem;
   font-size: 0.85rem;
   color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.clipper-status[data-state="pending"]::before {
+  content: "";
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-right-color: transparent;
+  animation: clipper-status-spin 0.85s linear infinite;
 }
 
 .clipper-container[data-enabled="false"] .clipper-status {
@@ -1422,6 +1437,23 @@ button.small {
 
 .clipper-status[data-state="success"] {
   color: rgba(52, 211, 153, 0.9);
+}
+
+.clipper-container[data-busy="true"] {
+  cursor: progress;
+}
+
+.clipper-container[data-busy="true"] button {
+  cursor: progress;
+}
+
+@keyframes clipper-status-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .clipper-summary {
