@@ -76,6 +76,10 @@ LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS = 12 * 60 * 60
 
 CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
 
+EVENT_STREAM_HEARTBEAT_SECONDS = 20.0
+EVENT_STREAM_RETRY_MILLIS = 5000
+EVENT_HISTORY_LIMIT = 256
+
 DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
 ]
@@ -2178,7 +2182,7 @@ from aiohttp.web import AppKey
 web_fileresponse.NOSENDFILE = True
 
 from lib.hls_controller import controller
-from lib import webui, sd_card_health
+from lib import dashboard_events, sd_card_health, webui
 from lib.config import (
     ConfigPersistenceError,
     apply_config_migrations,
@@ -3004,6 +3008,9 @@ AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
 STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
 WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
 LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", object)
+EVENT_BUS_KEY: AppKey[dashboard_events.DashboardEventBus] = web.AppKey(
+    "dashboard_event_bus", dashboard_events.DashboardEventBus
+)
 SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
@@ -3454,6 +3461,27 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
     if lets_encrypt_manager is not None:
         app[LETS_ENCRYPT_MANAGER_KEY] = lets_encrypt_manager
+
+    try:
+        initial_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        initial_loop = None
+
+    event_bus = dashboard_events.DashboardEventBus(
+        loop=initial_loop,
+        history_limit=EVENT_HISTORY_LIMIT,
+    )
+    dashboard_events.install_event_bus(event_bus)
+    app[EVENT_BUS_KEY] = event_bus
+
+    async def _init_event_bus(_: web.Application) -> None:
+        event_bus.set_loop(asyncio.get_running_loop())
+
+    async def _cleanup_event_bus(_: web.Application) -> None:
+        dashboard_events.uninstall_event_bus(event_bus)
+
+    app.on_startup.append(_init_event_bus)
+    app.on_cleanup.append(_cleanup_event_bus)
 
 
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
@@ -6611,6 +6639,94 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
+    async def dashboard_events_stream(request: web.Request) -> web.StreamResponse:
+        bus = request.app.get(EVENT_BUS_KEY)
+        if bus is None:
+            raise web.HTTPServiceUnavailable(reason="event stream unavailable")
+
+        last_event_id = request.headers.get("Last-Event-ID") or request.query.get(
+            "last_event_id", ""
+        )
+        queue = await bus.subscribe(last_event_id=last_event_id)
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Type": "text/event-stream",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+
+        logger = logging.getLogger("web_streamer")
+        heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+        heartbeat_chunk = b"event: heartbeat\ndata: {}\n\n"
+
+        try:
+            await response.write(f"retry: {EVENT_STREAM_RETRY_MILLIS}\n\n".encode("utf-8"))
+            while True:
+                remaining = heartbeat_deadline - time.monotonic()
+                if remaining <= 0:
+                    try:
+                        await response.write(heartbeat_chunk)
+                    except ConnectionResetError:
+                        break
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    try:
+                        await response.write(heartbeat_chunk)
+                    except ConnectionResetError:
+                        break
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+                except asyncio.CancelledError:
+                    raise
+
+                if event is None:
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+
+                payload = event.get("payload")
+                try:
+                    data_text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to serialize dashboard event %s: %s",
+                        event.get("type"),
+                        exc,
+                    )
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+
+                buffer_parts = [f"id: {event['id']}\n", f"event: {event['type']}\n"]
+                lines = data_text.splitlines() or [""]
+                buffer_parts.extend(f"data: {line}\n" for line in lines)
+                buffer_parts.append("\n")
+
+                try:
+                    await response.write("".join(buffer_parts).encode("utf-8"))
+                except ConnectionResetError:
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # pragma: no cover - transport quirks
+                    logger.debug("dashboard SSE write failed: %s", exc)
+                    break
+
+                heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+        finally:
+            bus.unsubscribe(queue)
+            with contextlib.suppress(Exception):
+                await response.write_eof()
+
+        return response
+
     async def services_list(request: web.Request) -> web.Response:
         entries = request.app.get(SERVICE_ENTRIES_KEY, [])
         auto_restart = request.app.get(AUTO_RESTART_KEY, set())
@@ -6904,6 +7020,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/config/web-server", config_web_server_get)
     app.router.add_post("/api/config/web-server", config_web_server_update)
     app.router.add_get("/api/system-health", system_health)
+    app.router.add_get("/api/events", dashboard_events_stream)
     app.router.add_get("/api/services", services_list)
     app.router.add_get("/api/integrations", integrations_api)
     app.router.add_post("/api/services/{unit}/action", service_action)

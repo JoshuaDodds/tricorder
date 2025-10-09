@@ -22,6 +22,7 @@ from typing import Optional
 import array
 from lib.waveform_cache import DEFAULT_BUCKET_COUNT, MAX_BUCKET_COUNT, PEAK_SCALE
 from lib.motion_state import MOTION_STATE_FILENAME, MotionStateWatcher
+from lib import dashboard_events
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
@@ -1962,6 +1963,7 @@ class TimelineRecorder:
                     json.dump(payload, handle)
                     handle.write("\n")
                 os.replace(tmp_path, self.status_path)
+                dashboard_events.publish("capture_status", payload)
             except Exception as exc:  # pragma: no cover - diagnostics only in DEV builds
                 try:
                     os.unlink(tmp_path)

@@ -17,8 +17,22 @@ from types import SimpleNamespace
 import lib.web_streamer as web_streamer
 import lib.recycle_bin_utils as recycle_bin_utils
 import lib.lets_encrypt as lets_encrypt
+from lib import dashboard_events
 
 pytest_plugins = ("aiohttp.pytest_plugin",)
+
+
+async def _read_sse_event(response, *, timeout=1.0):
+    lines = []
+    while True:
+        chunk = await asyncio.wait_for(response.content.readline(), timeout=timeout)
+        if not chunk:
+            raise AssertionError("SSE stream closed before event was delivered")
+        text = chunk.decode("utf-8").rstrip("\n")
+        if text == "":
+            break
+        lines.append(text)
+    return lines
 
 
 TEST_CERT_PEM = """-----BEGIN CERTIFICATE-----
@@ -253,6 +267,60 @@ async def test_dashboard_page_structure(aiohttp_client):
     assert 'src="/static/js/dashboard.js"' in body
     assert 'data-tricorder-stream-mode="hls"' in body
     assert "data-tricorder-webrtc-ice-servers" in body
+
+
+@pytest.mark.asyncio
+async def test_dashboard_events_stream_emits_capture_updates(aiohttp_client):
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/events")
+    assert response.status == 200
+
+    await _read_sse_event(response)
+
+    payload = {"capturing": True, "updated_at": 123.0, "manual_recording": False}
+    event_id = dashboard_events.publish("capture_status", payload)
+    assert event_id is not None
+
+    lines = await _read_sse_event(response)
+    response.close()
+
+    assert any(line == f"id: {event_id}" for line in lines)
+    assert "event: capture_status" in lines
+    data_line = next(line for line in lines if line.startswith("data: "))
+    data = json.loads(data_line.split("data: ", 1)[1])
+    assert data["capturing"] is True
+    assert data["manual_recording"] is False
+
+
+@pytest.mark.asyncio
+async def test_dashboard_events_resumes_from_last_event_id(aiohttp_client):
+    client = await aiohttp_client(web_streamer.build_app())
+
+    first_id = dashboard_events.publish("capture_status", {"capturing": False, "updated_at": 1.0})
+    assert first_id is not None
+
+    first_response = await client.get("/api/events")
+    assert first_response.status == 200
+    await _read_sse_event(first_response)
+    first_lines = await _read_sse_event(first_response)
+    first_response.close()
+    assert any(line == f"id: {first_id}" for line in first_lines)
+
+    second_id = dashboard_events.publish("capture_status", {"capturing": True, "updated_at": 2.0})
+    assert second_id is not None and second_id != first_id
+
+    second_response = await client.get("/api/events", headers={"Last-Event-ID": first_id})
+    assert second_response.status == 200
+    await _read_sse_event(second_response)
+    second_lines = await _read_sse_event(second_response)
+    second_response.close()
+
+    assert any(line == f"id: {second_id}" for line in second_lines)
+    data_line = next(line for line in second_lines if line.startswith("data: "))
+    data = json.loads(data_line.split("data: ", 1)[1])
+    assert data["capturing"] is True
+    assert data["updated_at"] == pytest.approx(2.0)
 
 
 @pytest.mark.asyncio
