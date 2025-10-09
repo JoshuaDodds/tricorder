@@ -134,13 +134,45 @@ if check_reqs; then
 else
     echo "[Tricorder] Installing/upgrading requirements..."
     "$VENV/bin/pip" install --no-cache-dir --upgrade -r requirements.txt
-    REQUIREMENTS_CHANGED=1
 fi
 
 # create app tree
 mkdir -p "$BASE"/{bin,lib,recordings,dropbox,systemd,tmp,repo}
 if [[ -n "$INSTALL_OWNER" ]]; then
   chown -R "$INSTALL_OWNER":"$INSTALL_OWNER" "$BASE" 2>/dev/null || true
+fi
+
+REQUIREMENTS_DIGEST_FILE="$BASE/.requirements.sha256"
+REQUIREMENTS_DEV_DIGEST_FILE="$BASE/.requirements-dev.sha256"
+CURRENT_REQUIREMENTS_DIGEST=""
+CURRENT_REQUIREMENTS_DEV_DIGEST=""
+
+if [[ -f requirements.txt ]]; then
+  CURRENT_REQUIREMENTS_DIGEST=$(sha256sum requirements.txt | awk '{print $1}')
+  if [[ ! -f "$REQUIREMENTS_DIGEST_FILE" ]]; then
+    REQUIREMENTS_CHANGED=1
+  else
+    previous_digest=$(cat "$REQUIREMENTS_DIGEST_FILE" 2>/dev/null || true)
+    if [[ "$previous_digest" != "$CURRENT_REQUIREMENTS_DIGEST" ]]; then
+      REQUIREMENTS_CHANGED=1
+    fi
+  fi
+fi
+
+if [[ -f requirements-dev.txt ]]; then
+  CURRENT_REQUIREMENTS_DEV_DIGEST=$(sha256sum requirements-dev.txt | awk '{print $1}')
+  if [[ ! -f "$REQUIREMENTS_DEV_DIGEST_FILE" ]]; then
+    REQUIREMENTS_CHANGED=1
+  else
+    previous_dev_digest=$(cat "$REQUIREMENTS_DEV_DIGEST_FILE" 2>/dev/null || true)
+    if [[ "$previous_dev_digest" != "$CURRENT_REQUIREMENTS_DEV_DIGEST" ]]; then
+      REQUIREMENTS_CHANGED=1
+    fi
+  fi
+else
+  if [[ -f "$REQUIREMENTS_DEV_DIGEST_FILE" ]]; then
+    REQUIREMENTS_CHANGED=1
+  fi
 fi
 
 WEB_ASSETS_CHANGED=0
@@ -424,3 +456,15 @@ else
 fi
 
 say "Install complete"
+
+if [[ -n "$CURRENT_REQUIREMENTS_DIGEST" ]]; then
+  printf '%s\n' "$CURRENT_REQUIREMENTS_DIGEST" >"$REQUIREMENTS_DIGEST_FILE" 2>/dev/null || true
+elif [[ -f "$REQUIREMENTS_DIGEST_FILE" ]]; then
+  rm -f "$REQUIREMENTS_DIGEST_FILE" 2>/dev/null || true
+fi
+
+if [[ -n "$CURRENT_REQUIREMENTS_DEV_DIGEST" ]]; then
+  printf '%s\n' "$CURRENT_REQUIREMENTS_DEV_DIGEST" >"$REQUIREMENTS_DEV_DIGEST_FILE" 2>/dev/null || true
+elif [[ -f "$REQUIREMENTS_DEV_DIGEST_FILE" ]]; then
+  rm -f "$REQUIREMENTS_DEV_DIGEST_FILE" 2>/dev/null || true
+fi
