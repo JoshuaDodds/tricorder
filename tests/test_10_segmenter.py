@@ -1371,7 +1371,9 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     systemd_stub.chmod(0o755)
 
-    existing_opus = tmp_path / "stream.opus"
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    existing_opus = recordings_dir / "stream.opus"
     existing_opus.write_bytes(b"opus")
     waveform = existing_opus.with_suffix(existing_opus.suffix + ".waveform.json")
     waveform.write_text("{}", encoding="utf-8")
@@ -1387,7 +1389,7 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     env["DENOISE"] = "0"
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
-    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["ENCODER_RECORDINGS_DIR"] = str(recordings_dir)
 
     result = subprocess.run(
         [str(script_path), str(wav_path), "sample", str(existing_opus)],
@@ -1457,12 +1459,23 @@ def test_encode_script_discards_short_new_clips(tmp_path):
     assert result.returncode == 0, result.stderr
     assert not wav_path.exists(), "temporary WAV should be removed"
     recordings_dir = tmp_path / "recordings"
-    opus_files = list(recordings_dir.rglob("*.opus"))
-    assert not opus_files, "short clips should be discarded"
-    waveform_files = list(recordings_dir.rglob("*.waveform.json"))
-    transcript_files = list(recordings_dir.rglob("*.transcript.json"))
-    assert not waveform_files, "waveforms should not be written for discarded clips"
-    assert not transcript_files, "transcripts should not be written for discarded clips"
+    recycle_root = recordings_dir / ".recycle_bin"
+    assert recycle_root.is_dir(), "recycle bin directory should be created"
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1, "short clip should produce a recycle bin entry"
+    entry_dir = entries[0]
+    stored_files = list(entry_dir.iterdir())
+    assert any(file.name.endswith(".opus") for file in stored_files), "audio should be moved into recycle bin"
+    metadata_path = entry_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    day = time.strftime("%Y%m%d", time.localtime())
+    assert metadata.get("original_path") == f"{day}/sample.opus"
+    assert metadata.get("duration_seconds") == pytest.approx(0.5, rel=1e-6)
+    assert metadata.get("reason") == "short_clip"
+    assert metadata.get("waveform_name") in ("", None)
+    assert metadata.get("transcript_name") in ("", None)
+    remaining_opus = list((recordings_dir / day).glob("*.opus")) if (recordings_dir / day).exists() else []
+    assert not remaining_opus, "no short clips should remain in the recordings directory"
     raw_dir = recordings_dir / ".original_wav"
     assert not raw_dir.exists(), "original WAVs should not be preserved for discarded clips"
 
@@ -1486,7 +1499,9 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
     systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     systemd_stub.chmod(0o755)
 
-    existing_opus = tmp_path / "stream.opus"
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    existing_opus = recordings_dir / "stream.opus"
     existing_opus.write_bytes(b"opus")
     waveform = existing_opus.with_suffix(existing_opus.suffix + ".waveform.json")
     waveform.write_text("{}", encoding="utf-8")
@@ -1502,7 +1517,7 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
     env["DENOISE"] = "1"
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
-    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["ENCODER_RECORDINGS_DIR"] = str(recordings_dir)
     env["ENCODER_MIN_CLIP_SECONDS"] = "1.0"
 
     result = subprocess.run(
@@ -1515,10 +1530,19 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert not wav_path.exists(), "temporary WAV should be removed"
-    assert not existing_opus.exists(), "short streaming clips should be discarded"
-    assert not waveform.exists(), "waveform sidecar should be removed for short clips"
-    assert not transcript.exists(), "transcript sidecar should be removed for short clips"
-    raw_dir = tmp_path / "recordings" / ".original_wav"
+    assert not existing_opus.exists(), "short streaming clips should be moved from the recordings directory"
+    assert not waveform.exists(), "waveform sidecar should be moved for short clips"
+    assert not transcript.exists(), "transcript sidecar should be moved for short clips"
+    recycle_root = recordings_dir / ".recycle_bin"
+    assert recycle_root.is_dir(), "recycle bin should exist after moving a short clip"
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1, "short streaming clip should create a recycle bin entry"
+    entry_dir = entries[0]
+    metadata_path = entry_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata.get("duration_seconds") == pytest.approx(0.6, rel=1e-6)
+    assert metadata.get("original_path") == "stream.opus"
+    raw_dir = recordings_dir / ".original_wav"
     if raw_dir.exists():
         assert not any(raw_dir.rglob("*.wav")), "no original WAV should remain for discarded streaming clips"
 

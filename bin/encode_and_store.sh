@@ -82,11 +82,49 @@ discard_short_clip() {
   if [[ -n "$MIN_CLIP_SECONDS" ]]; then
     formatted_threshold=$(printf '%.3f' "$MIN_CLIP_SECONDS" 2>/dev/null || echo "$MIN_CLIP_SECONDS")
   fi
-  echo "[encode] Clip duration ${formatted_duration}s below minimum ${formatted_threshold}s; discarding $target" | systemd-cat -t tricorder
-  rm -f "$target"
-  rm -f "$waveform_file" "$transcript_file"
+  echo "[encode] Clip duration ${formatted_duration}s below minimum ${formatted_threshold}s; moving $target to recycle bin" | systemd-cat -t tricorder
+
+  if [[ -n "$target" && -f "$target" ]]; then
+    local recycle_args=(
+      lib.recycle_bin_utils
+      move-short
+      --recordings-root
+      "$recordings_root"
+      --audio
+      "$target"
+      --reason
+      "short_clip"
+    )
+
+    if [[ -n "$waveform_file" && -f "$waveform_file" ]]; then
+      recycle_args+=(--waveform "$waveform_file")
+    fi
+    if [[ -n "$transcript_file" && -f "$transcript_file" ]]; then
+      recycle_args+=(--transcript "$transcript_file")
+    fi
+    if [[ -n "$duration" ]]; then
+      recycle_args+=(--duration "$duration")
+    fi
+
+    local recycle_entry=""
+    if recycle_entry=$(run_python_module "${recycle_args[@]}"); then
+      if [[ -n "$recycle_entry" ]]; then
+        echo "[encode] Short recording moved to recycle bin entry ${recycle_entry}" | systemd-cat -t tricorder
+      else
+        echo "[encode] Short recording moved to recycle bin" | systemd-cat -t tricorder
+      fi
+    else
+      echo "[encode] WARN: recycle bin move failed for $target; deleting artifacts" | systemd-cat -t tricorder
+      rm -f "$target"
+      rm -f "$waveform_file" "$transcript_file"
+    fi
+  else
+    rm -f "$target"
+    rm -f "$waveform_file" "$transcript_file"
+  fi
+
   rm -f "$in_wav"
-  echo "[encode] Dropped short recording $target" | systemd-cat -t tricorder
+  echo "[encode] Short recording handling complete for $target" | systemd-cat -t tricorder
   exit 0
 }
 day="$(date +%Y%m%d)"
