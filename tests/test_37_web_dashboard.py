@@ -2929,6 +2929,76 @@ def test_playback_source_reverts_when_raw_unavailable():
     assert result["updateInfo"]["nextMode"] == "processed"
 
 
+def test_playback_source_poll_preserves_pending_seek():
+    script = textwrap.dedent(
+        """
+        const player = sandbox.window.document.__getMockElement("preview-player");
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+
+        player.currentTime = 1.25;
+        player.paused = false;
+        player.ended = false;
+        player._listeners = {};
+        player.addEventListener = (event, handler) => {
+          player._listeners[event] = handler;
+        };
+        player.removeEventListener = (event) => {
+          delete player._listeners[event];
+        };
+        player.play = () => {
+          player.paused = false;
+          return Promise.resolve();
+        };
+        player.pause = () => {
+          player.paused = true;
+        };
+        player.load = () => {};
+
+        state.current = {
+          path: "20240101/foo.opus",
+          raw_audio_path: "raw/20240101/foo.wav",
+        };
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: false });
+        sandbox.setPlaybackSource("raw", { userInitiated: true });
+
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: true });
+
+        if (player._listeners.loadedmetadata) {
+          player.currentTime = 0;
+          player.paused = true;
+          player._listeners.loadedmetadata();
+        }
+
+        return {
+          currentTime: player.currentTime,
+          paused: player.paused,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "preview-player": True,
+            "player-meta": True,
+            "player-meta-text": True,
+            "player-meta-actions": True,
+            "player-download": True,
+            "player-rename": True,
+            "player-delete": True,
+            "player-transport": True,
+            "playback-source-group": True,
+            "playback-source-processed": True,
+            "playback-source-raw": True,
+            "playback-source-active": True,
+            "playback-source-hint": True,
+        },
+    )
+
+    assert result["currentTime"] == pytest.approx(1.25, rel=1e-6)
+    assert result["paused"] is False
+
+
 def test_sd_card_recovery_static_doc_served(dashboard_env):
     async def runner():
         app = web_streamer.build_app()
