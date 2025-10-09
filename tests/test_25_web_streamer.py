@@ -450,6 +450,50 @@ async def test_recordings_listing_falls_back_to_raw_when_metadata_missing(
     assert entry.get("path") == f"{day_dir.name}/{audio_path.name}"
 
 
+def test_saved_recordings_fallback_raw_path_ignores_prefix(tmp_path):
+    recordings_dir = tmp_path / "recordings"
+    saved_dir = recordings_dir / web_streamer.SAVED_RECORDINGS_DIRNAME
+    day_dir = saved_dir / "20251008"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    audio_path = day_dir / "sample.opus"
+    audio_path.write_bytes(b"opus")
+    waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 1.0}), encoding="utf-8")
+
+    raw_root = recordings_dir / web_streamer.RAW_AUDIO_DIRNAME
+    raw_day = raw_root / day_dir.name
+    raw_day.mkdir(parents=True, exist_ok=True)
+    raw_audio = raw_day / "sample.wav"
+    raw_audio.write_bytes(b"raw")
+
+    saved_raw_link = saved_dir / web_streamer.RAW_AUDIO_DIRNAME
+    saved_raw_link.symlink_to(raw_root, target_is_directory=True)
+
+    entries, days, exts, total = web_streamer._scan_recordings_worker(
+        saved_dir,
+        (".opus",),
+        path_prefix=(web_streamer.SAVED_RECORDINGS_DIRNAME,),
+        collection_label="saved",
+    )
+
+    assert total == audio_path.stat().st_size
+    assert days == [day_dir.name]
+    assert exts == ["opus"]
+    assert len(entries) == 1
+
+    entry = entries[0]
+    expected_rel = f"{web_streamer.RAW_AUDIO_DIRNAME}/{day_dir.name}/{raw_audio.name}"
+    assert entry["raw_audio_path"] == expected_rel
+    assert entry["path"] == (
+        f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/{day_dir.name}/{audio_path.name}"
+    )
+    assert entry["waveform_path"] == (
+        f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/{day_dir.name}/{waveform_path.name}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_recordings_save_and_unsave_moves_files(
     monkeypatch, tmp_path, aiohttp_client
