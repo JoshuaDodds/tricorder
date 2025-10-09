@@ -2481,7 +2481,7 @@ def _scan_recordings_worker(
                 if not stem:
                     continue
                 rel_candidate = Path(RAW_AUDIO_DIRNAME, day_name, candidate.name)
-                index[(day_name, stem)] = _with_prefix(rel_candidate)
+                index[(day_name, stem)] = rel_candidate
         return index
 
     entries: list[dict[str, object]] = []
