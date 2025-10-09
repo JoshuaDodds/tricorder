@@ -410,6 +410,91 @@ async def test_recordings_saved_collection_lists_saved_entries(
 
 
 @pytest.mark.asyncio
+async def test_recordings_listing_falls_back_to_raw_when_metadata_missing(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    day_dir = recordings_dir / "20251008"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    audio_path = day_dir / "sample.opus"
+    audio_path.write_bytes(b"opus")
+    waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 1.0}), encoding="utf-8")
+
+    raw_dir = recordings_dir / web_streamer.RAW_AUDIO_DIRNAME / day_dir.name
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = raw_dir / "sample.wav"
+    raw_path.write_bytes(b"raw")
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/recordings")
+    assert response.status == 200
+    payload = await response.json()
+    items = payload.get("items", [])
+    assert len(items) == 1
+    entry = items[0]
+    expected_raw = f"{web_streamer.RAW_AUDIO_DIRNAME}/{day_dir.name}/{raw_path.name}"
+    assert entry.get("raw_audio_path") == expected_raw
+    assert entry.get("path") == f"{day_dir.name}/{audio_path.name}"
+
+
+def test_saved_recordings_fallback_raw_path_ignores_prefix(tmp_path):
+    recordings_dir = tmp_path / "recordings"
+    saved_dir = recordings_dir / web_streamer.SAVED_RECORDINGS_DIRNAME
+    day_dir = saved_dir / "20251008"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    audio_path = day_dir / "sample.opus"
+    audio_path.write_bytes(b"opus")
+    waveform_path = audio_path.with_suffix(audio_path.suffix + ".waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 1.0}), encoding="utf-8")
+
+    raw_root = recordings_dir / web_streamer.RAW_AUDIO_DIRNAME
+    raw_day = raw_root / day_dir.name
+    raw_day.mkdir(parents=True, exist_ok=True)
+    raw_audio = raw_day / "sample.wav"
+    raw_audio.write_bytes(b"raw")
+
+    saved_raw_link = saved_dir / web_streamer.RAW_AUDIO_DIRNAME
+    saved_raw_link.symlink_to(raw_root, target_is_directory=True)
+
+    entries, days, exts, total = web_streamer._scan_recordings_worker(
+        saved_dir,
+        (".opus",),
+        path_prefix=(web_streamer.SAVED_RECORDINGS_DIRNAME,),
+        collection_label="saved",
+    )
+
+    assert total == audio_path.stat().st_size
+    assert days == [day_dir.name]
+    assert exts == ["opus"]
+    assert len(entries) == 1
+
+    entry = entries[0]
+    expected_rel = f"{web_streamer.RAW_AUDIO_DIRNAME}/{day_dir.name}/{raw_audio.name}"
+    assert entry["raw_audio_path"] == expected_rel
+    assert entry["path"] == (
+        f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/{day_dir.name}/{audio_path.name}"
+    )
+    assert entry["waveform_path"] == (
+        f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/{day_dir.name}/{waveform_path.name}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_recordings_save_and_unsave_moves_files(
     monkeypatch, tmp_path, aiohttp_client
 ):

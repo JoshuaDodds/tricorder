@@ -84,6 +84,7 @@ VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RAW_AUDIO_DIRNAME = ".original_wav"
+RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
 SAVED_RECORDINGS_DIRNAME = "Saved"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -2440,12 +2441,57 @@ def _scan_recordings_worker(
             for filename in filenames:
                 yield dir_path / filename
 
+    def _index_raw_audio_files() -> dict[tuple[str, str], Path]:
+        index: dict[tuple[str, str], Path] = {}
+        raw_root = recordings_root / RAW_AUDIO_DIRNAME
+        try:
+            day_entries = list(raw_root.iterdir())
+        except FileNotFoundError:
+            return index
+        except OSError as error:
+            log.warning(
+                "recordings scan: unable to enumerate raw audio root %s (%s)",
+                raw_root,
+                error,
+            )
+            return index
+
+        for day_entry in day_entries:
+            if not day_entry.is_dir():
+                continue
+            day_name = day_entry.name
+            try:
+                candidates = list(day_entry.iterdir())
+            except OSError as error:
+                log.warning(
+                    "recordings scan: unable to index raw audio in %s (%s)",
+                    day_entry,
+                    error,
+                )
+                continue
+            for candidate in candidates:
+                try:
+                    if not candidate.is_file():
+                        continue
+                except OSError:
+                    continue
+                if candidate.suffix.lower() not in RAW_AUDIO_SUFFIXES:
+                    continue
+                stem = candidate.stem
+                if not stem:
+                    continue
+                rel_candidate = Path(RAW_AUDIO_DIRNAME, day_name, candidate.name)
+                index[(day_name, stem)] = rel_candidate
+        return index
+
     entries: list[dict[str, object]] = []
     day_set: set[str] = set()
     ext_set: set[str] = set()
     total_bytes = 0
     if not recordings_root.exists():
         return entries, [], [], 0
+
+    raw_audio_index = _index_raw_audio_files()
 
     for path in _iter_candidate_files():
         try:
@@ -2552,6 +2598,28 @@ def _scan_recordings_worker(
                 raw_audio_rel = raw_candidate.strip()
                 if raw_audio_rel and not _is_safe_relative_path(raw_audio_rel):
                     raw_audio_rel = ""
+
+        day_component = ""
+        if len(rel.parts) > 1:
+            first_part = rel.parts[0]
+            if (
+                first_part == SAVED_RECORDINGS_DIRNAME
+                and len(rel.parts) > 2
+                and rel.parts[1]
+            ):
+                day_component = rel.parts[1]
+            else:
+                day_component = first_part
+
+        if (
+            not raw_audio_rel
+            and day_component
+            and len(day_component) == 8
+            and day_component.isdigit()
+        ):
+            fallback = raw_audio_index.get((day_component, path.stem))
+            if fallback is not None:
+                raw_audio_rel = fallback.as_posix()
 
         trigger_offset = _float_or_none(
             waveform_meta.get("trigger_offset_seconds") if waveform_meta else None
@@ -4730,6 +4798,11 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     else ""
                 ),
                 "transcript_excerpt": _excerpt(str(entry.get("transcript_text", ""))),
+                "raw_audio_path": (
+                    str(entry.get("raw_audio_path"))
+                    if entry.get("raw_audio_path")
+                    else ""
+                ),
             }
             for entry in window
         ]
