@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import lib.web_streamer as web_streamer
+import lib.recycle_bin_utils as recycle_bin_utils
 import lib.lets_encrypt as lets_encrypt
 
 pytest_plugins = ("aiohttp.pytest_plugin",)
@@ -1064,6 +1065,60 @@ async def test_recycle_bin_restore_reinstates_raw_audio(
     assert waveform_path.exists()
     assert raw_path.exists()
     assert not entry_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_recycle_bin_list_includes_duration_and_reason(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    manual_path = recordings_dir / "manual.opus"
+    manual_path.write_bytes(b"manual")
+    manual_waveform = manual_path.with_suffix(manual_path.suffix + ".waveform.json")
+    manual_waveform.write_text(
+        json.dumps({"duration_seconds": 2.5}),
+        encoding="utf-8",
+    )
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    delete_response = await client.post(
+        "/api/recordings/delete",
+        json={"items": ["manual.opus"]},
+    )
+    assert delete_response.status == 200
+
+    auto_path = recordings_dir / "auto.opus"
+    auto_path.write_bytes(b"auto")
+    recycle_bin_utils.move_short_recording_to_recycle_bin(
+        auto_path,
+        recordings_dir,
+        duration=1.25,
+    )
+
+    list_response = await client.get("/api/recycle-bin")
+    assert list_response.status == 200
+    payload = await list_response.json()
+    items = payload.get("items")
+    assert isinstance(items, list)
+
+    reasons = {str(entry.get("reason")): entry for entry in items}
+    assert "manual" in reasons
+    assert "short_clip" in reasons
+
+    assert pytest.approx(reasons["manual"].get("duration_seconds"), rel=1e-3) == 2.5
+    assert pytest.approx(reasons["short_clip"].get("duration_seconds"), rel=1e-3) == 1.25
 
 
 @pytest.mark.asyncio

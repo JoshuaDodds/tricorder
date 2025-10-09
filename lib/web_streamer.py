@@ -2802,6 +2802,12 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     if raw_audio_path and not _is_safe_relative_path(raw_audio_path):
         raw_audio_path = ""
 
+    reason_raw = metadata.get("reason")
+    if isinstance(reason_raw, str):
+        reason_value = reason_raw.strip()
+    else:
+        reason_value = ""
+
     return {
         "id": entry_id,
         "dir": entry_dir,
@@ -2821,6 +2827,7 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "started_at": started_at_value,
         "raw_audio_name": raw_audio_name,
         "raw_audio_path": raw_audio_path,
+        "reason": reason_value,
     }
 
 
@@ -5072,6 +5079,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     "start_epoch": start_epoch_value,
                     "started_epoch": start_epoch_value,
                     "started_at": started_at_value,
+                    "reason": "manual",
                 }
                 with metadata_path.open("w", encoding="utf-8") as handle:
                     json.dump(metadata, handle)
@@ -5457,6 +5465,11 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 else:
                     if size_int < 0:
                         size_int = 0
+                reason_value = ""
+                raw_reason = data.get("reason")
+                if isinstance(raw_reason, str):
+                    reason_value = raw_reason.strip()
+
                 entries.append(
                     {
                         "id": entry_id,
@@ -5476,6 +5489,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         ),
                         "restorable": restorable,
                         "waveform_available": bool(data.get("waveform_name")),
+                        "reason": reason_value,
                     }
                 )
 
