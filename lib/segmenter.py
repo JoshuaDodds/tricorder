@@ -2564,6 +2564,8 @@ class TimelineRecorder:
             voiced = True
         if self._motion_forced_active:
             frame_active = True
+        if self.active and voiced:
+            frame_active = True
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)

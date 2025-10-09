@@ -87,6 +87,58 @@ def test_flush_does_not_block_on_encode(monkeypatch):
     assert timeout == segmenter.SHUTDOWN_ENCODE_START_TIMEOUT
 
 
+def test_voiced_frames_keep_active_event_alive(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    voice_flags = iter([True, True, True, False, False])
+
+    def fake_is_voice(*_args, **_kwargs):
+        return next(voice_flags, False)
+
+    monkeypatch.setattr(segmenter, "is_voice", fake_is_voice)
+
+    captured_jobs: list[tuple[str, str]] = []
+
+    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None, manual_recording: bool = False):
+        captured_jobs.append((tmp_wav_path, base_name))
+        return len(captured_jobs)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is True
+
+        rec.ingest(make_frame(0), 1)
+        assert rec.active is True, "VAD should keep the event alive when RMS is quiet"
+
+        rec.ingest(make_frame(0), 2)
+        assert rec.active is True
+
+        rec.ingest(make_frame(0), 3)
+        assert rec.active is False
+        assert captured_jobs, "Expected encode job after event finalization"
+    finally:
+        rec.flush(99)
+
+
 def test_manual_split_starts_new_event(tmp_path, monkeypatch):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"
@@ -244,6 +296,13 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
     monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
     monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
     monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    voice_flags = iter([False, False, False])
+
+    def fake_is_voice(*_args, **_kwargs):
+        return next(voice_flags, False)
+
+    monkeypatch.setattr(segmenter, "is_voice", fake_is_voice)
 
     motion_state_path = tmp_dir / MOTION_STATE_FILENAME
     store_motion_state(motion_state_path, motion_active=True, timestamp=50.0)
@@ -1198,7 +1257,13 @@ def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp
             pass
 
     monkeypatch.setattr(segmenter, "LiveWaveformWriter", DummyWaveform)
-    monkeypatch.setattr(segmenter, "is_voice", lambda *_: True)
+
+    voice_flags = iter([True] * 12 + [False] * 40)
+
+    def fake_is_voice(*_args, **_kwargs):
+        return next(voice_flags, False)
+
+    monkeypatch.setattr(segmenter, "is_voice", fake_is_voice)
 
     rec = TimelineRecorder()
     initial_threshold = rec._adaptive.threshold_linear
@@ -1368,7 +1433,9 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     ffmpeg_stub.chmod(0o755)
 
     systemd_stub = stub_bin / "systemd-cat"
-    systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    systemd_stub.write_text(
+        "#!/usr/bin/env bash\ncat >/dev/null\n", encoding="utf-8"
+    )
     systemd_stub.chmod(0o755)
 
     recordings_dir = tmp_path / "recordings"
