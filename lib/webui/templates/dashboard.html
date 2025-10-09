@@ -403,12 +403,6 @@
           data-context="recordings"
           tabindex="-1"
         >
-          <div class="card-header">
-            <div class="card-heading">
-              <h2>Preview</h2>
-            </div>
-            <button id="preview-close" class="ghost-button small" type="button">Hide</button>
-          </div>
           <audio id="preview-player" preload="none" aria-hidden="true"></audio>
           <div class="player-transport" id="player-transport" hidden data-active="false">
             <div class="transport-buttons" role="group" aria-label="Playback controls">
@@ -451,7 +445,6 @@
             </div>
             <div class="transport-options">
               <label class="transport-speed" for="transport-speed-select">
-                <span class="transport-speed-label">Speed</span>
                 <select id="transport-speed-select">
                   <option value="0.25">0.25×</option>
                   <option value="0.5">0.5×</option>
@@ -510,6 +503,7 @@
                   >Raw capture unavailable</span
                 >
               </div>
+              <button id="preview-close" class="ghost-button small" type="button">Hide</button>
             </div>
           </div>
           <div class="waveform-section" id="waveform-section">
