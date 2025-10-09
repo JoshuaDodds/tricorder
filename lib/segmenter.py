@@ -2530,7 +2530,7 @@ class TimelineRecorder:
         except queue.Full:
             self.writer_queue_drops += 1
 
-    def ingest(self, buf: bytes, idx: int):
+    def ingest(self, buf: bytes, idx: int) -> bytes:
         force_restart = False
         if self._manual_split_requested:
             if self.active:
@@ -2794,7 +2794,7 @@ class TimelineRecorder:
                                 self._live_waveform_rel_path
                             )
                     self._update_capture_status(True, event=event_status)
-            return
+            return buf
 
         self._q_send(bytes(buf))
         if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
@@ -2820,6 +2820,8 @@ class TimelineRecorder:
 
         if self.post_count <= 0:
             self._finalize_event(reason=f"no active input for {POST_PAD}ms")
+
+        return buf
 
     def request_manual_split(self) -> bool:
         if not self.active:
