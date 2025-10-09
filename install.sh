@@ -141,6 +141,167 @@ if [[ -n "$INSTALL_OWNER" ]]; then
   chown -R "$INSTALL_OWNER":"$INSTALL_OWNER" "$BASE" 2>/dev/null || true
 fi
 
+WEB_ASSETS_CHANGED=0
+OTHER_CHANGED=1
+SKIP_NON_WEB_RESTARTS=0
+
+if [[ -d "$BASE" ]]; then
+  diff_output=$(TRICORDER_BASE="$BASE" TRICORDER_REPO="$SCRIPT_DIR" TRICORDER_SYSTEMD_DIR="$SYSTEMD_DIR" python - <<'PY'
+import os
+import pathlib
+
+repo_root = pathlib.Path(os.environ['TRICORDER_REPO']).resolve()
+base_root = pathlib.Path(os.environ['TRICORDER_BASE']).resolve()
+systemd_dir = pathlib.Path(os.environ.get('TRICORDER_SYSTEMD_DIR', '/etc/systemd/system'))
+
+flags = {'webui': False, 'other': False}
+
+def categorize(rel: pathlib.Path) -> str:
+    parts = rel.parts
+    if len(parts) >= 2 and parts[0] == 'lib' and parts[1] == 'webui':
+        return 'webui'
+    return 'other'
+
+def is_ignored(rel: pathlib.Path) -> bool:
+    if not rel.parts:
+        return False
+    if any(part == '__pycache__' for part in rel.parts):
+        return True
+    name = rel.name
+    return name.endswith('.pyc')
+
+def record_difference(rel: pathlib.Path) -> None:
+    flags[categorize(rel)] = True
+
+def compare_file(src: pathlib.Path, dest: pathlib.Path, rel: pathlib.Path) -> None:
+    if is_ignored(rel):
+        return
+    try:
+        if not dest.exists():
+            record_difference(rel)
+            return
+    except PermissionError:
+        flags['other'] = True
+        return
+
+    try:
+        if dest.is_dir():
+            record_difference(rel)
+            return
+    except PermissionError:
+        flags['other'] = True
+        return
+
+    if src.is_symlink():
+        try:
+            src_target = os.readlink(src)
+            dest_target = os.readlink(dest)
+        except OSError:
+            flags['other'] = True
+            return
+        if src_target != dest_target:
+            record_difference(rel)
+        return
+
+    try:
+        src_bytes = src.read_bytes()
+        dest_bytes = dest.read_bytes()
+    except Exception:
+        flags['other'] = True
+        return
+
+    if dest_bytes != src_bytes:
+        record_difference(rel)
+
+
+def walk_repo_subtree(relative: str) -> None:
+    root = repo_root / relative
+    if not root.exists():
+        return
+    for entry in root.rglob('*'):
+        if entry.is_file() or entry.is_symlink():
+            rel = entry.relative_to(repo_root)
+            dest = base_root / rel
+            compare_file(entry, dest, rel)
+            if flags['other']:
+                return
+
+
+def walk_repo_root_glob(pattern: str) -> None:
+    for entry in repo_root.glob(pattern):
+        if entry.is_file() or entry.is_symlink():
+            rel = entry.relative_to(repo_root)
+            dest = base_root / rel
+            compare_file(entry, dest, rel)
+            if flags['other']:
+                return
+
+
+def check_extraneous(base_dir: pathlib.Path, rel_prefix: pathlib.Path) -> None:
+    if not base_dir.exists():
+        return
+    for entry in base_dir.rglob('*'):
+        if not (entry.is_file() or entry.is_symlink()):
+            continue
+        rel = rel_prefix / entry.relative_to(base_dir)
+        if is_ignored(rel):
+            continue
+        repo_entry = repo_root / rel
+        try:
+            exists = repo_entry.exists()
+        except PermissionError:
+            flags['other'] = True
+            return
+        if not exists:
+            record_difference(rel)
+            if flags['other']:
+                return
+
+
+def walk_systemd_units() -> None:
+    systemd_repo = repo_root / 'systemd'
+    if not systemd_repo.exists():
+        return
+    for entry in systemd_repo.glob('*'):
+        if not (entry.is_file() or entry.is_symlink()):
+            continue
+        rel = entry.relative_to(repo_root)
+        dest = systemd_dir / entry.name
+        compare_file(entry, dest, rel)
+        if flags['other']:
+            return
+
+
+if not base_root.exists():
+    flags['other'] = True
+else:
+    walk_repo_subtree('bin')
+    if not flags['other']:
+        walk_repo_subtree('lib')
+    if not flags['other']:
+        walk_repo_root_glob('*.py')
+    if not flags['other']:
+        walk_repo_root_glob('*.yaml')
+    if not flags['other']:
+        walk_systemd_units()
+    if not flags['other']:
+        check_extraneous(base_root / 'bin', pathlib.Path('bin'))
+    if not flags['other']:
+        check_extraneous(base_root / 'lib', pathlib.Path('lib'))
+
+print(f"{int(flags['webui'])} {int(flags['other'])}")
+PY
+  ) || true
+
+  if [[ -n "$diff_output" ]]; then
+    read -r WEB_ASSETS_CHANGED OTHER_CHANGED <<<"$diff_output"
+    if [[ "$OTHER_CHANGED" == "0" && "$WEB_ASSETS_CHANGED" == "1" ]]; then
+      SKIP_NON_WEB_RESTARTS=1
+      say "Web asset-only update detected; skipping recorder/dropbox restarts"
+    fi
+  fi
+fi
+
 # copy project files (idempotent overwrite)
 say "Installing project files"
 
@@ -246,8 +407,12 @@ restart_if_active() {
   fi
 }
 
-restart_if_active voice-recorder.service
-restart_if_active dropbox.service
-restart_if_active dropbox.path
+if [[ "$SKIP_NON_WEB_RESTARTS" == "1" ]]; then
+  say "Recorder/dropbox restarts skipped: no backend code changes detected"
+else
+  restart_if_active voice-recorder.service
+  restart_if_active dropbox.service
+  restart_if_active dropbox.path
+fi
 
 say "Install complete"
