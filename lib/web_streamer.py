@@ -75,6 +75,7 @@ WEB_SERVER_TLS_PROVIDERS = {"letsencrypt", "manual"}
 LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS = 12 * 60 * 60
 
 CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
+CAPTURE_STATUS_EVENT_POLL_SECONDS = 0.5
 
 EVENT_STREAM_HEARTBEAT_SECONDS = 20.0
 EVENT_STREAM_RETRY_MILLIS = 5000
@@ -96,6 +97,92 @@ STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
 
 DEFAULT_VOSK_MODEL_ROOT = Path("/apps/tricorder/models")
+
+
+class _CaptureStatusEventBridge:
+    """Bridge capture status file updates into dashboard SSE events."""
+
+    def __init__(
+        self,
+        *,
+        read_status: Callable[[], dict[str, object]],
+        bus: "dashboard_events.DashboardEventBus",
+        poll_interval: float,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+        self._read_status = read_status
+        self._bus = bus
+        self._poll_interval = float(poll_interval)
+        self._logger = logger or logging.getLogger("web_streamer")
+        self._task: asyncio.Task | None = None
+        self._last_signature: str | None = None
+
+    async def start(self) -> None:
+        self._prime_from_history()
+        await self._poll_once()
+        if self._task is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._task = loop.create_task(self._run())
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _run(self) -> None:
+        assert self._task is not None
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(self._poll_interval)
+                    await self._poll_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    self._logger.debug(
+                        "capture status bridge poll failed: %s", exc, exc_info=False
+                    )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._task = None
+
+    async def _poll_once(self) -> None:
+        payload = await asyncio.to_thread(self._read_status)
+        signature = self._signature(payload)
+        if signature is None or signature == self._last_signature:
+            return
+        self._last_signature = signature
+        try:
+            self._bus.publish("capture_status", payload)
+        except Exception as exc:  # pragma: no cover - publish errors are unexpected
+            self._logger.warning("failed to publish capture status event: %s", exc)
+
+    def _prime_from_history(self) -> None:
+        history = self._bus.history_snapshot()
+        for event in reversed(history):
+            if event.get("type") != "capture_status":
+                continue
+            signature = self._signature(event.get("payload"))
+            if signature is not None:
+                self._last_signature = signature
+            break
+
+    @staticmethod
+    def _signature(payload: Any) -> str | None:
+        if payload is None:
+            return None
+        try:
+            return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
 
 
 def _transcription_model_search_roots() -> list[Path]:
@@ -3011,6 +3098,9 @@ LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", objec
 EVENT_BUS_KEY: AppKey[dashboard_events.DashboardEventBus] = web.AppKey(
     "dashboard_event_bus", dashboard_events.DashboardEventBus
 )
+CAPTURE_STATUS_BRIDGE_KEY: AppKey[_CaptureStatusEventBridge] = web.AppKey(
+    "capture_status_event_bridge", _CaptureStatusEventBridge
+)
 SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
@@ -3481,7 +3571,6 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         dashboard_events.uninstall_event_bus(event_bus)
 
     app.on_startup.append(_init_event_bus)
-    app.on_cleanup.append(_cleanup_event_bus)
 
 
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
@@ -4645,6 +4734,24 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status["service_running"] = True
 
         return status
+
+    capture_status_bridge = _CaptureStatusEventBridge(
+        read_status=_read_capture_status,
+        bus=event_bus,
+        poll_interval=CAPTURE_STATUS_EVENT_POLL_SECONDS,
+        logger=logging.getLogger("web_streamer"),
+    )
+    app[CAPTURE_STATUS_BRIDGE_KEY] = capture_status_bridge
+
+    async def _start_capture_status_bridge(_: web.Application) -> None:
+        await capture_status_bridge.start()
+
+    async def _stop_capture_status_bridge(_: web.Application) -> None:
+        await capture_status_bridge.stop()
+
+    app.on_startup.append(_start_capture_status_bridge)
+    app.on_cleanup.append(_stop_capture_status_bridge)
+    app.on_cleanup.append(_cleanup_event_bus)
 
     def _motion_state_snapshot(*, include_events: bool = True) -> dict[str, object]:
         state = load_motion_state(motion_state_path)

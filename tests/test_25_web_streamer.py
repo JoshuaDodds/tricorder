@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import lib.config as config
 import lib.web_streamer as web_streamer
 import lib.recycle_bin_utils as recycle_bin_utils
 import lib.lets_encrypt as lets_encrypt
@@ -282,15 +283,21 @@ async def test_dashboard_events_stream_emits_capture_updates(aiohttp_client):
     event_id = dashboard_events.publish("capture_status", payload)
     assert event_id is not None
 
-    lines = await _read_sse_event(response)
-    response.close()
+    received = False
+    for _ in range(5):
+        lines = await _read_sse_event(response)
+        if not any(line == f"id: {event_id}" for line in lines):
+            continue
+        received = True
+        assert "event: capture_status" in lines
+        data_line = next(line for line in lines if line.startswith("data: "))
+        data = json.loads(data_line.split("data: ", 1)[1])
+        assert data["capturing"] is True
+        assert data["manual_recording"] is False
+        break
 
-    assert any(line == f"id: {event_id}" for line in lines)
-    assert "event: capture_status" in lines
-    data_line = next(line for line in lines if line.startswith("data: "))
-    data = json.loads(data_line.split("data: ", 1)[1])
-    assert data["capturing"] is True
-    assert data["manual_recording"] is False
+    response.close()
+    assert received, "capture_status event was not emitted"
 
 
 @pytest.mark.asyncio
@@ -303,9 +310,14 @@ async def test_dashboard_events_resumes_from_last_event_id(aiohttp_client):
     first_response = await client.get("/api/events")
     assert first_response.status == 200
     await _read_sse_event(first_response)
-    first_lines = await _read_sse_event(first_response)
+    seen_first = False
+    for _ in range(5):
+        lines = await _read_sse_event(first_response)
+        if any(line == f"id: {first_id}" for line in lines):
+            seen_first = True
+            break
     first_response.close()
-    assert any(line == f"id: {first_id}" for line in first_lines)
+    assert seen_first, "did not receive initial capture_status event"
 
     second_id = dashboard_events.publish("capture_status", {"capturing": True, "updated_at": 2.0})
     assert second_id is not None and second_id != first_id
@@ -313,14 +325,74 @@ async def test_dashboard_events_resumes_from_last_event_id(aiohttp_client):
     second_response = await client.get("/api/events", headers={"Last-Event-ID": first_id})
     assert second_response.status == 200
     await _read_sse_event(second_response)
-    second_lines = await _read_sse_event(second_response)
+    seen_second = False
+    for _ in range(5):
+        lines = await _read_sse_event(second_response)
+        if any(line == f"id: {second_id}" for line in lines):
+            data_line = next(line for line in lines if line.startswith("data: "))
+            data = json.loads(data_line.split("data: ", 1)[1])
+            assert data["capturing"] is True
+            assert data["updated_at"] == pytest.approx(2.0)
+            seen_second = True
+            break
     second_response.close()
+    assert seen_second, "did not receive resumed capture_status event"
 
-    assert any(line == f"id: {second_id}" for line in second_lines)
-    data_line = next(line for line in second_lines if line.startswith("data: "))
-    data = json.loads(data_line.split("data: ", 1)[1])
-    assert data["capturing"] is True
-    assert data["updated_at"] == pytest.approx(2.0)
+
+@pytest.mark.asyncio
+async def test_dashboard_events_bridge_publishes_status_file_updates(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir()
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    dropbox_dir = tmp_path / "dropbox"
+    dropbox_dir.mkdir()
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+    monkeypatch.setenv("DROPBOX_DIR", str(dropbox_dir))
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_dir))
+
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    monkeypatch.setattr(web_streamer, "CAPTURE_STATUS_EVENT_POLL_SECONDS", 0.05)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/events")
+    assert response.status == 200
+
+    await _read_sse_event(response)
+
+    status_path = tmp_dir / "segmenter_status.json"
+    payload = {
+        "capturing": True,
+        "service_running": True,
+        "updated_at": time.time(),
+    }
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    observed = False
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        timeout = max(0.05, deadline - time.time())
+        lines = await _read_sse_event(response, timeout=timeout)
+        data_line = next((line for line in lines if line.startswith("data: ")), None)
+        if not data_line:
+            continue
+        data = json.loads(data_line.split("data: ", 1)[1])
+        if data.get("capturing") is True:
+            assert data.get("service_running") is True
+            observed = True
+            break
+
+    response.close()
+    assert observed, "updated capture_status event not observed"
 
 
 @pytest.mark.asyncio
