@@ -128,11 +128,13 @@ check_reqs() {
 }
 
 echo "[Tricorder] Checking Python deps..."
+REQUIREMENTS_CHANGED=0
 if check_reqs; then
     echo "[Tricorder] All requirements satisfied, skipping pip install."
 else
     echo "[Tricorder] Installing/upgrading requirements..."
     "$VENV/bin/pip" install --no-cache-dir --upgrade -r requirements.txt
+    REQUIREMENTS_CHANGED=1
 fi
 
 # create app tree
@@ -296,8 +298,12 @@ PY
   if [[ -n "$diff_output" ]]; then
     read -r WEB_ASSETS_CHANGED OTHER_CHANGED <<<"$diff_output"
     if [[ "$OTHER_CHANGED" == "0" && "$WEB_ASSETS_CHANGED" == "1" ]]; then
-      SKIP_NON_WEB_RESTARTS=1
-      say "Web asset-only update detected; skipping recorder/dropbox restarts"
+      if [[ "$REQUIREMENTS_CHANGED" == "0" ]]; then
+        SKIP_NON_WEB_RESTARTS=1
+        say "Web asset-only update detected; skipping recorder/dropbox restarts"
+      else
+        say "Dependency updates detected; treating as backend change"
+      fi
     fi
   fi
 fi
