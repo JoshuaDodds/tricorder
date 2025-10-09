@@ -523,8 +523,16 @@ def main():
                             filter_chain_error_logged = True
                     elif filter_chain_error_logged:
                         filter_chain_error_logged = False
-                    publish_frame(processed_frame)
-                    rec.ingest(processed_frame, frame_idx)
+                    stream_frame = rec.ingest(processed_frame, frame_idx)
+                    if isinstance(stream_frame, memoryview):
+                        stream_payload = stream_frame.tobytes()
+                    elif isinstance(stream_frame, bytearray):
+                        stream_payload = bytes(stream_frame)
+                    elif isinstance(stream_frame, bytes):
+                        stream_payload = stream_frame
+                    else:
+                        stream_payload = processed_frame
+                    publish_frame(stream_payload)
                     frame_idx += 1
                     last_frame_time = time.monotonic()
 
