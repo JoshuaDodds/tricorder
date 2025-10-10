@@ -9,6 +9,7 @@ import collections
 import contextlib
 import subprocess
 import wave
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Optional
 import array
 from lib.waveform_cache import DEFAULT_BUCKET_COUNT, MAX_BUCKET_COUNT, PEAK_SCALE
 from lib.motion_state import MOTION_STATE_FILENAME, MotionStateWatcher
+from lib import dashboard_events
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
@@ -291,12 +293,21 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 else:
                     removed_artifacts.append(str(filtered))
 
-        _enqueue_encode_job(
+        job_id = _enqueue_encode_job(
             str(wav_path),
             final_base,
             source="recovery",
             existing_opus_path=None,
             manual_recording=False,
+            target_day=day_dir.name,
+        )
+        _schedule_recordings_refresh(
+            job_id,
+            final_path=str(final_path),
+            base_name=final_base,
+            day=day_dir.name if day_dir.name else None,
+            manual=False,
+            source="recovery",
         )
         requeued.append(final_base)
 
@@ -305,6 +316,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
 ENCODER = cfg["paths"]["encoder_script"]
+RECORDINGS_EVENT_SPOOL_DIRNAME = "recordings_events"
 _MIN_CLIP_RAW = cfg["segmenter"].get("min_clip_seconds", 0.0)
 try:
     MIN_CLIP_SECONDS = max(0.0, float(_MIN_CLIP_RAW))
@@ -698,12 +710,13 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         day_dir.mkdir(parents=True, exist_ok=True)
         try:
             assert final_base is not None
-            _enqueue_encode_job(
+            job_id = _enqueue_encode_job(
                 str(wav_path),
                 final_base,
                 source="recovery",
                 existing_opus_path=existing_opus_path,
                 manual_recording=False,
+                target_day=day_dir.name,
             )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
@@ -711,6 +724,14 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 flush=True,
             )
             continue
+        _schedule_recordings_refresh(
+            job_id,
+            final_path=str(final_opus_path) if final_opus_path else None,
+            base_name=final_base,
+            day=day_dir.name if day_dir.name else None,
+            manual=False,
+            source="recovery",
+        )
         report.requeued.append(final_base)
         active_final_bases.add(final_base)
         _log_recovery(f"Requeued encode for {final_base}")
@@ -1220,6 +1241,50 @@ _ENCODE_LOCK = threading.Lock()
 SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
 
 
+def _append_recordings_event(event_type: str, payload: dict[str, object]) -> None:
+    try:
+        base_dir = Path(TMP_DIR)
+    except Exception:
+        return
+
+    spool_dir = base_dir / RECORDINGS_EVENT_SPOOL_DIRNAME
+    try:
+        spool_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    timestamp = time.time()
+    identifier = f"{timestamp:.6f}-{uuid.uuid4().hex}"
+    final_path = spool_dir / f"{identifier}.json"
+    tmp_path = spool_dir / f".{identifier}.tmp"
+    record = {"type": event_type, "payload": payload, "timestamp": timestamp}
+
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+            handle.write("\n")
+        os.replace(tmp_path, final_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _publish_recordings_event(payload: dict[str, object]) -> None:
+    event_type = "recordings_changed"
+    event_id: str | None = None
+    try:
+        event_id = dashboard_events.publish(event_type, payload)
+    except Exception:
+        event_id = None
+
+    if event_id:
+        return
+
+    _append_recordings_event(event_type, payload)
+
+
 class EncodingStatus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1228,6 +1293,7 @@ class EncodingStatus:
         self._active: dict[int, dict[str, object]] = {}
         self._next_id = 1
         self._listeners: list[Callable[[dict[str, object] | None], None]] = []
+        self._completion_callbacks: dict[int, list[Callable[[], None]]] = {}
 
     def register_listener(self, callback: Callable[[dict[str, object] | None], None]) -> None:
         with self._lock:
@@ -1300,6 +1366,24 @@ class EncodingStatus:
         self._notify()
         return job_id
 
+    def register_completion_callback(self, job_id: int, callback: Callable[[], None]) -> None:
+        if not callable(callback):
+            return
+        call_immediately = False
+        with self._cond:
+            active = job_id in self._active
+            pending = any(entry.get("id") == job_id for entry in self._pending)
+            if not active and not pending:
+                call_immediately = True
+            else:
+                callbacks = self._completion_callbacks.setdefault(job_id, [])
+                callbacks.append(callback)
+        if call_immediately:
+            try:
+                callback()
+            except Exception:
+                pass
+
     def mark_started(self, job_id: int, base_name: str) -> None:
         with self._cond:
             job = None
@@ -1325,10 +1409,19 @@ class EncodingStatus:
         self._notify()
 
     def mark_finished(self, job_id: int) -> None:
+        callbacks: list[Callable[[], None]] | None = None
         with self._cond:
             self._active.pop(job_id, None)
+            if job_id in self._completion_callbacks:
+                callbacks = self._completion_callbacks.pop(job_id, None)
             self._cond.notify_all()
         self._notify()
+        if callbacks:
+            for callback in list(callbacks):
+                try:
+                    callback()
+                except Exception:
+                    pass
 
     def wait_for_start(self, job_id: int, timeout: float | None = None) -> bool:
         deadline: float | None = None
@@ -1427,7 +1520,12 @@ class _EncoderWorker(threading.Thread):
                 base_name: str
                 existing_opus: str | None = None
                 manual_recording = False
-                if isinstance(item, tuple) and len(item) >= 5:
+                target_day: str | None = None
+                if isinstance(item, tuple) and len(item) >= 6:
+                    job_id, wav_path, base_name, existing_opus, manual_flag, target_day = item[:6]
+                    manual_recording = bool(manual_flag)
+                    target_day = str(target_day) if target_day else None
+                elif isinstance(item, tuple) and len(item) >= 5:
                     job_id, wav_path, base_name, existing_opus, manual_flag = item[:5]
                     manual_recording = bool(manual_flag)
                 elif isinstance(item, tuple) and len(item) == 4:
@@ -1443,6 +1541,9 @@ class _EncoderWorker(threading.Thread):
                             existing_opus = item[2]
                         if len(item) >= 4:
                             manual_recording = bool(item[3])
+                        if len(item) >= 5:
+                            candidate_day = item[4]
+                            target_day = str(candidate_day) if candidate_day else None
                     else:
                         wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
@@ -1457,6 +1558,10 @@ class _EncoderWorker(threading.Thread):
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
                 env.setdefault("ENCODER_MIN_CLIP_SECONDS", str(MIN_CLIP_SECONDS))
+                if target_day:
+                    day_component = target_day.strip()
+                    if len(day_component) == 8 and day_component.isdigit():
+                        env["ENCODER_TARGET_DAY"] = day_component
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity
@@ -1506,11 +1611,18 @@ def _enqueue_encode_job(
     source: str = "live",
     existing_opus_path: str | None = None,
     manual_recording: bool = False,
+    target_day: str | None = None,
 ) -> int | None:
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
     job_id = ENCODING_STATUS.enqueue(base_name, source=source)
+    day_component: str | None = None
+    if target_day:
+        candidate = target_day.strip()
+        if len(candidate) == 8 and candidate.isdigit():
+            day_component = candidate
+
     payload = (
         job_id,
         tmp_wav_path,
@@ -1518,12 +1630,73 @@ def _enqueue_encode_job(
         existing_opus_path,
         bool(manual_recording),
     )
+    if day_component:
+        payload += (day_component,)
     try:
         ENCODE_QUEUE.put_nowait(payload)
     except queue.Full:
         ENCODE_QUEUE.put(payload)
     print(f"[segmenter] queued encode job for {base_name}", flush=True)
     return job_id
+
+
+def _relative_recordings_path(path: str | os.PathLike[str]) -> str | None:
+    try:
+        recordings_root = Path(REC_DIR)
+    except Exception:
+        return None
+
+    candidate = Path(path)
+    try:
+        resolved = recordings_root.resolve()
+    except Exception:
+        resolved = recordings_root
+
+    try:
+        return candidate.resolve().relative_to(resolved).as_posix()
+    except Exception:
+        try:
+            return candidate.relative_to(recordings_root).as_posix()
+        except Exception:
+            return None
+
+
+def _schedule_recordings_refresh(
+    job_id: int | None,
+    *,
+    final_path: str | None,
+    base_name: str,
+    day: str | None,
+    manual: bool,
+    source: str | None,
+) -> None:
+    if job_id is None:
+        return
+
+    def _publish_refresh() -> None:
+        payload: dict[str, object] = {
+            "reason": "encode_completed",
+            "base_name": base_name,
+            "manual": bool(manual),
+            "updated_at": time.time(),
+        }
+        if day:
+            payload["day"] = day
+        if source:
+            payload["source"] = source
+
+        if final_path:
+            path_obj = Path(final_path)
+            rel_path = _relative_recordings_path(path_obj)
+            exists = path_obj.exists()
+            if rel_path and exists:
+                payload["paths"] = [rel_path]
+            if not exists:
+                payload["missing"] = True
+
+        _publish_recordings_event(payload)
+
+    ENCODING_STATUS.register_completion_callback(job_id, _publish_refresh)
 
 
 class AdaptiveRmsController:
@@ -1539,7 +1712,26 @@ class AdaptiveRmsController:
     ) -> None:
         section = cfg_section or {}
         self.enabled = bool(section.get("enabled", False))
-        self.min_thresh_norm = min(1.0, max(0.0, float(section.get("min_thresh", 0.01))))
+
+        min_candidates: list[float] = []
+        static_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
+        min_candidates.append(static_norm)
+
+        raw_min_thresh = section.get("min_thresh")
+        try:
+            if isinstance(raw_min_thresh, (int, float)) and not isinstance(raw_min_thresh, bool):
+                min_candidates.append(max(0.0, min(float(raw_min_thresh), 1.0)))
+        except (TypeError, ValueError):
+            pass
+
+        raw_min_rms = section.get("min_rms")
+        if isinstance(raw_min_rms, (int, float)) and not isinstance(raw_min_rms, bool):
+            if math.isfinite(float(raw_min_rms)):
+                candidate = int(round(float(raw_min_rms)))
+                if candidate > 0:
+                    min_candidates.append(min(1.0, candidate / self._NORM))
+
+        self.min_thresh_norm = min(1.0, max(min_candidates) if min_candidates else 0.0)
         try:
             raw_max = float(section.get("max_thresh", 1.0))
         except (TypeError, ValueError):
@@ -1962,6 +2154,7 @@ class TimelineRecorder:
                     json.dump(payload, handle)
                     handle.write("\n")
                 os.replace(tmp_path, self.status_path)
+                dashboard_events.publish("capture_status", payload)
             except Exception as exc:  # pragma: no cover - diagnostics only in DEV builds
                 try:
                     os.unlink(tmp_path)
@@ -2847,6 +3040,7 @@ class TimelineRecorder:
         parallel_drop_detected = False
         manual_event = bool(self._event_manual_recording)
         day_dir = self._streaming_day_dir
+        final_base: str = self.base_name or ""
         if self._streaming_encoder:
             try:
                 streaming_result = self._streaming_encoder.close(timeout=5.0)
@@ -3035,6 +3229,15 @@ class TimelineRecorder:
                 source=self._recording_source,
                 existing_opus_path=final_stream_path if reuse_mode else None,
                 manual_recording=manual_event,
+                target_day=day,
+            )
+            _schedule_recordings_refresh(
+                job_id,
+                final_path=final_opus_path,
+                base_name=final_base,
+                day=day,
+                manual=manual_event,
+                source=self._recording_source,
             )
             if job_id is not None:
                 self._encode_jobs.append(job_id)
@@ -3137,6 +3340,16 @@ class TimelineRecorder:
                     f"[segmenter] WARN: notification dispatch failed: {exc!r}",
                     flush=True,
                 )
+        _publish_recordings_event(
+            {
+                "reason": "finalized",
+                "base_name": final_base,
+                "path": last_event_status.get("recording_path"),
+                "manual": manual_event,
+                "day": self.event_day,
+                "updated_at": time.time(),
+            }
+        )
         self._cleanup_live_waveform()
         self._reset_event_state()
 
