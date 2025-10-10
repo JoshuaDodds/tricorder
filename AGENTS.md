@@ -31,7 +31,7 @@ Smart commit policy:
 - Ensure the Git author email matches a Jira user for smart-commit linkage.
 
 Ticket lifecycle expectations (Board: To Do → In Progress → In Review):
-1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket using the Jira API and env credentials available to you, add the startup comment, start a timer so you can log total time spent working on this task.
+1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket using the Jira API and env credentials available to you, add the startup comment, start a timer so you can log total time spent working on this task, Update the ticket title and description to be a well written description a developer can understand, estimate the complexity and update the ticket story points, then continue with your implementation task.
 2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates to add time tracking information between commits and comments if applicable..
 3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, update the jira time tracking field with actually mins for your task, current status (**In Review**), and links back to this CODEX task run and PR/commit diff, and finally include testing criteria and testing steps that a human can do to verify functionalilty. Do **not** move to Done.
 4. **Failures** – if transitions fail, comment the error, retry with backoff (5 attempts), and proceed with manual follow-up instructions.
