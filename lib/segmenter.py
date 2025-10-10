@@ -2847,6 +2847,7 @@ class TimelineRecorder:
         parallel_drop_detected = False
         manual_event = bool(self._event_manual_recording)
         day_dir = self._streaming_day_dir
+        final_base: str = self.base_name or ""
         if self._streaming_encoder:
             try:
                 streaming_result = self._streaming_encoder.close(timeout=5.0)
@@ -3137,6 +3138,20 @@ class TimelineRecorder:
                     f"[segmenter] WARN: notification dispatch failed: {exc!r}",
                     flush=True,
                 )
+        try:
+            dashboard_events.publish(
+                "recordings_changed",
+                {
+                    "reason": "finalized",
+                    "base_name": final_base,
+                    "path": last_event_status.get("recording_path"),
+                    "manual": manual_event,
+                    "day": self.event_day,
+                    "updated_at": time.time(),
+                },
+            )
+        except Exception:
+            pass
         self._cleanup_live_waveform()
         self._reset_event_state()
 

@@ -662,6 +662,9 @@ async def test_recordings_save_and_unsave_moves_files(
 
     client = await aiohttp_client(web_streamer.build_app())
 
+    bus = dashboard_events.get_event_bus()
+    initial_len = len(bus.history_snapshot())
+
     save_response = await client.post(
         "/api/recordings/save",
         json={"items": ["20250101/clip.opus"]},
@@ -671,6 +674,15 @@ async def test_recordings_save_and_unsave_moves_files(
     expected_saved_path = f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/20250101/clip.opus"
     assert save_payload["saved"] == [expected_saved_path]
     assert save_payload["errors"] == []
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "saved"
+        for event in history
+    ), history
+
+    initial_len = len(bus.history_snapshot())
 
     saved_audio = recordings_dir / expected_saved_path
     saved_waveform = saved_audio.with_suffix(".opus.waveform.json")
@@ -690,6 +702,13 @@ async def test_recordings_save_and_unsave_moves_files(
     unsave_payload = await unsave_response.json()
     assert unsave_payload["unsaved"] == ["20250101/clip.opus"]
     assert unsave_payload["errors"] == []
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "unsaved"
+        for event in history
+    ), history
 
     assert audio_path.exists()
     assert waveform_path.exists()
@@ -933,6 +952,9 @@ async def test_web_server_update_triggers_streamer_restart(monkeypatch, aiohttp_
 
     client = await aiohttp_client(web_streamer.build_app())
 
+    bus = dashboard_events.get_event_bus()
+    initial_len = len(bus.history_snapshot())
+
     response = await client.post(
         "/api/config/web-server",
         json={
@@ -955,6 +977,13 @@ async def test_web_server_update_triggers_streamer_restart(monkeypatch, aiohttp_
     assert recorded.get("restart_units") == ["web-streamer.service"]
     restart_units = [entry.get("unit") for entry in payload.get("restart_results", [])]
     assert "web-streamer.service" in restart_units
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "config_updated"
+        and (event.get("payload") or {}).get("section") == "web_server"
+        for event in history
+    ), history
 
 
 @pytest.mark.asyncio
