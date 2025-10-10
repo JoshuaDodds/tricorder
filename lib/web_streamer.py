@@ -5821,6 +5821,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             for message in sidecar_errors:
                 errors.append({"item": entry_id, "error": message})
 
+        if restored:
+            _emit_recordings_changed(
+                "restored",
+                paths=restored,
+                count=len(restored),
+            )
         return web.json_response({"restored": restored, "errors": errors})
 
     async def recycle_bin_purge(request: web.Request) -> web.Response:
@@ -5851,6 +5857,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         older_than_seconds_raw = data.get("older_than_seconds")
         age_cutoff: float | None = None
+        older_than_seconds: float | None = None
         if older_than_seconds_raw is not None:
             try:
                 older_than_seconds = float(older_than_seconds_raw)
@@ -5951,6 +5958,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     pass
             except OSError:
                 pass
+
+        if purged:
+            extra: dict[str, object] = {
+                "entries": purged,
+                "count": len(purged),
+            }
+            if delete_all:
+                extra["delete_all"] = True
+            if older_than_seconds is not None:
+                extra["older_than_seconds"] = older_than_seconds
+            if requested_ids:
+                extra["entry_ids"] = sorted(requested_ids)
+            _emit_recordings_changed("recycle_purged", **extra)
 
         return web.json_response({"purged": purged, "errors": errors})
 
