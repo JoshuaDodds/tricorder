@@ -5046,16 +5046,6 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             payload["recycle_bin_total_bytes"] = 0
         payload["capture_status"] = _read_capture_status()
         payload["motion_state"] = _motion_state_snapshot()
-        clip_path = payload.get("path") if isinstance(payload, dict) else None
-        extra: dict[str, Any] = {}
-        if clip_path:
-            extra["path"] = clip_path
-        _emit_recordings_changed("clipped", **extra)
-        restored_path = payload.get("path") if isinstance(payload, dict) else None
-        extra: dict[str, Any] = {}
-        if restored_path:
-            extra["path"] = restored_path
-        _emit_recordings_changed("clip_restored", **extra)
         return web.json_response(payload)
 
     async def integrations_api(request: web.Request) -> web.Response:
