@@ -75,6 +75,12 @@ WEB_SERVER_TLS_PROVIDERS = {"letsencrypt", "manual"}
 LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS = 12 * 60 * 60
 
 CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
+CAPTURE_STATUS_EVENT_POLL_SECONDS = 0.5
+RECORDINGS_EVENT_POLL_SECONDS = 0.5
+
+EVENT_STREAM_HEARTBEAT_SECONDS = 20.0
+EVENT_STREAM_RETRY_MILLIS = 5000
+EVENT_HISTORY_LIMIT = 256
 
 DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
     {"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]},
@@ -86,12 +92,198 @@ RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RAW_AUDIO_DIRNAME = ".original_wav"
 RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
 SAVED_RECORDINGS_DIRNAME = "Saved"
+RECORDINGS_EVENT_SPOOL_DIRNAME = "recordings_events"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
 
 DEFAULT_VOSK_MODEL_ROOT = Path("/apps/tricorder/models")
+
+
+class _CaptureStatusEventBridge:
+    """Bridge capture status file updates into dashboard SSE events."""
+
+    def __init__(
+        self,
+        *,
+        read_status: Callable[[], dict[str, object]],
+        bus: "dashboard_events.DashboardEventBus",
+        poll_interval: float,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+        self._read_status = read_status
+        self._bus = bus
+        self._poll_interval = float(poll_interval)
+        self._logger = logger or logging.getLogger("web_streamer")
+        self._task: asyncio.Task | None = None
+        self._last_signature: str | None = None
+
+    async def start(self) -> None:
+        self._prime_from_history()
+        await self._poll_once()
+        if self._task is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._task = loop.create_task(self._run())
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _run(self) -> None:
+        assert self._task is not None
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(self._poll_interval)
+                    await self._poll_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    self._logger.debug(
+                        "capture status bridge poll failed: %s", exc, exc_info=False
+                    )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._task = None
+
+    async def _poll_once(self) -> None:
+        payload = await asyncio.to_thread(self._read_status)
+        signature = self._signature(payload)
+        if signature is None or signature == self._last_signature:
+            return
+        self._last_signature = signature
+        try:
+            self._bus.publish("capture_status", payload)
+        except Exception as exc:  # pragma: no cover - publish errors are unexpected
+            self._logger.warning("failed to publish capture status event: %s", exc)
+
+    def _prime_from_history(self) -> None:
+        history = self._bus.history_snapshot()
+        for event in reversed(history):
+            if event.get("type") != "capture_status":
+                continue
+            signature = self._signature(event.get("payload"))
+            if signature is not None:
+                self._last_signature = signature
+            break
+
+    @staticmethod
+    def _signature(payload: Any) -> str | None:
+        if payload is None:
+            return None
+        try:
+            return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
+
+
+class _RecordingsEventBridge:
+    """Replay recordings_changed events spooled by external processes."""
+
+    def __init__(
+        self,
+        *,
+        spool_dir: Path,
+        bus: "dashboard_events.DashboardEventBus",
+        poll_interval: float,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+        self._spool_dir = spool_dir
+        self._bus = bus
+        self._poll_interval = float(poll_interval)
+        self._logger = logger or logging.getLogger("web_streamer")
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        await self._drain_once()
+        if self._task is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._task = loop.create_task(self._run())
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _run(self) -> None:
+        assert self._task is not None
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(self._poll_interval)
+                    await self._drain_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    self._logger.debug(
+                        "recordings event bridge poll failed: %s", exc, exc_info=False
+                    )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._task = None
+
+    async def _drain_once(self) -> None:
+        events = await asyncio.to_thread(self._collect_events)
+        if not events:
+            return
+        for event_type, payload in events:
+            if event_type != "recordings_changed" or not isinstance(payload, dict):
+                continue
+            try:
+                self._bus.publish(event_type, payload)
+            except Exception as exc:  # pragma: no cover - unexpected publish failure
+                self._logger.debug(
+                    "recordings event bridge publish failed: %s", exc, exc_info=False
+                )
+
+    def _collect_events(self) -> list[tuple[str, dict[str, object]]]:
+        try:
+            self._spool_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return []
+
+        events: list[tuple[str, dict[str, object]]] = []
+        candidates = sorted(self._spool_dir.glob("*.json"))
+        for candidate in candidates:
+            try:
+                with open(candidate, "r", encoding="utf-8") as handle:
+                    record = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+                continue
+
+            event_type = record.get("type") if isinstance(record, dict) else None
+            payload = record.get("payload") if isinstance(record, dict) else None
+            if isinstance(event_type, str) and isinstance(payload, dict):
+                events.append((event_type, payload))
+
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+
+        return events
 
 
 def _transcription_model_search_roots() -> list[Path]:
@@ -902,6 +1094,7 @@ def _segmenter_defaults() -> dict[str, Any]:
 def _adaptive_rms_defaults() -> dict[str, Any]:
     return {
         "enabled": False,
+        "min_rms": None,
         "min_thresh": 0.01,
         "max_rms": None,
         "max_thresh": 1.0,
@@ -1129,6 +1322,14 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         enabled = raw.get("enabled")
         if isinstance(enabled, bool):
             result["enabled"] = enabled
+
+        min_rms = raw.get("min_rms")
+        if isinstance(min_rms, (int, float)) and not isinstance(min_rms, bool):
+            if math.isfinite(float(min_rms)):
+                candidate = int(round(float(min_rms)))
+                result["min_rms"] = candidate if candidate > 0 else None
+        elif min_rms is None:
+            result["min_rms"] = None
 
         max_rms = raw.get("max_rms")
         if isinstance(max_rms, (int, float)) and not isinstance(max_rms, bool):
@@ -1726,11 +1927,34 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
 
     normalized["enabled"] = _bool_from_any(payload.get("enabled"))
 
-    min_thresh = _coerce_float(
-        payload.get("min_thresh"), "min_thresh", errors, min_value=0.0, max_value=1.0
-    )
-    if min_thresh is not None:
-        normalized["min_thresh"] = min_thresh
+    raw_min_rms = payload.get("min_rms")
+    if raw_min_rms is None:
+        normalized["min_rms"] = None
+    elif isinstance(raw_min_rms, str) and not raw_min_rms.strip():
+        normalized["min_rms"] = None
+    else:
+        min_rms_value = _coerce_int(
+            raw_min_rms,
+            "min_rms",
+            errors,
+            min_value=0,
+            max_value=32767,
+        )
+        if min_rms_value is not None:
+            normalized["min_rms"] = min_rms_value or None
+
+    raw_min_thresh = payload.get("min_thresh")
+    if raw_min_thresh is None:
+        pass
+    elif isinstance(raw_min_thresh, str) and not raw_min_thresh.strip():
+        # Treat an empty string as "use the default" instead of raising a validation error.
+        normalized["min_thresh"] = _adaptive_rms_defaults()["min_thresh"]
+    else:
+        min_thresh = _coerce_float(
+            raw_min_thresh, "min_thresh", errors, min_value=0.0, max_value=1.0
+        )
+        if min_thresh is not None:
+            normalized["min_thresh"] = min_thresh
 
     raw_max_rms = payload.get("max_rms")
     if raw_max_rms is None:
@@ -2178,7 +2402,7 @@ from aiohttp.web import AppKey
 web_fileresponse.NOSENDFILE = True
 
 from lib.hls_controller import controller
-from lib import webui, sd_card_health
+from lib import dashboard_events, sd_card_health, webui
 from lib.config import (
     ConfigPersistenceError,
     apply_config_migrations,
@@ -2503,6 +2727,8 @@ def _scan_recordings_worker(
                 path,
                 error,
             )
+            continue
+        if _path_is_partial(path):
             continue
         suffix = path.suffix.lower()
         if allowed_ext and suffix not in allowed_ext:
@@ -3004,6 +3230,15 @@ AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
 STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
 WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
 LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", object)
+EVENT_BUS_KEY: AppKey[dashboard_events.DashboardEventBus] = web.AppKey(
+    "dashboard_event_bus", dashboard_events.DashboardEventBus
+)
+CAPTURE_STATUS_BRIDGE_KEY: AppKey[_CaptureStatusEventBridge] = web.AppKey(
+    "capture_status_event_bridge", _CaptureStatusEventBridge
+)
+RECORDINGS_EVENT_BRIDGE_KEY: AppKey[_RecordingsEventBridge] = web.AppKey(
+    "recordings_event_bridge", _RecordingsEventBridge
+)
 SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
@@ -3454,6 +3689,58 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
     if lets_encrypt_manager is not None:
         app[LETS_ENCRYPT_MANAGER_KEY] = lets_encrypt_manager
+
+    try:
+        initial_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        initial_loop = None
+
+    event_bus = dashboard_events.DashboardEventBus(
+        loop=initial_loop,
+        history_limit=EVENT_HISTORY_LIMIT,
+    )
+    dashboard_events.install_event_bus(event_bus)
+    app[EVENT_BUS_KEY] = event_bus
+
+    def _publish_dashboard_event(event_type: str, payload: dict[str, Any]) -> None:
+        try:
+            dashboard_events.publish(event_type, payload)
+        except Exception:  # pragma: no cover - defensive logging
+            logging.getLogger("web_streamer").debug(
+                "Failed to publish dashboard event %s", event_type, exc_info=True
+            )
+
+    def _emit_config_updated(section: str) -> None:
+        if not section:
+            return
+        _publish_dashboard_event(
+            "config_updated",
+            {"section": section, "updated_at": time.time()},
+        )
+
+    def _emit_recordings_changed(reason: str, **extra: Any) -> None:
+        if not reason:
+            return
+        payload: dict[str, Any] = {"reason": reason, "updated_at": time.time()}
+        if extra:
+            payload.update(extra)
+        _publish_dashboard_event("recordings_changed", payload)
+
+    async def _init_event_bus(_: web.Application) -> None:
+        event_bus.set_loop(asyncio.get_running_loop())
+
+    async def _cleanup_event_bus(_: web.Application) -> None:
+        dashboard_events.uninstall_event_bus(event_bus)
+
+    app.on_startup.append(_init_event_bus)
+
+    async def _start_health_broadcaster(_: web.Application) -> None:
+        await health_broadcaster.start()
+
+    async def _stop_health_broadcaster(_: web.Application) -> None:
+        await health_broadcaster.stop()
+
+    app.on_startup.append(_start_health_broadcaster)
 
 
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
@@ -4303,6 +4590,160 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return bool(payload)
         return False
 
+    def _float_or_none(value: object) -> float | None:
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                parsed = float(value.strip())
+            except (TypeError, ValueError):
+                return None
+            if math.isfinite(parsed):
+                return parsed
+        return None
+
+    def _int_or_none(value: object) -> int | None:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                parsed = int(float(value.strip()))
+            except (TypeError, ValueError):
+                return None
+            return parsed
+        return None
+
+    def _build_recording_progress(status: dict[str, object]) -> dict[str, object] | None:
+        capturing = bool(status.get("capturing", False))
+        if not capturing:
+            return None
+
+        event_payload = status.get("event")
+        if not isinstance(event_payload, dict):
+            return None
+
+        if not bool(event_payload.get("in_progress", False)):
+            return None
+
+        rel_candidates: list[str] = []
+        event_rel = event_payload.get("partial_recording_rel_path")
+        if isinstance(event_rel, str) and event_rel.strip():
+            rel_candidates.append(event_rel.strip())
+        status_rel = status.get("partial_recording_rel_path")
+        if isinstance(status_rel, str) and status_rel.strip():
+            rel_candidates.append(status_rel.strip())
+
+        rel_path = next((item for item in rel_candidates if item), "")
+        if not rel_path:
+            return None
+
+        waveform_rel_candidates: list[str] = []
+        event_waveform_rel = event_payload.get("partial_waveform_rel_path")
+        if isinstance(event_waveform_rel, str) and event_waveform_rel.strip():
+            waveform_rel_candidates.append(event_waveform_rel.strip())
+        status_waveform_rel = status.get("partial_waveform_rel_path")
+        if isinstance(status_waveform_rel, str) and status_waveform_rel.strip():
+            waveform_rel_candidates.append(status_waveform_rel.strip())
+        waveform_rel_path = next((item for item in waveform_rel_candidates if item), "")
+
+        waveform_path_candidates: list[str] = []
+        event_waveform_path = event_payload.get("partial_waveform_path")
+        if isinstance(event_waveform_path, str) and event_waveform_path.strip():
+            waveform_path_candidates.append(event_waveform_path.strip())
+        status_waveform_path = status.get("partial_waveform_path")
+        if isinstance(status_waveform_path, str) and status_waveform_path.strip():
+            waveform_path_candidates.append(status_waveform_path.strip())
+        waveform_path = next((item for item in waveform_path_candidates if item), "")
+
+        base_name_raw = event_payload.get("base_name")
+        base_name = base_name_raw.strip() if isinstance(base_name_raw, str) else ""
+        if not base_name:
+            base_name = "Current recording"
+
+        streaming_format_raw = event_payload.get("streaming_container_format")
+        if not isinstance(streaming_format_raw, str) or not streaming_format_raw.strip():
+            streaming_format_raw = status.get("streaming_container_format")
+        streaming_format = (
+            streaming_format_raw.strip().lower()
+            if isinstance(streaming_format_raw, str)
+            else "opus"
+        )
+        extension = "webm" if streaming_format == "webm" else "opus"
+
+        duration_seconds_value = _float_or_none(status.get("event_duration_seconds"))
+        if duration_seconds_value is not None:
+            duration_seconds_value = max(0.0, duration_seconds_value)
+
+        size_bytes_value = _int_or_none(status.get("event_size_bytes"))
+        if size_bytes_value is not None:
+            size_bytes_value = max(0, size_bytes_value)
+        else:
+            size_bytes_value = 0
+
+        started_epoch = _float_or_none(event_payload.get("started_epoch"))
+        start_epoch = _float_or_none(event_payload.get("start_epoch"))
+        if start_epoch is None and started_epoch is not None:
+            start_epoch = started_epoch
+
+        started_at_raw = event_payload.get("started_at")
+        started_at = started_at_raw.strip() if isinstance(started_at_raw, str) else ""
+
+        updated_at_value = _float_or_none(status.get("updated_at"))
+        modified_epoch = start_epoch
+        if modified_epoch is None:
+            modified_epoch = updated_at_value
+        if modified_epoch is None:
+            modified_epoch = time.time()
+
+        day = rel_path.split("/", 1)[0] if "/" in rel_path else ""
+
+        trigger_offset = _float_or_none(event_payload.get("trigger_offset_seconds"))
+        release_offset = _float_or_none(event_payload.get("release_offset_seconds"))
+        motion_trigger_offset = _float_or_none(
+            event_payload.get("motion_trigger_offset_seconds")
+        )
+        motion_release_offset = _float_or_none(
+            event_payload.get("motion_release_offset_seconds")
+        )
+        motion_started_epoch = _float_or_none(event_payload.get("motion_started_epoch"))
+        motion_released_epoch = _float_or_none(event_payload.get("motion_released_epoch"))
+
+        progress: dict[str, object] = {
+            "name": base_name,
+            "path": rel_path,
+            "stream_path": rel_path,
+            "day": day,
+            "collection": "recent",
+            "extension": extension,
+            "size_bytes": size_bytes_value,
+            "modified": float(modified_epoch),
+            "modified_iso": datetime.fromtimestamp(
+                modified_epoch, tz=timezone.utc
+            ).isoformat(),
+            "duration_seconds": duration_seconds_value,
+            "start_epoch": start_epoch,
+            "started_epoch": started_epoch,
+            "started_at": started_at,
+            "waveform_path": waveform_rel_path or waveform_path,
+            "has_transcript": False,
+            "transcript_path": "",
+            "transcript_event_type": "",
+            "transcript_updated": None,
+            "transcript_updated_iso": "",
+            "trigger_offset_seconds": trigger_offset,
+            "release_offset_seconds": release_offset,
+            "motion_trigger_offset_seconds": motion_trigger_offset,
+            "motion_release_offset_seconds": motion_release_offset,
+            "motion_started_epoch": motion_started_epoch,
+            "motion_released_epoch": motion_released_epoch,
+            "isPartial": True,
+            "inProgress": True,
+        }
+
+        return progress
+
     def _read_capture_status() -> dict[str, object]:
         try:
             with open(capture_status_path, "r", encoding="utf-8") as handle:
@@ -4506,6 +4947,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if isinstance(streaming_format, str) and streaming_format:
             status["streaming_container_format"] = streaming_format
 
+        progress_record = _build_recording_progress(status)
+        if progress_record is not None:
+            status["recording_progress"] = progress_record
+        else:
+            status.pop("recording_progress", None)
+
         avg_ms = raw.get("filter_chain_avg_ms")
         if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):
             status["filter_chain_avg_ms"] = float(avg_ms)
@@ -4608,6 +5055,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status.pop("event_duration_seconds", None)
             status.pop("event_size_bytes", None)
             status.pop("encoding", None)
+            status.pop("recording_progress", None)
             status["service_running"] = False
             if not status.get("last_stop_reason"):
                 status["last_stop_reason"] = (
@@ -4617,6 +5065,42 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status["service_running"] = True
 
         return status
+
+    capture_status_bridge = _CaptureStatusEventBridge(
+        read_status=_read_capture_status,
+        bus=event_bus,
+        poll_interval=CAPTURE_STATUS_EVENT_POLL_SECONDS,
+        logger=log,
+    )
+    app[CAPTURE_STATUS_BRIDGE_KEY] = capture_status_bridge
+
+    async def _start_capture_status_bridge(_: web.Application) -> None:
+        await capture_status_bridge.start()
+
+    async def _stop_capture_status_bridge(_: web.Application) -> None:
+        await capture_status_bridge.stop()
+
+    recordings_event_spool = Path(cfg["paths"].get("tmp_dir", tmp_root)) / RECORDINGS_EVENT_SPOOL_DIRNAME
+    recordings_event_bridge = _RecordingsEventBridge(
+        spool_dir=recordings_event_spool,
+        bus=event_bus,
+        poll_interval=RECORDINGS_EVENT_POLL_SECONDS,
+        logger=log,
+    )
+    app[RECORDINGS_EVENT_BRIDGE_KEY] = recordings_event_bridge
+
+    async def _start_recordings_event_bridge(_: web.Application) -> None:
+        await recordings_event_bridge.start()
+
+    async def _stop_recordings_event_bridge(_: web.Application) -> None:
+        await recordings_event_bridge.stop()
+
+    app.on_startup.append(_start_capture_status_bridge)
+    app.on_startup.append(_start_recordings_event_bridge)
+    app.on_cleanup.append(_stop_capture_status_bridge)
+    app.on_cleanup.append(_stop_recordings_event_bridge)
+    app.on_cleanup.append(_stop_health_broadcaster)
+    app.on_cleanup.append(_cleanup_event_bus)
 
     def _motion_state_snapshot(*, include_events: bool = True) -> dict[str, object]:
         state = load_motion_state(motion_state_path)
@@ -5141,6 +5625,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     break
                 break
 
+        if deleted:
+            _emit_recordings_changed(
+                "deleted",
+                paths=deleted,
+                count=len(deleted),
+            )
         return web.json_response({"deleted": deleted, "errors": errors})
 
     async def recordings_save(request: web.Request) -> web.Response:
@@ -5273,6 +5763,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     break
                 break
 
+        if saved:
+            _emit_recordings_changed(
+                "saved",
+                paths=saved,
+                count=len(saved),
+            )
         return web.json_response({"saved": saved, "errors": errors})
 
     async def recordings_unsave(request: web.Request) -> web.Response:
@@ -5403,6 +5899,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     break
                 break
 
+        if unsaved:
+            _emit_recordings_changed(
+                "unsaved",
+                paths=unsaved,
+                count=len(unsaved),
+            )
         return web.json_response({"unsaved": unsaved, "errors": errors})
 
     async def recycle_bin_list(request: web.Request) -> web.Response:
@@ -5633,6 +6135,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             for message in sidecar_errors:
                 errors.append({"item": entry_id, "error": message})
 
+        if restored:
+            _emit_recordings_changed(
+                "restored",
+                paths=restored,
+                count=len(restored),
+            )
         return web.json_response({"restored": restored, "errors": errors})
 
     async def recycle_bin_purge(request: web.Request) -> web.Response:
@@ -5663,6 +6171,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         older_than_seconds_raw = data.get("older_than_seconds")
         age_cutoff: float | None = None
+        older_than_seconds: float | None = None
         if older_than_seconds_raw is not None:
             try:
                 older_than_seconds = float(older_than_seconds_raw)
@@ -5763,6 +6272,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     pass
             except OSError:
                 pass
+
+        if purged:
+            extra: dict[str, object] = {
+                "entries": purged,
+                "count": len(purged),
+            }
+            if delete_all:
+                extra["delete_all"] = True
+            if older_than_seconds is not None:
+                extra["older_than_seconds"] = older_than_seconds
+            if requested_ids:
+                extra["entry_ids"] = sorted(requested_ids)
+            _emit_recordings_changed("recycle_purged", **extra)
 
         return web.json_response({"purged": purged, "errors": errors})
 
@@ -5940,6 +6462,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             except Exception:
                 pass
 
+        _emit_recordings_changed(
+            "renamed",
+            old_path=old_rel,
+            new_path=new_rel,
+            name=name_payload,
+            extension=extension_payload,
+        )
         return web.json_response(
             {
                 "old_path": old_rel,
@@ -6103,6 +6632,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             log.exception("Unexpected error while creating clip for %s", source_path)
             raise web.HTTPInternalServerError(reason="unable to create clip") from exc
 
+        clip_path = payload.get("path")
+        if isinstance(clip_path, str) and clip_path:
+            _emit_recordings_changed("clipped", paths=[clip_path])
+        else:
+            _emit_recordings_changed("clipped")
+
         return web.json_response(payload)
 
     async def recordings_clip_undo(request: web.Request) -> web.Response:
@@ -6127,6 +6662,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         except Exception as exc:  # pragma: no cover - unexpected failures
             log.exception("Unexpected error while restoring clip for token %s", token_value)
             raise web.HTTPInternalServerError(reason="unable to restore clip") from exc
+
+        clip_path = payload.get("path")
+        if isinstance(clip_path, str) and clip_path:
+            _emit_recordings_changed("clip_restored", paths=[clip_path])
+        else:
+            _emit_recordings_changed("clip_restored")
 
         return web.json_response(payload)
 
@@ -6281,6 +6822,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         refreshed = reload_cfg()
         payload = _archival_response_payload(refreshed)
+        _emit_config_updated("archival")
         return web.json_response(payload)
 
     recorder_unit = VOICE_RECORDER_SERVICE_UNIT
@@ -6344,6 +6886,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload = _config_section_payload(section, cfg_snapshot, canonical_fn)
         restart_units = section_restart_units.get(section, [])
         payload["restart_results"] = await _restart_units(restart_units)
+        _emit_config_updated(section)
         return web.json_response(payload)
 
     async def config_audio_get(request: web.Request) -> web.Response:
@@ -6467,6 +7010,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             canonical_fn=_canonical_web_server_settings,
         )
 
+    SYSTEM_HEALTH_EVENT_INTERVAL_SECONDS = 3.0
+    SYSTEM_HEALTH_EVENT_MAX_STALE_SECONDS = 30.0
+
     cpu_last_sample: tuple[int, int] | None = None
     cpu_last_percent: float | None = None
     cpu_core_count = max(os.cpu_count() or 1, 1)
@@ -6544,7 +7090,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             "percent": percent,
         }
 
-    async def system_health(_: web.Request) -> web.Response:
+    def _collect_system_health_snapshot() -> dict[str, Any]:
         nonlocal cpu_last_sample, cpu_last_percent
 
         state = sd_card_health.load_state()
@@ -6609,7 +7155,191 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             },
         }
 
+        return payload
+
+    def _system_health_fingerprint(snapshot: dict[str, Any]) -> tuple[Any, ...]:
+        resources = snapshot.get("resources") or {}
+        cpu = resources.get("cpu") or {}
+        memory = resources.get("memory") or {}
+        sd_state = snapshot.get("sd_card") or {}
+        last_event = ""
+        sd_last_event = sd_state.get("last_event")
+        if isinstance(sd_last_event, dict):
+            last_event = str(sd_last_event.get("timestamp") or sd_last_event.get("message") or "")
+
+        def _round_percent(value: Any) -> float | None:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(numeric, 1)
+
+        return (
+            _round_percent(cpu.get("percent")),
+            _round_percent(memory.get("percent")),
+            bool(sd_state.get("warning_active")),
+            last_event,
+        )
+
+    class _SystemHealthBroadcaster:
+        def __init__(self, interval_seconds: float = SYSTEM_HEALTH_EVENT_INTERVAL_SECONDS) -> None:
+            self._interval = max(0.5, float(interval_seconds))
+            self._task: asyncio.Task | None = None
+            self._last_fingerprint: tuple[Any, ...] | None = None
+            self._last_emit: float = 0.0
+
+        async def start(self) -> None:
+            if self._task is not None:
+                return
+            loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._run())
+
+        async def stop(self) -> None:
+            task = self._task
+            if task is None:
+                return
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            self._task = None
+
+        def note_snapshot(self, snapshot: dict[str, Any]) -> None:
+            fingerprint = _system_health_fingerprint(snapshot)
+            self._last_fingerprint = fingerprint
+            generated_at = snapshot.get("generated_at")
+            try:
+                self._last_emit = max(self._last_emit, float(generated_at))
+            except (TypeError, ValueError):
+                self._last_emit = time.time()
+
+        async def _run(self) -> None:
+            try:
+                while True:
+                    await asyncio.sleep(self._interval)
+                    snapshot = await asyncio.to_thread(_collect_system_health_snapshot)
+                    if not isinstance(snapshot, dict):
+                        continue
+                    self._maybe_emit(snapshot)
+            except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                raise
+
+        def _maybe_emit(self, snapshot: dict[str, Any]) -> None:
+            fingerprint = _system_health_fingerprint(snapshot)
+            now = snapshot.get("generated_at")
+            try:
+                timestamp = float(now)
+            except (TypeError, ValueError):
+                timestamp = time.time()
+
+            should_emit = fingerprint != self._last_fingerprint
+            if not should_emit and (timestamp - self._last_emit) >= SYSTEM_HEALTH_EVENT_MAX_STALE_SECONDS:
+                should_emit = True
+
+            if not should_emit:
+                return
+
+            self._last_fingerprint = fingerprint
+            self._last_emit = timestamp
+            _publish_dashboard_event(
+                "system_health_updated",
+                {"updated_at": timestamp},
+            )
+
+    health_broadcaster = _SystemHealthBroadcaster()
+    app["system_health_broadcaster"] = health_broadcaster
+
+    async def system_health(_: web.Request) -> web.Response:
+        payload = _collect_system_health_snapshot()
+        health_broadcaster.note_snapshot(payload)
         return web.json_response(payload, headers={"Cache-Control": "no-store"})
+
+    async def dashboard_events_stream(request: web.Request) -> web.StreamResponse:
+        bus = request.app.get(EVENT_BUS_KEY)
+        if bus is None:
+            raise web.HTTPServiceUnavailable(reason="event stream unavailable")
+
+        last_event_id = request.headers.get("Last-Event-ID") or request.query.get(
+            "last_event_id", ""
+        )
+        queue = await bus.subscribe(last_event_id=last_event_id)
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Type": "text/event-stream",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+
+        logger = logging.getLogger("web_streamer")
+        heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+        heartbeat_chunk = b"event: heartbeat\ndata: {}\n\n"
+
+        try:
+            await response.write(f"retry: {EVENT_STREAM_RETRY_MILLIS}\n\n".encode("utf-8"))
+            while True:
+                remaining = heartbeat_deadline - time.monotonic()
+                if remaining <= 0:
+                    try:
+                        await response.write(heartbeat_chunk)
+                    except ConnectionResetError:
+                        break
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    try:
+                        await response.write(heartbeat_chunk)
+                    except ConnectionResetError:
+                        break
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+                except asyncio.CancelledError:
+                    raise
+
+                if event is None:
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+
+                payload = event.get("payload")
+                try:
+                    data_text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to serialize dashboard event %s: %s",
+                        event.get("type"),
+                        exc,
+                    )
+                    heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+                    continue
+
+                buffer_parts = [f"id: {event['id']}\n", f"event: {event['type']}\n"]
+                lines = data_text.splitlines() or [""]
+                buffer_parts.extend(f"data: {line}\n" for line in lines)
+                buffer_parts.append("\n")
+
+                try:
+                    await response.write("".join(buffer_parts).encode("utf-8"))
+                except ConnectionResetError:
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # pragma: no cover - transport quirks
+                    logger.debug("dashboard SSE write failed: %s", exc)
+                    break
+
+                heartbeat_deadline = time.monotonic() + EVENT_STREAM_HEARTBEAT_SECONDS
+        finally:
+            bus.unsubscribe(queue)
+            with contextlib.suppress(Exception):
+                await response.write_eof()
+
+        return response
 
     async def services_list(request: web.Request) -> web.Response:
         entries = request.app.get(SERVICE_ENTRIES_KEY, [])
@@ -6904,6 +7634,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/config/web-server", config_web_server_get)
     app.router.add_post("/api/config/web-server", config_web_server_update)
     app.router.add_get("/api/system-health", system_health)
+    app.router.add_get("/api/events", dashboard_events_stream)
     app.router.add_get("/api/services", services_list)
     app.router.add_get("/api/integrations", integrations_api)
     app.router.add_post("/api/services/{unit}/action", service_action)

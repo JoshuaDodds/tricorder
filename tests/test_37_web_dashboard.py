@@ -325,6 +325,7 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             assert capture_status.get("service_running") is False
             assert capture_status.get("event") is None
             assert "encoding" not in capture_status
+            assert "recording_progress" not in capture_status
             assert capture_status.get("last_stop_reason") == "status stale"
             assert capture_status.get("manual_recording") is False
         finally:
@@ -361,6 +362,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert first_status.get("service_running") is False
             assert first_status.get("event") is None
             assert "encoding" not in first_status
+            assert "recording_progress" not in first_status
             assert first_status.get("last_stop_reason") == "service offline"
             assert first_status.get("manual_recording") is False
 
@@ -375,6 +377,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert second_status.get("service_running") is False
             assert second_status.get("event") is None
             assert "encoding" not in second_status
+            assert "recording_progress" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
             assert second_status.get("manual_recording") is False
         finally:
@@ -434,6 +437,14 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             assert event.get("partial_recording_rel_path") == rel_path
             assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
             assert event.get("partial_waveform_rel_path") == waveform_rel
+            progress = capture_status.get("recording_progress", {})
+            assert progress.get("path") == rel_path
+            assert progress.get("size_bytes") == 5120
+            assert progress.get("duration_seconds") == pytest.approx(4.0, rel=0, abs=1e-6)
+            assert progress.get("extension") == "opus"
+            assert progress.get("name") == "alpha"
+            assert progress.get("isPartial") is True
+            assert progress.get("inProgress") is True
         finally:
             await client.close()
             await server.close()
