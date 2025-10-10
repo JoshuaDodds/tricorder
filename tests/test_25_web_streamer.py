@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
@@ -738,6 +739,64 @@ async def test_recordings_save_and_unsave_moves_files(
     assert not saved_audio.exists()
     assert not saved_waveform.exists()
     assert not saved_transcript.exists()
+
+
+@pytest.mark.asyncio
+async def test_recordings_event_bridge_replays_spooled_events(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    bridge = client.app[web_streamer.RECORDINGS_EVENT_BRIDGE_KEY]
+    spool_dir = bridge._spool_dir  # type: ignore[attr-defined]
+    spool_dir.mkdir(parents=True, exist_ok=True)
+
+    bus = dashboard_events.get_event_bus()
+    assert bus is not None
+    initial_len = len(bus.history_snapshot())
+
+    payload = {
+        "reason": "encode_completed",
+        "paths": ["20250101/example.opus"],
+        "updated_at": time.time(),
+    }
+    record = {
+        "type": "recordings_changed",
+        "payload": payload,
+        "timestamp": time.time(),
+    }
+    identifier = f"{time.time():.6f}-{uuid.uuid4().hex}"
+    tmp_file = spool_dir / f".{identifier}.tmp"
+    final_file = spool_dir / f"{identifier}.json"
+    tmp_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    tmp_file.replace(final_file)
+
+    async def _wait_for_event() -> bool:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            history = bus.history_snapshot()[initial_len:]
+            if any(
+                event.get("type") == "recordings_changed"
+                and event.get("payload") == payload
+                for event in history
+            ):
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    assert await _wait_for_event()
 
 
 @pytest.mark.asyncio

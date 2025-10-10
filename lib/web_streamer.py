@@ -76,6 +76,7 @@ LETS_ENCRYPT_RENEWAL_INTERVAL_SECONDS = 12 * 60 * 60
 
 CAPTURE_STATUS_STALE_AFTER_SECONDS = 10.0
 CAPTURE_STATUS_EVENT_POLL_SECONDS = 0.5
+RECORDINGS_EVENT_POLL_SECONDS = 0.5
 
 EVENT_STREAM_HEARTBEAT_SECONDS = 20.0
 EVENT_STREAM_RETRY_MILLIS = 5000
@@ -91,6 +92,7 @@ RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RAW_AUDIO_DIRNAME = ".original_wav"
 RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
 SAVED_RECORDINGS_DIRNAME = "Saved"
+RECORDINGS_EVENT_SPOOL_DIRNAME = "recordings_events"
 RECYCLE_METADATA_FILENAME = "metadata.json"
 RECYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
@@ -183,6 +185,105 @@ class _CaptureStatusEventBridge:
             return json.dumps(payload, sort_keys=True, separators=(",", ":"))
         except (TypeError, ValueError):
             return None
+
+
+class _RecordingsEventBridge:
+    """Replay recordings_changed events spooled by external processes."""
+
+    def __init__(
+        self,
+        *,
+        spool_dir: Path,
+        bus: "dashboard_events.DashboardEventBus",
+        poll_interval: float,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+        self._spool_dir = spool_dir
+        self._bus = bus
+        self._poll_interval = float(poll_interval)
+        self._logger = logger or logging.getLogger("web_streamer")
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        await self._drain_once()
+        if self._task is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._task = loop.create_task(self._run())
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _run(self) -> None:
+        assert self._task is not None
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(self._poll_interval)
+                    await self._drain_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    self._logger.debug(
+                        "recordings event bridge poll failed: %s", exc, exc_info=False
+                    )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._task = None
+
+    async def _drain_once(self) -> None:
+        events = await asyncio.to_thread(self._collect_events)
+        if not events:
+            return
+        for event_type, payload in events:
+            if event_type != "recordings_changed" or not isinstance(payload, dict):
+                continue
+            try:
+                self._bus.publish(event_type, payload)
+            except Exception as exc:  # pragma: no cover - unexpected publish failure
+                self._logger.debug(
+                    "recordings event bridge publish failed: %s", exc, exc_info=False
+                )
+
+    def _collect_events(self) -> list[tuple[str, dict[str, object]]]:
+        try:
+            self._spool_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return []
+
+        events: list[tuple[str, dict[str, object]]] = []
+        candidates = sorted(self._spool_dir.glob("*.json"))
+        for candidate in candidates:
+            try:
+                with open(candidate, "r", encoding="utf-8") as handle:
+                    record = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+                continue
+
+            event_type = record.get("type") if isinstance(record, dict) else None
+            payload = record.get("payload") if isinstance(record, dict) else None
+            if isinstance(event_type, str) and isinstance(payload, dict):
+                events.append((event_type, payload))
+
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+
+        return events
 
 
 def _transcription_model_search_roots() -> list[Path]:
@@ -3103,6 +3204,9 @@ EVENT_BUS_KEY: AppKey[dashboard_events.DashboardEventBus] = web.AppKey(
 CAPTURE_STATUS_BRIDGE_KEY: AppKey[_CaptureStatusEventBridge] = web.AppKey(
     "capture_status_event_bridge", _CaptureStatusEventBridge
 )
+RECORDINGS_EVENT_BRIDGE_KEY: AppKey[_RecordingsEventBridge] = web.AppKey(
+    "recordings_event_bridge", _RecordingsEventBridge
+)
 SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
@@ -4773,7 +4877,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         read_status=_read_capture_status,
         bus=event_bus,
         poll_interval=CAPTURE_STATUS_EVENT_POLL_SECONDS,
-        logger=logging.getLogger("web_streamer"),
+        logger=log,
     )
     app[CAPTURE_STATUS_BRIDGE_KEY] = capture_status_bridge
 
@@ -4783,8 +4887,25 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     async def _stop_capture_status_bridge(_: web.Application) -> None:
         await capture_status_bridge.stop()
 
+    recordings_event_spool = Path(cfg["paths"].get("tmp_dir", tmp_root)) / RECORDINGS_EVENT_SPOOL_DIRNAME
+    recordings_event_bridge = _RecordingsEventBridge(
+        spool_dir=recordings_event_spool,
+        bus=event_bus,
+        poll_interval=RECORDINGS_EVENT_POLL_SECONDS,
+        logger=log,
+    )
+    app[RECORDINGS_EVENT_BRIDGE_KEY] = recordings_event_bridge
+
+    async def _start_recordings_event_bridge(_: web.Application) -> None:
+        await recordings_event_bridge.start()
+
+    async def _stop_recordings_event_bridge(_: web.Application) -> None:
+        await recordings_event_bridge.stop()
+
     app.on_startup.append(_start_capture_status_bridge)
+    app.on_startup.append(_start_recordings_event_bridge)
     app.on_cleanup.append(_stop_capture_status_bridge)
+    app.on_cleanup.append(_stop_recordings_event_bridge)
     app.on_cleanup.append(_stop_health_broadcaster)
     app.on_cleanup.append(_cleanup_event_bus)
 
