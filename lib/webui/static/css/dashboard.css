@@ -576,6 +576,16 @@ body[data-theme="light"] .app-menu-toggle {
   box-shadow: 0 10px 24px -18px var(--danger-ring);
 }
 
+#encoding-status {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+#encoding-status .indicator-text {
+  width: 100%;
+}
+
 #recording-meta[data-state="active"] .indicator-text {
   color: inherit;
 }

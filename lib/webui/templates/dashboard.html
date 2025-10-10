@@ -1480,21 +1480,40 @@
             <div class="settings-section-header">
               <h3 id="recorder-adaptive-title" class="settings-section-title">Adaptive RMS</h3>
               <p class="settings-section-description">
-                Automatically adjusts the RMS trigger as the room quiets down or becomes noisier.
+                Let the recorder raise or lower the trigger so it matches the room's background noise.
               </p>
             </div>
             <form id="adaptive-form" class="settings-subform" novalidate>
               <div class="settings-field checkbox-field">
                 <div class="field-control">
                   <input id="adaptive-enabled" type="checkbox" />
-                  <label for="adaptive-enabled">Enable adaptive thresholding</label>
+                  <label for="adaptive-enabled">Enable automatic trigger adjustment</label>
                 </div>
-                <p class="field-description">Tracks background noise and scales the trigger dynamically.</p>
+                <p class="field-description">
+                  When enabled the recorder follows the background noise instead of using a fixed RMS threshold.
+                </p>
               </div>
               <div class="settings-field">
-                <label for="adaptive-min-thresh">Minimum threshold</label>
+                <label for="adaptive-min-rms">Lowest trigger level (RMS)</label>
+                <input
+                  id="adaptive-min-rms"
+                  type="number"
+                  min="0"
+                  max="32767"
+                  step="1"
+                  inputmode="numeric"
+                  placeholder="(defaults to segmenter threshold)"
+                />
+                <p class="field-description">
+                  The adaptive trigger will never drop below this RMS value. Leave blank to reuse the Segmenter RMS threshold.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="adaptive-min-thresh">Normalized floor (advanced)</label>
                 <input id="adaptive-min-thresh" type="number" min="0" max="1" step="0.001" />
-                <p class="field-description">Floor for the normalized RMS threshold (0–1 scale).</p>
+                <p class="field-description">
+                  Optional fine-tuning using the 0–1 normalized scale. Skip this unless you need advanced control.
+                </p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-max-rms">Hard RMS ceiling</label>
@@ -1507,39 +1526,46 @@
                   inputmode="numeric"
                   placeholder="(optional)"
                 />
-                <p class="field-description">Ceiling that prevents the adaptive gate from climbing indefinitely.</p>
+                <p class="field-description">
+                  Stops the trigger from climbing past this RMS value even if the room gets louder.
+                </p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-margin">Noise margin</label>
                 <input id="adaptive-margin" type="number" min="0.5" max="10" step="0.05" />
-                <p class="field-description">Multiplier applied to the observed background noise floor.</p>
+                <p class="field-description">
+                  Higher numbers sit further above the background (fewer clips). Lower numbers hug the background (more clips).
+                </p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-update-interval">Update interval (s)</label>
                 <input id="adaptive-update-interval" type="number" min="0.5" max="120" step="0.5" />
-                <p class="field-description">How frequently the threshold is recomputed.</p>
+                <p class="field-description">How often the recorder re-measures the room and adjusts the trigger.</p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-window">Window length (s)</label>
                 <input id="adaptive-window" type="number" min="1" max="300" step="1" />
-                <p class="field-description">Rolling sample window for background RMS estimation.</p>
+                <p class="field-description">How many seconds of background sound are analyzed each time.</p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-hysteresis">Hysteresis tolerance</label>
                 <input id="adaptive-hysteresis" type="number" min="0" max="1" step="0.01" />
-                <p class="field-description">Minimum proportional change before adopting a new threshold.</p>
+                <p class="field-description">
+                  The percentage change needed before a new trigger level is accepted (prevents tiny swings).
+                </p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-release">Release percentile</label>
                 <input id="adaptive-release" type="number" min="0.05" max="1" step="0.01" />
-                <p class="field-description">Percentile of the noise distribution used when relaxing the threshold.</p>
+                <p class="field-description">
+                  Lower values make the trigger drop faster after loud moments. Higher values keep it elevated longer.
+                </p>
               </div>
               <div class="settings-field">
                 <label for="adaptive-voiced-hold">Voiced fallback delay (s)</label>
                 <input id="adaptive-voiced-hold" type="number" min="0" max="300" step="0.5" />
                 <p class="field-description">
-                  After this many seconds without unvoiced frames the controller treats voiced frames as
-                  background so long recordings triggered by misclassified noise can wind down.
+                  After this many seconds without quiet samples, speech is treated as background so stuck recordings can finish.
                 </p>
               </div>
               <div class="settings-section-footer">
