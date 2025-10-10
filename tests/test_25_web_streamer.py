@@ -1179,6 +1179,11 @@ async def test_recordings_delete_moves_raw_audio_to_recycle_bin(
     entry_raw_path = entry_dir / raw_path.name
     assert entry_raw_path.exists()
 
+    bus = dashboard_events.get_event_bus()
+    assert bus is not None
+
+    initial_len = len(bus.history_snapshot())
+
     purge_response = await client.post(
         "/api/recycle-bin/purge",
         json={"items": [entry_dir.name]},
@@ -1189,6 +1194,14 @@ async def test_recordings_delete_moves_raw_audio_to_recycle_bin(
     assert purge_payload["errors"] == []
     assert not entry_dir.exists()
     assert not raw_path.exists()
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "recycle_purged"
+        and entry_dir.name in (event.get("payload") or {}).get("entries", [])
+        for event in history
+    ), history
 
 
 @pytest.mark.asyncio
@@ -1243,6 +1256,11 @@ async def test_recycle_bin_restore_reinstates_raw_audio(
     entry_raw_path = entry_dir / raw_path.name
     assert entry_raw_path.exists()
 
+    bus = dashboard_events.get_event_bus()
+    assert bus is not None
+
+    initial_len = len(bus.history_snapshot())
+
     restore_response = await client.post(
         "/api/recycle-bin/restore",
         json={"items": [entry_dir.name]},
@@ -1256,6 +1274,14 @@ async def test_recycle_bin_restore_reinstates_raw_audio(
     assert waveform_path.exists()
     assert raw_path.exists()
     assert not entry_dir.exists()
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "restored"
+        and "sample.opus" in (event.get("payload") or {}).get("paths", [])
+        for event in history
+    ), history
 
 
 @pytest.mark.asyncio
