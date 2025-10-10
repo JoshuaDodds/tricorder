@@ -4590,6 +4590,160 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return bool(payload)
         return False
 
+    def _float_or_none(value: object) -> float | None:
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                parsed = float(value.strip())
+            except (TypeError, ValueError):
+                return None
+            if math.isfinite(parsed):
+                return parsed
+        return None
+
+    def _int_or_none(value: object) -> int | None:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                parsed = int(float(value.strip()))
+            except (TypeError, ValueError):
+                return None
+            return parsed
+        return None
+
+    def _build_recording_progress(status: dict[str, object]) -> dict[str, object] | None:
+        capturing = bool(status.get("capturing", False))
+        if not capturing:
+            return None
+
+        event_payload = status.get("event")
+        if not isinstance(event_payload, dict):
+            return None
+
+        if not bool(event_payload.get("in_progress", False)):
+            return None
+
+        rel_candidates: list[str] = []
+        event_rel = event_payload.get("partial_recording_rel_path")
+        if isinstance(event_rel, str) and event_rel.strip():
+            rel_candidates.append(event_rel.strip())
+        status_rel = status.get("partial_recording_rel_path")
+        if isinstance(status_rel, str) and status_rel.strip():
+            rel_candidates.append(status_rel.strip())
+
+        rel_path = next((item for item in rel_candidates if item), "")
+        if not rel_path:
+            return None
+
+        waveform_rel_candidates: list[str] = []
+        event_waveform_rel = event_payload.get("partial_waveform_rel_path")
+        if isinstance(event_waveform_rel, str) and event_waveform_rel.strip():
+            waveform_rel_candidates.append(event_waveform_rel.strip())
+        status_waveform_rel = status.get("partial_waveform_rel_path")
+        if isinstance(status_waveform_rel, str) and status_waveform_rel.strip():
+            waveform_rel_candidates.append(status_waveform_rel.strip())
+        waveform_rel_path = next((item for item in waveform_rel_candidates if item), "")
+
+        waveform_path_candidates: list[str] = []
+        event_waveform_path = event_payload.get("partial_waveform_path")
+        if isinstance(event_waveform_path, str) and event_waveform_path.strip():
+            waveform_path_candidates.append(event_waveform_path.strip())
+        status_waveform_path = status.get("partial_waveform_path")
+        if isinstance(status_waveform_path, str) and status_waveform_path.strip():
+            waveform_path_candidates.append(status_waveform_path.strip())
+        waveform_path = next((item for item in waveform_path_candidates if item), "")
+
+        base_name_raw = event_payload.get("base_name")
+        base_name = base_name_raw.strip() if isinstance(base_name_raw, str) else ""
+        if not base_name:
+            base_name = "Current recording"
+
+        streaming_format_raw = event_payload.get("streaming_container_format")
+        if not isinstance(streaming_format_raw, str) or not streaming_format_raw.strip():
+            streaming_format_raw = status.get("streaming_container_format")
+        streaming_format = (
+            streaming_format_raw.strip().lower()
+            if isinstance(streaming_format_raw, str)
+            else "opus"
+        )
+        extension = "webm" if streaming_format == "webm" else "opus"
+
+        duration_seconds_value = _float_or_none(status.get("event_duration_seconds"))
+        if duration_seconds_value is not None:
+            duration_seconds_value = max(0.0, duration_seconds_value)
+
+        size_bytes_value = _int_or_none(status.get("event_size_bytes"))
+        if size_bytes_value is not None:
+            size_bytes_value = max(0, size_bytes_value)
+        else:
+            size_bytes_value = 0
+
+        started_epoch = _float_or_none(event_payload.get("started_epoch"))
+        start_epoch = _float_or_none(event_payload.get("start_epoch"))
+        if start_epoch is None and started_epoch is not None:
+            start_epoch = started_epoch
+
+        started_at_raw = event_payload.get("started_at")
+        started_at = started_at_raw.strip() if isinstance(started_at_raw, str) else ""
+
+        updated_at_value = _float_or_none(status.get("updated_at"))
+        modified_epoch = start_epoch
+        if modified_epoch is None:
+            modified_epoch = updated_at_value
+        if modified_epoch is None:
+            modified_epoch = time.time()
+
+        day = rel_path.split("/", 1)[0] if "/" in rel_path else ""
+
+        trigger_offset = _float_or_none(event_payload.get("trigger_offset_seconds"))
+        release_offset = _float_or_none(event_payload.get("release_offset_seconds"))
+        motion_trigger_offset = _float_or_none(
+            event_payload.get("motion_trigger_offset_seconds")
+        )
+        motion_release_offset = _float_or_none(
+            event_payload.get("motion_release_offset_seconds")
+        )
+        motion_started_epoch = _float_or_none(event_payload.get("motion_started_epoch"))
+        motion_released_epoch = _float_or_none(event_payload.get("motion_released_epoch"))
+
+        progress: dict[str, object] = {
+            "name": base_name,
+            "path": rel_path,
+            "stream_path": rel_path,
+            "day": day,
+            "collection": "recent",
+            "extension": extension,
+            "size_bytes": size_bytes_value,
+            "modified": float(modified_epoch),
+            "modified_iso": datetime.fromtimestamp(
+                modified_epoch, tz=timezone.utc
+            ).isoformat(),
+            "duration_seconds": duration_seconds_value,
+            "start_epoch": start_epoch,
+            "started_epoch": started_epoch,
+            "started_at": started_at,
+            "waveform_path": waveform_rel_path or waveform_path,
+            "has_transcript": False,
+            "transcript_path": "",
+            "transcript_event_type": "",
+            "transcript_updated": None,
+            "transcript_updated_iso": "",
+            "trigger_offset_seconds": trigger_offset,
+            "release_offset_seconds": release_offset,
+            "motion_trigger_offset_seconds": motion_trigger_offset,
+            "motion_release_offset_seconds": motion_release_offset,
+            "motion_started_epoch": motion_started_epoch,
+            "motion_released_epoch": motion_released_epoch,
+            "isPartial": True,
+            "inProgress": True,
+        }
+
+        return progress
+
     def _read_capture_status() -> dict[str, object]:
         try:
             with open(capture_status_path, "r", encoding="utf-8") as handle:
@@ -4793,6 +4947,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if isinstance(streaming_format, str) and streaming_format:
             status["streaming_container_format"] = streaming_format
 
+        progress_record = _build_recording_progress(status)
+        if progress_record is not None:
+            status["recording_progress"] = progress_record
+        else:
+            status.pop("recording_progress", None)
+
         avg_ms = raw.get("filter_chain_avg_ms")
         if isinstance(avg_ms, (int, float)) and math.isfinite(avg_ms):
             status["filter_chain_avg_ms"] = float(avg_ms)
@@ -4895,6 +5055,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status.pop("event_duration_seconds", None)
             status.pop("event_size_bytes", None)
             status.pop("encoding", None)
+            status.pop("recording_progress", None)
             status["service_running"] = False
             if not status.get("last_stop_reason"):
                 status["last_stop_reason"] = (
