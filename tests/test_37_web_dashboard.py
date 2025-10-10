@@ -346,6 +346,7 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             assert capture_status.get("service_running") is False
             assert capture_status.get("event") is None
             assert "encoding" not in capture_status
+            assert "recording_progress" not in capture_status
             assert capture_status.get("last_stop_reason") == "status stale"
             assert capture_status.get("manual_recording") is False
         finally:
@@ -382,6 +383,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert first_status.get("service_running") is False
             assert first_status.get("event") is None
             assert "encoding" not in first_status
+            assert "recording_progress" not in first_status
             assert first_status.get("last_stop_reason") == "service offline"
             assert first_status.get("manual_recording") is False
 
@@ -396,6 +398,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert second_status.get("service_running") is False
             assert second_status.get("event") is None
             assert "encoding" not in second_status
+            assert "recording_progress" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
             assert second_status.get("manual_recording") is False
         finally:
@@ -455,6 +458,14 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             assert event.get("partial_recording_rel_path") == rel_path
             assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
             assert event.get("partial_waveform_rel_path") == waveform_rel
+            progress = capture_status.get("recording_progress", {})
+            assert progress.get("path") == rel_path
+            assert progress.get("size_bytes") == 5120
+            assert progress.get("duration_seconds") == pytest.approx(4.0, rel=0, abs=1e-6)
+            assert progress.get("extension") == "opus"
+            assert progress.get("name") == "alpha"
+            assert progress.get("isPartial") is True
+            assert progress.get("inProgress") is True
         finally:
             await client.close()
             await server.close()
@@ -2710,6 +2721,115 @@ def test_motion_trigger_detection_persists_for_recordings():
     assert result["releaseOnly"] is True
     assert result["startedEpoch"] is True
     assert result["none"] is False
+
+
+def test_metrics_panel_collapses_on_mobile_and_persists_choice():
+    script = textwrap.dedent(
+        """
+        const doc = sandbox.window.document;
+        const panel = doc.__getMockElement("metrics-panel");
+        const body = doc.__getMockElement("metrics-panel-body");
+        const summary = doc.__getMockElement("metrics-summary");
+        const toggle = doc.__getMockElement("metrics-toggle");
+        toggle.textContent = "";
+        toggle.setAttribute = () => {};
+        toggle.addEventListener = (event, handler) => {
+          if (event === "click") {
+            toggle.__handler = handler;
+          }
+        };
+        sandbox.window.localStorage = {
+          store: {},
+          getItem(key) { return Object.prototype.hasOwnProperty.call(this.store, key) ? this.store[key] : null; },
+          setItem(key, value) { this.store[key] = value; },
+          removeItem(key) { delete this.store[key]; },
+        };
+        const hooks = sandbox.window.__TRICORDER_TEST_HOOKS || {};
+        if (hooks.mobileLayoutQuery) {
+          hooks.mobileLayoutQuery.matches = true;
+        }
+        sandbox.initializeMetricsPanel();
+        const collapsedInitially = body.hidden === true;
+        const textAfterInit = toggle.textContent;
+        if (toggle.__handler) {
+          toggle.__handler();
+        }
+        const expandedAfterToggle = body.hidden === false;
+        const storedValue = sandbox.window.localStorage.store["tricorder.dashboard.metricsPanel"] || null;
+        const hooksState = hooks.metricsPanelState ? hooks.metricsPanelState.expanded : null;
+        return {
+          collapsedInitially,
+          expandedAfterToggle,
+          storedValue,
+          textAfterInit,
+          hooksState
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "metrics-panel": True,
+            "metrics-panel-body": {"hidden": False},
+            "metrics-summary": {"textContent": ""},
+            "metrics-toggle": True,
+        },
+    )
+    assert result["collapsedInitially"] is True
+    assert result["textAfterInit"] == "Show metrics"
+    assert result["expandedAfterToggle"] is True
+    assert result["storedValue"] == "1"
+    assert result["hooksState"] is True
+
+
+def test_metrics_summary_renders_compact_chips():
+    script = textwrap.dedent(
+        """
+        const doc = sandbox.window.document;
+        const summary = doc.__getMockElement("metrics-summary");
+        sandbox.initializeMetricsPanel();
+        const initialClass = summary.children.length > 0 ? summary.children[0].className : null;
+        const initialEmpty = summary.dataset.empty;
+        sandbox.setMetricsSummaryPart("recordings", { label: "Recordings", value: "5" });
+        sandbox.setMetricsSummaryPart("cpu", { label: "CPU", value: "24%" });
+        const afterEmpty = summary.dataset.empty;
+        const chipCount = summary.children.length;
+        const chipKeys = summary.children.map((child) => child && child.dataset ? child.dataset.summaryKey : null);
+        const firstLabel =
+          chipCount > 0 && summary.children[0].children.length > 0
+            ? summary.children[0].children[0].textContent
+            : null;
+        const firstValue =
+          chipCount > 0 && summary.children[0].children.length > 1
+            ? summary.children[0].children[1].textContent
+            : null;
+        return {
+          initialClass,
+          initialEmpty,
+          afterEmpty,
+          chipCount,
+          chipKeys,
+          firstLabel,
+          firstValue
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "metrics-panel": True,
+            "metrics-panel-body": True,
+            "metrics-summary": True,
+            "metrics-toggle": True,
+        },
+    )
+    assert result["initialClass"] == "metrics-summary-placeholder"
+    assert result["initialEmpty"] == "true"
+    assert result["afterEmpty"] == "false"
+    assert result["chipCount"] == 2
+    assert result["chipKeys"] == ["recordings", "cpu"]
+    assert result["firstLabel"] == "Recordings"
+    assert result["firstValue"] == "5"
 
 
 def test_shift_click_selects_range_between_non_adjacent_records():

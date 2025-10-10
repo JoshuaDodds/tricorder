@@ -197,6 +197,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
 - JSON APIs (`/api/recordings`, `/api/recycle-bin`, `/api/config`, `/api/integrations`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
+- Server-Sent Events (`/api/events`) streaming capture status, motion, and encoding updates to the dashboard for low-latency UI refreshes.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
 ### Audio filter chain tuning
@@ -435,9 +436,14 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in.
 - `segmenter.motion_release_padding_minutes` keeps motion-forced recordings alive for the configured minutes after the motion integration clears, delaying the hand-off back to RMS/adaptive/VAD gating so conversation tails are not clipped.
 - Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
+- The recordings dashboard now uses a compact mobile layout that surfaces key metadata at a glance and tucks waveform/clip tools behind an on-demand toggle so advanced controls never require multiple full-screen scrolls on phones.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
+  - `min_rms` pins the adaptive trigger to a lowest RMS value. Leave it blank to reuse
+    `segmenter.rms_threshold`, ensuring the adaptive controller never drops below the manual gate.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
     For example, set `max_rms: 250` to allow adaptive increases up to 250 and no higher.
+  - `min_thresh` remains available for advanced normalized tuning (0–1 scale) when a fractional
+    floor is preferred over linear RMS.
   - `voiced_hold_sec` lets the controller fall back to voiced frames after extended stretches without
     background samples so misclassified noise beds cannot pin the threshold at stale values.
 - `ingest` – file stability checks, extension filters, ignore suffixes.

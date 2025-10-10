@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
@@ -14,11 +15,26 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import lib.config as config
 import lib.web_streamer as web_streamer
 import lib.recycle_bin_utils as recycle_bin_utils
 import lib.lets_encrypt as lets_encrypt
+from lib import dashboard_events
 
 pytest_plugins = ("aiohttp.pytest_plugin",)
+
+
+async def _read_sse_event(response, *, timeout=1.0):
+    lines = []
+    while True:
+        chunk = await asyncio.wait_for(response.content.readline(), timeout=timeout)
+        if not chunk:
+            raise AssertionError("SSE stream closed before event was delivered")
+        text = chunk.decode("utf-8").rstrip("\n")
+        if text == "":
+            break
+        lines.append(text)
+    return lines
 
 
 TEST_CERT_PEM = """-----BEGIN CERTIFICATE-----
@@ -253,6 +269,131 @@ async def test_dashboard_page_structure(aiohttp_client):
     assert 'src="/static/js/dashboard.js"' in body
     assert 'data-tricorder-stream-mode="hls"' in body
     assert "data-tricorder-webrtc-ice-servers" in body
+
+
+@pytest.mark.asyncio
+async def test_dashboard_events_stream_emits_capture_updates(aiohttp_client):
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/events")
+    assert response.status == 200
+
+    await _read_sse_event(response)
+
+    payload = {"capturing": True, "updated_at": 123.0, "manual_recording": False}
+    event_id = dashboard_events.publish("capture_status", payload)
+    assert event_id is not None
+
+    received = False
+    for _ in range(5):
+        lines = await _read_sse_event(response)
+        if not any(line == f"id: {event_id}" for line in lines):
+            continue
+        received = True
+        assert "event: capture_status" in lines
+        data_line = next(line for line in lines if line.startswith("data: "))
+        data = json.loads(data_line.split("data: ", 1)[1])
+        assert data["capturing"] is True
+        assert data["manual_recording"] is False
+        break
+
+    response.close()
+    assert received, "capture_status event was not emitted"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_events_resumes_from_last_event_id(aiohttp_client):
+    client = await aiohttp_client(web_streamer.build_app())
+
+    first_id = dashboard_events.publish("capture_status", {"capturing": False, "updated_at": 1.0})
+    assert first_id is not None
+
+    first_response = await client.get("/api/events")
+    assert first_response.status == 200
+    await _read_sse_event(first_response)
+    seen_first = False
+    for _ in range(5):
+        lines = await _read_sse_event(first_response)
+        if any(line == f"id: {first_id}" for line in lines):
+            seen_first = True
+            break
+    first_response.close()
+    assert seen_first, "did not receive initial capture_status event"
+
+    second_id = dashboard_events.publish("capture_status", {"capturing": True, "updated_at": 2.0})
+    assert second_id is not None and second_id != first_id
+
+    second_response = await client.get("/api/events", headers={"Last-Event-ID": first_id})
+    assert second_response.status == 200
+    await _read_sse_event(second_response)
+    seen_second = False
+    for _ in range(5):
+        lines = await _read_sse_event(second_response)
+        if any(line == f"id: {second_id}" for line in lines):
+            data_line = next(line for line in lines if line.startswith("data: "))
+            data = json.loads(data_line.split("data: ", 1)[1])
+            assert data["capturing"] is True
+            assert data["updated_at"] == pytest.approx(2.0)
+            seen_second = True
+            break
+    second_response.close()
+    assert seen_second, "did not receive resumed capture_status event"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_events_bridge_publishes_status_file_updates(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir()
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    dropbox_dir = tmp_path / "dropbox"
+    dropbox_dir.mkdir()
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+    monkeypatch.setenv("DROPBOX_DIR", str(dropbox_dir))
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_dir))
+
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    monkeypatch.setattr(web_streamer, "CAPTURE_STATUS_EVENT_POLL_SECONDS", 0.05)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/events")
+    assert response.status == 200
+
+    await _read_sse_event(response)
+
+    status_path = tmp_dir / "segmenter_status.json"
+    payload = {
+        "capturing": True,
+        "service_running": True,
+        "updated_at": time.time(),
+    }
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    observed = False
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        timeout = max(0.05, deadline - time.time())
+        lines = await _read_sse_event(response, timeout=timeout)
+        data_line = next((line for line in lines if line.startswith("data: ")), None)
+        if not data_line:
+            continue
+        data = json.loads(data_line.split("data: ", 1)[1])
+        if data.get("capturing") is True:
+            assert data.get("service_running") is True
+            observed = True
+            break
+
+    response.close()
+    assert observed, "updated capture_status event not observed"
 
 
 @pytest.mark.asyncio
@@ -495,6 +636,28 @@ def test_saved_recordings_fallback_raw_path_ignores_prefix(tmp_path):
     )
 
 
+def test_scan_recordings_skips_partial_files(tmp_path):
+    recordings_dir = tmp_path / "recordings"
+    day_dir = recordings_dir / "20240108"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    partial_path = day_dir / "alpha.partial.opus"
+    partial_path.write_bytes(b"partial")
+    waveform_path = partial_path.with_suffix(partial_path.suffix + ".waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 1.0}), encoding="utf-8")
+
+    entries, days, exts, total = web_streamer._scan_recordings_worker(
+        recordings_dir,
+        (".opus",),
+    )
+
+    assert entries == []
+    assert days == []
+    assert exts == []
+    assert total == 0
+
+
 @pytest.mark.asyncio
 async def test_recordings_save_and_unsave_moves_files(
     monkeypatch, tmp_path, aiohttp_client
@@ -522,6 +685,9 @@ async def test_recordings_save_and_unsave_moves_files(
 
     client = await aiohttp_client(web_streamer.build_app())
 
+    bus = dashboard_events.get_event_bus()
+    initial_len = len(bus.history_snapshot())
+
     save_response = await client.post(
         "/api/recordings/save",
         json={"items": ["20250101/clip.opus"]},
@@ -531,6 +697,15 @@ async def test_recordings_save_and_unsave_moves_files(
     expected_saved_path = f"{web_streamer.SAVED_RECORDINGS_DIRNAME}/20250101/clip.opus"
     assert save_payload["saved"] == [expected_saved_path]
     assert save_payload["errors"] == []
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "saved"
+        for event in history
+    ), history
+
+    initial_len = len(bus.history_snapshot())
 
     saved_audio = recordings_dir / expected_saved_path
     saved_waveform = saved_audio.with_suffix(".opus.waveform.json")
@@ -551,12 +726,77 @@ async def test_recordings_save_and_unsave_moves_files(
     assert unsave_payload["unsaved"] == ["20250101/clip.opus"]
     assert unsave_payload["errors"] == []
 
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "unsaved"
+        for event in history
+    ), history
+
     assert audio_path.exists()
     assert waveform_path.exists()
     assert transcript_path.exists()
     assert not saved_audio.exists()
     assert not saved_waveform.exists()
     assert not saved_transcript.exists()
+
+
+@pytest.mark.asyncio
+async def test_recordings_event_bridge_replays_spooled_events(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    bridge = client.app[web_streamer.RECORDINGS_EVENT_BRIDGE_KEY]
+    spool_dir = bridge._spool_dir  # type: ignore[attr-defined]
+    spool_dir.mkdir(parents=True, exist_ok=True)
+
+    bus = dashboard_events.get_event_bus()
+    assert bus is not None
+    initial_len = len(bus.history_snapshot())
+
+    payload = {
+        "reason": "encode_completed",
+        "paths": ["20250101/example.opus"],
+        "updated_at": time.time(),
+    }
+    record = {
+        "type": "recordings_changed",
+        "payload": payload,
+        "timestamp": time.time(),
+    }
+    identifier = f"{time.time():.6f}-{uuid.uuid4().hex}"
+    tmp_file = spool_dir / f".{identifier}.tmp"
+    final_file = spool_dir / f"{identifier}.json"
+    tmp_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    tmp_file.replace(final_file)
+
+    async def _wait_for_event() -> bool:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            history = bus.history_snapshot()[initial_len:]
+            if any(
+                event.get("type") == "recordings_changed"
+                and event.get("payload") == payload
+                for event in history
+            ):
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    assert await _wait_for_event()
 
 
 @pytest.mark.asyncio
@@ -664,6 +904,25 @@ def test_normalize_adaptive_rms_payload_voiced_hold_bounds():
 
     assert any("voiced_hold_sec" in message for message in errors)
     assert normalized["voiced_hold_sec"] == web_streamer._adaptive_rms_defaults()["voiced_hold_sec"]
+
+
+def test_normalize_adaptive_rms_payload_allows_missing_min_thresh():
+    payload = _adaptive_payload_with()
+    payload.pop("min_thresh")
+
+    normalized, errors = web_streamer._normalize_adaptive_rms_payload(payload)
+
+    assert not errors
+    assert normalized["min_thresh"] == web_streamer._adaptive_rms_defaults()["min_thresh"]
+
+
+def test_normalize_adaptive_rms_payload_allows_blank_min_thresh():
+    normalized, errors = web_streamer._normalize_adaptive_rms_payload(
+        _adaptive_payload_with(min_thresh="   ")
+    )
+
+    assert not errors
+    assert normalized["min_thresh"] == web_streamer._adaptive_rms_defaults()["min_thresh"]
 
 
 def test_resolve_web_server_runtime_http_defaults():
@@ -793,6 +1052,9 @@ async def test_web_server_update_triggers_streamer_restart(monkeypatch, aiohttp_
 
     client = await aiohttp_client(web_streamer.build_app())
 
+    bus = dashboard_events.get_event_bus()
+    initial_len = len(bus.history_snapshot())
+
     response = await client.post(
         "/api/config/web-server",
         json={
@@ -815,6 +1077,13 @@ async def test_web_server_update_triggers_streamer_restart(monkeypatch, aiohttp_
     assert recorded.get("restart_units") == ["web-streamer.service"]
     restart_units = [entry.get("unit") for entry in payload.get("restart_results", [])]
     assert "web-streamer.service" in restart_units
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "config_updated"
+        and (event.get("payload") or {}).get("section") == "web_server"
+        for event in history
+    ), history
 
 
 @pytest.mark.asyncio
@@ -988,6 +1257,11 @@ async def test_recordings_delete_moves_raw_audio_to_recycle_bin(
     entry_raw_path = entry_dir / raw_path.name
     assert entry_raw_path.exists()
 
+    bus = dashboard_events.get_event_bus()
+    assert bus is not None
+
+    initial_len = len(bus.history_snapshot())
+
     purge_response = await client.post(
         "/api/recycle-bin/purge",
         json={"items": [entry_dir.name]},
@@ -998,6 +1272,14 @@ async def test_recordings_delete_moves_raw_audio_to_recycle_bin(
     assert purge_payload["errors"] == []
     assert not entry_dir.exists()
     assert not raw_path.exists()
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "recycle_purged"
+        and entry_dir.name in (event.get("payload") or {}).get("entries", [])
+        for event in history
+    ), history
 
 
 @pytest.mark.asyncio
@@ -1052,6 +1334,11 @@ async def test_recycle_bin_restore_reinstates_raw_audio(
     entry_raw_path = entry_dir / raw_path.name
     assert entry_raw_path.exists()
 
+    bus = dashboard_events.get_event_bus()
+    assert bus is not None
+
+    initial_len = len(bus.history_snapshot())
+
     restore_response = await client.post(
         "/api/recycle-bin/restore",
         json={"items": [entry_dir.name]},
@@ -1065,6 +1352,14 @@ async def test_recycle_bin_restore_reinstates_raw_audio(
     assert waveform_path.exists()
     assert raw_path.exists()
     assert not entry_dir.exists()
+
+    history = bus.history_snapshot()[initial_len:]
+    assert any(
+        event.get("type") == "recordings_changed"
+        and (event.get("payload") or {}).get("reason") == "restored"
+        and "sample.opus" in (event.get("payload") or {}).get("paths", [])
+        for event in history
+    ), history
 
 
 @pytest.mark.asyncio

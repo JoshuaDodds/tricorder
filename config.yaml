@@ -226,7 +226,13 @@ adaptive_rms:
   # segmenter.rms_threshold is used.
   enabled: false
 
-  # Minimum normalized RMS threshold (0.0–1.0). For 16-bit PCM, 0.01 ≈ 328 linear RMS.
+  # Lowest RMS value the adaptive trigger can fall back to. Leave null to reuse
+  # segmenter.rms_threshold so the adaptive gate never dips below your manual setting.
+  # Example: 275 keeps the trigger above a quiet-room floor that still needs a buffer.
+  min_rms: null
+
+  # Advanced: minimum normalized RMS threshold (0.0–1.0). Most installs can ignore this
+  # and rely on min_rms + segmenter.rms_threshold.
   min_thresh: 0.01
 
   # Optional hard ceiling in linear RMS units (same scale as segmenter.rms_threshold).
