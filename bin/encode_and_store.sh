@@ -127,7 +127,12 @@ discard_short_clip() {
   echo "[encode] Short recording handling complete for $target" | systemd-cat -t tricorder
   exit 0
 }
-day="$(date +%Y%m%d)"
+target_day="${ENCODER_TARGET_DAY:-}"
+if [[ -n "$target_day" && "$target_day" =~ ^[0-9]{8}$ ]]; then
+  day="$target_day"
+else
+  day="$(date +%Y%m%d)"
+fi
 recordings_root="${ENCODER_RECORDINGS_DIR:-/apps/tricorder/recordings}"
 recordings_root="${recordings_root%/}"
 outdir="${recordings_root}/${day}"
