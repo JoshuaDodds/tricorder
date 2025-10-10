@@ -317,47 +317,72 @@
           </div>
         </div>
       </header>
-      <section class="status-bar">
-        <div class="stat stat-counts">
-          <div class="stat-count-row">
-            <span class="label">Recordings</span>
-            <span class="value" id="recording-count">0</span>
+      <section id="metrics-panel" class="metrics-panel" data-expanded="false">
+        <div class="metrics-panel-header">
+          <h2 class="metrics-panel-title">Recorder metrics</h2>
+          <div
+            id="metrics-summary"
+            class="metrics-summary"
+            aria-live="polite"
+            role="list"
+            data-empty="true"
+          >
+            <span class="metrics-summary-placeholder">Metrics loading…</span>
           </div>
-          <div class="stat-count-row">
-            <span class="label">Selected</span>
-            <span class="value" id="selected-count">0</span>
-          </div>
+          <button
+            id="metrics-toggle"
+            class="ghost-button small metrics-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="metrics-panel-body"
+          >
+            Show metrics
+          </button>
         </div>
-        <div class="stat stat-resource stat-cpu">
-          <span class="label">CPU</span>
-          <div class="stat-resource-values">
-            <span class="value" id="cpu-usage-value">--</span>
-            <span class="stat-resource-detail" id="cpu-load-average">--</span>
-          </div>
-        </div>
-        <div class="stat stat-resource stat-memory">
-          <span class="label">Memory</span>
-          <div class="stat-resource-values">
-            <span class="value" id="memory-usage-value">--</span>
-            <span class="stat-resource-detail" id="memory-usage-detail">--</span>
-          </div>
-        </div>
-        <div class="stat storage-stat stat-storage">
-          <span class="label">Storage use</span>
-          <span class="value" id="storage-usage-text">--</span>
-          <div class="storage-progress">
-            <div class="storage-progress-bar" id="storage-progress-bar"></div>
-          </div>
-          <span class="hint" id="storage-hint">--</span>
-        </div>
-        <div class="stat stat-uptime">
-          <span class="label">Recorder uptime</span>
-          <span class="value" id="recorder-uptime-value">--</span>
-          <span class="hint" id="recorder-uptime-hint" hidden>--</span>
-        </div>
-        <div class="stat stat-last-updated">
-          <span class="label">Last updated</span>
-          <span class="value" id="last-updated">--</span>
+        <div id="metrics-panel-body" class="metrics-panel-body" hidden>
+          <section class="status-bar">
+            <div class="stat stat-counts">
+              <div class="stat-count-row">
+                <span class="label">Recordings</span>
+                <span class="value" id="recording-count">0</span>
+              </div>
+              <div class="stat-count-row">
+                <span class="label">Selected</span>
+                <span class="value" id="selected-count">0</span>
+              </div>
+            </div>
+            <div class="stat stat-resource stat-cpu">
+              <span class="label">CPU</span>
+              <div class="stat-resource-values">
+                <span class="value" id="cpu-usage-value">--</span>
+                <span class="stat-resource-detail" id="cpu-load-average">--</span>
+              </div>
+            </div>
+            <div class="stat stat-resource stat-memory">
+              <span class="label">Memory</span>
+              <div class="stat-resource-values">
+                <span class="value" id="memory-usage-value">--</span>
+                <span class="stat-resource-detail" id="memory-usage-detail">--</span>
+              </div>
+            </div>
+            <div class="stat storage-stat stat-storage">
+              <span class="label">Storage use</span>
+              <span class="value" id="storage-usage-text">--</span>
+              <div class="storage-progress">
+                <div class="storage-progress-bar" id="storage-progress-bar"></div>
+              </div>
+              <span class="hint" id="storage-hint">--</span>
+            </div>
+            <div class="stat stat-uptime">
+              <span class="label">Recorder uptime</span>
+              <span class="value" id="recorder-uptime-value">--</span>
+              <span class="hint" id="recorder-uptime-hint" hidden>--</span>
+            </div>
+            <div class="stat stat-last-updated">
+              <span class="label">Last updated</span>
+              <span class="value" id="last-updated">--</span>
+            </div>
+          </section>
         </div>
       </section>
       <section
