@@ -943,6 +943,68 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     assert str(wav_path) in report.removed_wavs
 
 
+def test_encode_completion_emits_recordings_changed(monkeypatch, tmp_path):
+    rec_dir = tmp_path / "recordings"
+    rec_dir.mkdir()
+    day_dir = rec_dir / "20240102"
+    day_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", segmenter.EncodingStatus())
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def fake_publish(event_type, payload):
+        events.append((event_type, payload))
+
+    monkeypatch.setattr(segmenter.dashboard_events, "publish", fake_publish)
+
+    job_id = segmenter.ENCODING_STATUS.enqueue("20240102_Both_RMS-321_1", source="live")
+    final_path = day_dir / "20240102_Both_RMS-321_1.opus"
+
+    segmenter._schedule_recordings_refresh(
+        job_id,
+        final_path=str(final_path),
+        base_name="20240102_Both_RMS-321_1",
+        day="20240102",
+        manual=False,
+        source="live",
+    )
+
+    assert events == []
+
+    segmenter.ENCODING_STATUS.mark_started(job_id, "20240102_Both_RMS-321_1")
+
+    assert events
+    first_type, first_payload = events[0]
+    assert first_type == "recordings_changed"
+    assert first_payload.get("reason") == "encode_started"
+    assert first_payload.get("base_name") == "20240102_Both_RMS-321_1"
+
+    final_path.write_bytes(b"opus")
+
+    segmenter.ENCODING_STATUS.mark_finished(job_id)
+
+    assert any(
+        event_type == "recordings_changed"
+        and payload.get("reason") == "encode_completed"
+        and payload.get("paths") == ["20240102/20240102_Both_RMS-321_1.opus"]
+        for event_type, payload in events
+    )
+
+
+def test_start_callback_runs_when_job_already_active():
+    status = segmenter.EncodingStatus()
+    job_id = status.enqueue("demo", source="test")
+    status.mark_started(job_id, "demo")
+
+    invoked: list[str] = []
+
+    status.register_start_callback(job_id, lambda: invoked.append("called"))
+
+    assert invoked == ["called"]
+
+
 def test_event_base_name_uses_prepad(monkeypatch, tmp_path):
     monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
     monkeypatch.setattr(segmenter, "NOTIFIER", None)
