@@ -155,8 +155,15 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
         file_b.write_bytes(b"b")
         file_c.write_bytes(b"c")
 
-        for item in (file_a, file_b, file_c):
-            _write_waveform_stub(item.with_suffix(item.suffix + ".waveform.json"))
+        _write_waveform_stub(file_a.with_suffix(file_a.suffix + ".waveform.json"))
+        _write_waveform_stub(
+            file_b.with_suffix(file_b.suffix + ".waveform.json"),
+            extra={
+                "motion_trigger_offset_seconds": 0.5,
+                "motion_started_epoch": 1_700_010_000.0,
+            },
+        )
+        _write_waveform_stub(file_c.with_suffix(file_c.suffix + ".waveform.json"))
 
         os.utime(file_a, (1_700_000_000, 1_700_000_000))
         os.utime(file_b, (1_700_010_000, 1_700_010_000))
@@ -176,6 +183,7 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
             assert "20240101" in payload["available_days"]
             assert "20240102" in payload["available_days"]
             assert payload.get("time_range") == ""
+            assert payload.get("motion_filter") == "all"
 
             resp = await client.get("/api/recordings?day=20240101&limit=10")
             data = await resp.json()
@@ -184,6 +192,19 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
             resp = await client.get("/api/recordings?search=beta")
             search = await resp.json()
             assert [item["name"] for item in search["items"]] == ["beta"]
+
+            resp = await client.get("/api/recordings?motion=motion&limit=10")
+            motion_only = await resp.json()
+            assert motion_only.get("motion_filter") == "motion"
+            assert [item["name"] for item in motion_only["items"]] == ["beta"]
+
+            resp = await client.get("/api/recordings?motion=no-motion&limit=10")
+            no_motion = await resp.json()
+            assert no_motion.get("motion_filter") == "no-motion"
+            assert [item["name"] for item in no_motion["items"]] == ["gamma", "alpha"]
+
+            resp = await client.get("/api/recordings?motion=invalid")
+            assert resp.status == 400
 
             monkeypatch.setattr(web_streamer.time, "time", lambda: 1_700_030_000)
             resp = await client.get("/api/recordings?time_range=1h&limit=10")

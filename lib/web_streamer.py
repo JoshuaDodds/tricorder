@@ -4633,6 +4633,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         search = query.get("search", "").strip().lower()
 
+        raw_motion_filter = query.get("motion", "").strip().lower()
+        if raw_motion_filter in ("", "all"):
+            motion_filter_value = "all"
+        elif raw_motion_filter == "motion":
+            motion_filter_value = "motion"
+        elif raw_motion_filter in {"no-motion", "no_motion", "none", "no"}:
+            motion_filter_value = "no-motion"
+        else:
+            raise web.HTTPBadRequest(
+                reason="Invalid 'motion' parameter; expected 'all', 'motion', or 'no-motion'"
+            )
+        require_motion_only = motion_filter_value == "motion"
+        require_no_motion_only = motion_filter_value == "no-motion"
+
         raw_time_range = query.get("time_range", "").strip().lower()
         time_range_value = ""
         cutoff_epoch: float | None = None
@@ -4677,6 +4691,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         filtered: list[dict[str, object]] = []
         total_size = 0
+        def _has_motion_metadata(candidate: dict[str, object]) -> bool:
+            motion_keys = (
+                "motion_trigger_offset_seconds",
+                "motion_release_offset_seconds",
+                "motion_started_epoch",
+                "motion_released_epoch",
+            )
+            for key in motion_keys:
+                value = candidate.get(key)
+                if isinstance(value, (int, float)) and math.isfinite(value):
+                    return True
+            return False
+
         for item in entries:
             name = str(item.get("name", ""))
             path = str(item.get("path", ""))
@@ -4696,6 +4723,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             if day_filter and day not in day_filter:
                 continue
             if ext_filter and ext.lower() not in ext_filter:
+                continue
+            has_motion_metadata: bool | None = None
+            if require_motion_only or require_no_motion_only:
+                has_motion_metadata = _has_motion_metadata(item)
+            if require_motion_only and not has_motion_metadata:
+                continue
+            if require_no_motion_only and has_motion_metadata:
                 continue
             if cutoff_epoch is not None:
                 record_epoch: float | None = None
@@ -4821,6 +4855,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             "offset": offset,
             "limit": limit,
             "time_range": time_range_value,
+            "motion_filter": motion_filter_value,
         }
 
     async def recordings_api(request: web.Request) -> web.Response:
