@@ -5046,16 +5046,6 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             payload["recycle_bin_total_bytes"] = 0
         payload["capture_status"] = _read_capture_status()
         payload["motion_state"] = _motion_state_snapshot()
-        clip_path = payload.get("path") if isinstance(payload, dict) else None
-        extra: dict[str, Any] = {}
-        if clip_path:
-            extra["path"] = clip_path
-        _emit_recordings_changed("clipped", **extra)
-        restored_path = payload.get("path") if isinstance(payload, dict) else None
-        extra: dict[str, Any] = {}
-        if restored_path:
-            extra["path"] = restored_path
-        _emit_recordings_changed("clip_restored", **extra)
         return web.json_response(payload)
 
     async def integrations_api(request: web.Request) -> web.Response:
@@ -6306,6 +6296,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             log.exception("Unexpected error while creating clip for %s", source_path)
             raise web.HTTPInternalServerError(reason="unable to create clip") from exc
 
+        clip_path = payload.get("path")
+        if isinstance(clip_path, str) and clip_path:
+            _emit_recordings_changed("clipped", paths=[clip_path])
+        else:
+            _emit_recordings_changed("clipped")
+
         return web.json_response(payload)
 
     async def recordings_clip_undo(request: web.Request) -> web.Response:
@@ -6330,6 +6326,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         except Exception as exc:  # pragma: no cover - unexpected failures
             log.exception("Unexpected error while restoring clip for token %s", token_value)
             raise web.HTTPInternalServerError(reason="unable to restore clip") from exc
+
+        clip_path = payload.get("path")
+        if isinstance(clip_path, str) and clip_path:
+            _emit_recordings_changed("clip_restored", paths=[clip_path])
+        else:
+            _emit_recordings_changed("clip_restored")
 
         return web.json_response(payload)
 
