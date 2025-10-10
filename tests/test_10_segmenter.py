@@ -1,6 +1,8 @@
 # tests/test_10_segmenter.py
 import builtins
+import collections
 import json
+import math
 import os
 import queue
 import re
@@ -11,14 +13,7 @@ import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
-import os
 import pytest
-
-import collections
-import os
-from datetime import datetime
-from pathlib import Path
-import wave
 
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
@@ -739,6 +734,63 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
         assert not first_obs.updated
     if second_obs:
         assert not second_obs.updated
+
+
+def test_adaptive_min_floor_defaults_to_static_threshold(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    static_threshold = 360
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=static_threshold,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.0,
+            "margin": 1.0,
+            "update_interval_sec": 0.1,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    expected_norm = static_threshold / segmenter.AdaptiveRmsController._NORM
+    assert math.isclose(ctrl.min_thresh_norm, expected_norm, rel_tol=1e-6)
+
+
+def test_adaptive_min_rms_floor_holds(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=800,
+        cfg_section={
+            "enabled": True,
+            "min_rms": 400,
+            "margin": 1.0,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    for _ in range(8):
+        ctrl.observe(200, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear >= 400
 
 
 def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):

@@ -1539,7 +1539,26 @@ class AdaptiveRmsController:
     ) -> None:
         section = cfg_section or {}
         self.enabled = bool(section.get("enabled", False))
-        self.min_thresh_norm = min(1.0, max(0.0, float(section.get("min_thresh", 0.01))))
+
+        min_candidates: list[float] = []
+        static_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
+        min_candidates.append(static_norm)
+
+        raw_min_thresh = section.get("min_thresh")
+        try:
+            if isinstance(raw_min_thresh, (int, float)) and not isinstance(raw_min_thresh, bool):
+                min_candidates.append(max(0.0, min(float(raw_min_thresh), 1.0)))
+        except (TypeError, ValueError):
+            pass
+
+        raw_min_rms = section.get("min_rms")
+        if isinstance(raw_min_rms, (int, float)) and not isinstance(raw_min_rms, bool):
+            if math.isfinite(float(raw_min_rms)):
+                candidate = int(round(float(raw_min_rms)))
+                if candidate > 0:
+                    min_candidates.append(min(1.0, candidate / self._NORM))
+
+        self.min_thresh_norm = min(1.0, max(min_candidates) if min_candidates else 0.0)
         try:
             raw_max = float(section.get("max_thresh", 1.0))
         except (TypeError, ValueError):
