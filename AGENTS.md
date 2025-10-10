@@ -51,6 +51,63 @@ Regarding time, we want actual duration between commits rounded to the minute an
 - Before your final commit, add Jira worklog entries that sum to the same total minutes as your scratch timer. If you discover a mismatch, update the worklog to the correct value and mention the adjustment in your closing Jira comment.
 - Prior to calling `make_pr`, re-read the time tracking log and confirm the total duration you plan to report matches the wall-clock elapsed time for the session (rounded to the nearest minute). If there is a discrepancy, correct the worklog and amend the commit message before proceeding.
 
+### Local dev backend + dashboard smoke checklist
+Follow this playbook whenever you need an end-to-end dashboard demo on a dev workstation:
+
+1. **Bootstrap the Python env**
+   - `python -m venv .venv && source .venv/bin/activate`
+   - `pip install --upgrade pip`
+   - `pip install -r requirements-dev.txt`
+   - Ensure `ffmpeg`, `alsa-utils`, and `sox` are installed on the host (`sudo apt install ffmpeg alsa-utils sox`).
+2. **Point runtime paths at a writable sandbox**
+   - `mkdir -p .dev_env/{config,recordings,tmp,dropbox}`
+   - `cp config.yaml .dev_env/config/dev-config.yaml`
+   - `export TRICORDER_CONFIG=$(pwd)/.dev_env/config/dev-config.yaml`
+   - `export REC_DIR=$(pwd)/.dev_env/recordings`
+   - `export TMP_DIR=$(pwd)/.dev_env/tmp`
+   - `export DROPBOX_DIR=$(pwd)/.dev_env/dropbox`
+   - `export TRICORDER_TMP=$TMP_DIR`
+   - For machines without a physical microphone, load ALSA’s loopback module (`sudo modprobe snd-aloop`) and set `export AUDIO_DEV=hw:Loopback,1,0` so `arecord` has a live device.
+3. **Launch the backend in dev mode**
+   - `DEV=1 python main.py`
+   - Wait for `[dev] Running live_stream_daemon` and confirm `http://localhost:8080/healthz` returns `ok`.
+4. **Seed a sample clip for the dashboard list**
+   - Run the snippet below in a separate shell after step 3 so the `/recordings` API has content:
+     ```bash
+     python - <<'PY'
+     import json, os, time
+     from pathlib import Path
+
+     rec_root = Path(os.environ["REC_DIR"])
+     day_dir = rec_root / time.strftime("%Y%m%d")
+     day_dir.mkdir(parents=True, exist_ok=True)
+
+     clip_path = day_dir / "dev-sample.opus"
+     clip_path.write_bytes(b"OpusHead\x01dev-sample")
+
+     waveform = clip_path.with_suffix(clip_path.suffix + ".waveform.json")
+     payload = {
+         "version": 1,
+         "channels": 1,
+         "sample_rate": 48000,
+         "frame_count": 48000,
+         "duration_seconds": 1.0,
+         "peak_scale": 32767,
+         "peaks": [0, 0],
+         "rms_values": [0],
+         "start_epoch": time.time() - 5,
+         "started_epoch": time.time() - 5,
+         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+     }
+     waveform.write_text(json.dumps(payload), encoding="utf-8")
+     print(f"Seeded {clip_path.relative_to(rec_root)}")
+     PY
+     ```
+   - Refresh `http://localhost:8080/dashboard` and confirm the “dev-sample” clip appears.
+5. **Front-end regression checks**
+   - With the backend still running, execute `pytest tests/test_25_web_streamer.py tests/test_37_web_dashboard.py` to cover the dashboard API + UI helpers.
+   - Optionally run `curl http://localhost:8080/api/recordings?limit=5` to sanity-check the API payload that powers the clip list.
+
 Before final commit with smart commit messages pushing:
 1. Run tests (export DEV=1 && pytest -q). All tests must pass.
 2. Empty Commit (Fallback)
