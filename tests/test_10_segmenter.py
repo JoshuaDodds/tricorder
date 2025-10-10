@@ -109,7 +109,15 @@ def test_voiced_frames_keep_active_event_alive(tmp_path, monkeypatch):
 
     captured_jobs: list[tuple[str, str]] = []
 
-    def fake_enqueue(tmp_wav_path: str, base_name: str, *, source: str, existing_opus_path: str | None, manual_recording: bool = False):
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str,
+        existing_opus_path: str | None,
+        manual_recording: bool = False,
+        target_day: str | None = None,
+    ):
         captured_jobs.append((tmp_wav_path, base_name))
         return len(captured_jobs)
 
