@@ -9,6 +9,7 @@ import collections
 import contextlib
 import subprocess
 import wave
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -314,6 +315,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
 TMP_DIR = cfg["paths"]["tmp_dir"]
 REC_DIR = cfg["paths"]["recordings_dir"]
 ENCODER = cfg["paths"]["encoder_script"]
+RECORDINGS_EVENT_SPOOL_DIRNAME = "recordings_events"
 _MIN_CLIP_RAW = cfg["segmenter"].get("min_clip_seconds", 0.0)
 try:
     MIN_CLIP_SECONDS = max(0.0, float(_MIN_CLIP_RAW))
@@ -1237,6 +1239,50 @@ _ENCODE_LOCK = threading.Lock()
 SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
 
 
+def _append_recordings_event(event_type: str, payload: dict[str, object]) -> None:
+    try:
+        base_dir = Path(TMP_DIR)
+    except Exception:
+        return
+
+    spool_dir = base_dir / RECORDINGS_EVENT_SPOOL_DIRNAME
+    try:
+        spool_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    timestamp = time.time()
+    identifier = f"{timestamp:.6f}-{uuid.uuid4().hex}"
+    final_path = spool_dir / f"{identifier}.json"
+    tmp_path = spool_dir / f".{identifier}.tmp"
+    record = {"type": event_type, "payload": payload, "timestamp": timestamp}
+
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+            handle.write("\n")
+        os.replace(tmp_path, final_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _publish_recordings_event(payload: dict[str, object]) -> None:
+    event_type = "recordings_changed"
+    event_id: str | None = None
+    try:
+        event_id = dashboard_events.publish(event_type, payload)
+    except Exception:
+        event_id = None
+
+    if event_id:
+        return
+
+    _append_recordings_event(event_type, payload)
+
+
 class EncodingStatus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1625,10 +1671,7 @@ def _schedule_recordings_refresh(
             if not exists:
                 payload["missing"] = True
 
-        try:
-            dashboard_events.publish("recordings_changed", payload)
-        except Exception:
-            pass
+        _publish_recordings_event(payload)
 
     ENCODING_STATUS.register_completion_callback(job_id, _publish_refresh)
 
@@ -3252,20 +3295,16 @@ class TimelineRecorder:
                     f"[segmenter] WARN: notification dispatch failed: {exc!r}",
                     flush=True,
                 )
-        try:
-            dashboard_events.publish(
-                "recordings_changed",
-                {
-                    "reason": "finalized",
-                    "base_name": final_base,
-                    "path": last_event_status.get("recording_path"),
-                    "manual": manual_event,
-                    "day": self.event_day,
-                    "updated_at": time.time(),
-                },
-            )
-        except Exception:
-            pass
+        _publish_recordings_event(
+            {
+                "reason": "finalized",
+                "base_name": final_base,
+                "path": last_event_status.get("recording_path"),
+                "manual": manual_event,
+                "day": self.event_day,
+                "updated_at": time.time(),
+            }
+        )
         self._cleanup_live_waveform()
         self._reset_event_state()
 
