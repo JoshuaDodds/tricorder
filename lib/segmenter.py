@@ -292,12 +292,20 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 else:
                     removed_artifacts.append(str(filtered))
 
-        _enqueue_encode_job(
+        job_id = _enqueue_encode_job(
             str(wav_path),
             final_base,
             source="recovery",
             existing_opus_path=None,
             manual_recording=False,
+        )
+        _schedule_recordings_refresh(
+            job_id,
+            final_path=str(final_path),
+            base_name=final_base,
+            day=day_dir.name if day_dir.name else None,
+            manual=False,
+            source="recovery",
         )
         requeued.append(final_base)
 
@@ -699,7 +707,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         day_dir.mkdir(parents=True, exist_ok=True)
         try:
             assert final_base is not None
-            _enqueue_encode_job(
+            job_id = _enqueue_encode_job(
                 str(wav_path),
                 final_base,
                 source="recovery",
@@ -712,6 +720,14 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 flush=True,
             )
             continue
+        _schedule_recordings_refresh(
+            job_id,
+            final_path=str(final_opus_path) if final_opus_path else None,
+            base_name=final_base,
+            day=day_dir.name if day_dir.name else None,
+            manual=False,
+            source="recovery",
+        )
         report.requeued.append(final_base)
         active_final_bases.add(final_base)
         _log_recovery(f"Requeued encode for {final_base}")
@@ -1229,6 +1245,7 @@ class EncodingStatus:
         self._active: dict[int, dict[str, object]] = {}
         self._next_id = 1
         self._listeners: list[Callable[[dict[str, object] | None], None]] = []
+        self._completion_callbacks: dict[int, list[Callable[[], None]]] = {}
 
     def register_listener(self, callback: Callable[[dict[str, object] | None], None]) -> None:
         with self._lock:
@@ -1301,6 +1318,24 @@ class EncodingStatus:
         self._notify()
         return job_id
 
+    def register_completion_callback(self, job_id: int, callback: Callable[[], None]) -> None:
+        if not callable(callback):
+            return
+        call_immediately = False
+        with self._cond:
+            active = job_id in self._active
+            pending = any(entry.get("id") == job_id for entry in self._pending)
+            if not active and not pending:
+                call_immediately = True
+            else:
+                callbacks = self._completion_callbacks.setdefault(job_id, [])
+                callbacks.append(callback)
+        if call_immediately:
+            try:
+                callback()
+            except Exception:
+                pass
+
     def mark_started(self, job_id: int, base_name: str) -> None:
         with self._cond:
             job = None
@@ -1326,10 +1361,19 @@ class EncodingStatus:
         self._notify()
 
     def mark_finished(self, job_id: int) -> None:
+        callbacks: list[Callable[[], None]] | None = None
         with self._cond:
             self._active.pop(job_id, None)
+            if job_id in self._completion_callbacks:
+                callbacks = self._completion_callbacks.pop(job_id, None)
             self._cond.notify_all()
         self._notify()
+        if callbacks:
+            for callback in list(callbacks):
+                try:
+                    callback()
+                except Exception:
+                    pass
 
     def wait_for_start(self, job_id: int, timeout: float | None = None) -> bool:
         deadline: float | None = None
@@ -1525,6 +1569,68 @@ def _enqueue_encode_job(
         ENCODE_QUEUE.put(payload)
     print(f"[segmenter] queued encode job for {base_name}", flush=True)
     return job_id
+
+
+def _relative_recordings_path(path: str | os.PathLike[str]) -> str | None:
+    try:
+        recordings_root = Path(REC_DIR)
+    except Exception:
+        return None
+
+    candidate = Path(path)
+    try:
+        resolved = recordings_root.resolve()
+    except Exception:
+        resolved = recordings_root
+
+    try:
+        return candidate.resolve().relative_to(resolved).as_posix()
+    except Exception:
+        try:
+            return candidate.relative_to(recordings_root).as_posix()
+        except Exception:
+            return None
+
+
+def _schedule_recordings_refresh(
+    job_id: int | None,
+    *,
+    final_path: str | None,
+    base_name: str,
+    day: str | None,
+    manual: bool,
+    source: str | None,
+) -> None:
+    if job_id is None:
+        return
+
+    def _publish_refresh() -> None:
+        payload: dict[str, object] = {
+            "reason": "encode_completed",
+            "base_name": base_name,
+            "manual": bool(manual),
+            "updated_at": time.time(),
+        }
+        if day:
+            payload["day"] = day
+        if source:
+            payload["source"] = source
+
+        if final_path:
+            path_obj = Path(final_path)
+            rel_path = _relative_recordings_path(path_obj)
+            exists = path_obj.exists()
+            if rel_path and exists:
+                payload["paths"] = [rel_path]
+            if not exists:
+                payload["missing"] = True
+
+        try:
+            dashboard_events.publish("recordings_changed", payload)
+        except Exception:
+            pass
+
+    ENCODING_STATUS.register_completion_callback(job_id, _publish_refresh)
 
 
 class AdaptiveRmsController:
@@ -3036,6 +3142,14 @@ class TimelineRecorder:
                 source=self._recording_source,
                 existing_opus_path=final_stream_path if reuse_mode else None,
                 manual_recording=manual_event,
+            )
+            _schedule_recordings_refresh(
+                job_id,
+                final_path=final_opus_path,
+                base_name=final_base,
+                day=day,
+                manual=manual_event,
+                source=self._recording_source,
             )
             if job_id is not None:
                 self._encode_jobs.append(job_id)
