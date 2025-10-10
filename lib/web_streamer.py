@@ -1751,11 +1751,18 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
         if min_rms_value is not None:
             normalized["min_rms"] = min_rms_value or None
 
-    min_thresh = _coerce_float(
-        payload.get("min_thresh"), "min_thresh", errors, min_value=0.0, max_value=1.0
-    )
-    if min_thresh is not None:
-        normalized["min_thresh"] = min_thresh
+    raw_min_thresh = payload.get("min_thresh")
+    if raw_min_thresh is None:
+        pass
+    elif isinstance(raw_min_thresh, str) and not raw_min_thresh.strip():
+        # Treat an empty string as "use the default" instead of raising a validation error.
+        normalized["min_thresh"] = _adaptive_rms_defaults()["min_thresh"]
+    else:
+        min_thresh = _coerce_float(
+            raw_min_thresh, "min_thresh", errors, min_value=0.0, max_value=1.0
+        )
+        if min_thresh is not None:
+            normalized["min_thresh"] = min_thresh
 
     raw_max_rms = payload.get("max_rms")
     if raw_max_rms is None:
