@@ -2595,6 +2595,8 @@ def _scan_recordings_worker(
                 error,
             )
             continue
+        if _path_is_partial(path):
+            continue
         suffix = path.suffix.lower()
         if allowed_ext and suffix not in allowed_ext:
             continue

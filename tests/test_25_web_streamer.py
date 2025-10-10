@@ -635,6 +635,28 @@ def test_saved_recordings_fallback_raw_path_ignores_prefix(tmp_path):
     )
 
 
+def test_scan_recordings_skips_partial_files(tmp_path):
+    recordings_dir = tmp_path / "recordings"
+    day_dir = recordings_dir / "20240108"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    partial_path = day_dir / "alpha.partial.opus"
+    partial_path.write_bytes(b"partial")
+    waveform_path = partial_path.with_suffix(partial_path.suffix + ".waveform.json")
+    waveform_path.write_text(json.dumps({"duration_seconds": 1.0}), encoding="utf-8")
+
+    entries, days, exts, total = web_streamer._scan_recordings_worker(
+        recordings_dir,
+        (".opus",),
+    )
+
+    assert entries == []
+    assert days == []
+    assert exts == []
+    assert total == 0
+
+
 @pytest.mark.asyncio
 async def test_recordings_save_and_unsave_moves_files(
     monkeypatch, tmp_path, aiohttp_client
