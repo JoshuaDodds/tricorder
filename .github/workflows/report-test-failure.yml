@@ -13,10 +13,86 @@ permissions:
   issues: write        # required to comment on PRs via issues API
 
 jobs:
-  report-failure:
+  report_failure_self_hosted:
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
-    runs-on: ubuntu-latest
+    name: Report Test Failures (self-hosted)
+    runs-on: [self-hosted, linux, arm64]
+    continue-on-error: true
 
+    steps:
+      - name: Download workflow logs
+        id: fetch-logs
+        run: |
+          curl -sSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/logs" \
+            -o logs.zip
+          echo "log_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}" >> $GITHUB_OUTPUT
+
+      - name: Extract logs
+        run: unzip -q logs.zip -d logs
+
+      - name: Collect snippets from failed jobs
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p snippets
+          SNIPPET_FILE=snippets/failure_snippet.txt
+          : > "$SNIPPET_FILE"
+
+          # Query jobs API for failed jobs
+          jobs_json=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/jobs)
+          failed_jobs=$(echo "$jobs_json" | jq -r '.jobs[] | select(.conclusion=="failure") | .name')
+
+          if [ -z "$failed_jobs" ]; then
+            echo "No failed jobs found in API."
+            exit 0
+          fi
+
+          for job in $failed_jobs; do
+            echo "Processing failed job: $job"
+
+            log_file=$(find logs -type f -name "*.txt" -print0 \
+              | xargs -0 grep -iIl "$job" \
+              | head -n 1)
+
+            if [ -n "$log_file" ]; then
+              echo -e "\n### Job: $job\n" >> "$SNIPPET_FILE"
+              tail -n 100 "$log_file" >> "$SNIPPET_FILE"
+            else
+              echo -e "\n### Job: $job\n(No matching log file found)" >> "$SNIPPET_FILE"
+            fi
+          done
+
+          echo "snippet<<EOF" >> $GITHUB_OUTPUT
+          cat "$SNIPPET_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOG_URL: ${{ steps.fetch-logs.outputs.log_url }}
+          SNIPPET: ${{ steps.collect.outputs.snippet }}
+        run: |
+          set -e
+          pr_numbers=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/pulls --jq '.[].number')
+
+          if [ -z "$pr_numbers" ]; then
+            echo "No PRs associated with this run. Skipping."
+            exit 0
+          fi
+
+          for pr in $pr_numbers; do
+            body="@codex we have a test failure\n\n<details><summary>Last 100 lines of failing job logs</summary>\n\n\`\`\`\n$SNIPPET\n\`\`\`\n</details>\n\n[View full logs]($LOG_URL)"
+            gh api repos/${{ github.repository }}/issues/$pr/comments -f body="$body"
+          done
+
+  report_failure_fallback:
+    name: Report Test Failures (fallback)
+    needs: report_failure_self_hosted
+    if: ${{ always() && needs.report_failure_self_hosted.result == 'failure' }}
+    runs-on: ubuntu-latest
     steps:
       - name: Download workflow logs
         id: fetch-logs

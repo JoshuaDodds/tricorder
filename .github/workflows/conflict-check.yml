@@ -20,12 +20,65 @@ permissions:
   pull-requests: write
 
 jobs:
-  check-conflicts:
-    runs-on: ubuntu-latest
+  check_conflicts_self_hosted:
+    name: Detect Merge Conflicts (self-hosted)
+    runs-on: [self-hosted, linux, arm64]
+    continue-on-error: true
     concurrency:
       group: conflict-check
       cancel-in-progress: false
 
+    steps:
+      - name: Checkout main (safe, trusted code only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Detect conflicts and comment on PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+
+          # List all open pull requests targeting main
+          pr_numbers=$(gh pr list --state open --base main --json number --jq '.[].number')
+          echo "Checking for conflicts in the following PRs: $pr_numbers"
+
+          for pr in $pr_numbers; do
+            echo "\nPR #$pr"
+            # Always fetch from pull ref so fork PRs work too
+            git fetch origin "pull/$pr/head:pr-$pr"
+            git switch -C "pr-$pr" "pr-$pr"
+            git fetch origin main
+
+            if git merge --no-commit --no-ff origin/main; then
+              echo "  No merge conflicts detected."
+              git merge --abort || true
+            else
+              echo "  Merge conflicts detected."
+              conflict_files=$(git diff --name-only --diff-filter=U)
+              formatted=""
+              while IFS= read -r file; do
+                formatted+="\n- ${file}"
+              done <<< "$conflict_files"
+
+              body="@codex please fix these conflicts before we can merge this or test it\n\n**Conflicting files:**${formatted}"
+              gh api repos/${{ github.repository }}/issues/$pr/comments -f body="$body"
+              git merge --abort || true
+            fi
+          done
+
+  check_conflicts_fallback:
+    name: Detect Merge Conflicts (fallback)
+    needs: check_conflicts_self_hosted
+    if: ${{ always() && needs.check_conflicts_self_hosted.result == 'failure' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: conflict-check
+      cancel-in-progress: false
     steps:
       - name: Checkout main (safe, trusted code only)
         uses: actions/checkout@v4

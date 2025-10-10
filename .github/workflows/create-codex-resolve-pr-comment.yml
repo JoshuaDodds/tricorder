@@ -13,9 +13,10 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  post-conflicts:
-    name: post-conflicts
-    runs-on: ubuntu-24.04
+  post_conflicts_self_hosted:
+    name: post-conflicts (self-hosted)
+    runs-on: [self-hosted, linux, arm64]
+    continue-on-error: true
     permissions:
       contents: read
       issues: write
@@ -344,3 +345,335 @@ jobs:
         run: |
           set -euo pipefail
           printf "%s\n" "$COMMENT_BODY"
+
+  post_conflicts_fallback:
+    name: post-conflicts (fallback)
+    needs: post_conflicts_self_hosted
+    if: ${{ always() && needs.post_conflicts_self_hosted.result == 'failure' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+
+    env:
+      GITHUB_API: https://api.github.com
+      REPO: ${{ github.event.inputs.repo != '' && github.event.inputs.repo || github.repository }}
+      BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.event.inputs.branch }}
+      REPO_PAT: ${{ secrets.REPO_PAT }}
+      MAX_INLINE: "30000"  # bytes of inline context when gists are unavailable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+
+      - name: Git identity
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Detect and dry-merge default branch
+        id: merge_try
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Repository: $REPO"
+          echo "Branch:     $BRANCH"
+
+          # Be explicit: fetch remote refs we may refer to
+          git fetch origin main || true
+          git fetch origin master || true
+
+          echo "::group::Refs"
+          git show-ref --head || true
+          git branch -a || true
+          echo "::endgroup::"
+
+          set -e
+          # Prefer origin/main, fallback to origin/master, fallback to FETCH_HEAD (from earlier fetch)
+          MERGE_TARGET=""
+          if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            MERGE_TARGET="origin/main"
+          elif git rev-parse --verify --quiet refs/remotes/origin/master >/dev/null; then
+            MERGE_TARGET="origin/master"
+          else
+            MERGE_TARGET="FETCH_HEAD"
+          fi
+
+          echo "merge_target=$MERGE_TARGET" >> "$GITHUB_OUTPUT"
+
+          # Do a no-commit merge to expose conflicts in the index without creating history
+          set +e
+          git merge --no-commit --no-ff "$MERGE_TARGET"
+          MERGE_CODE=$?
+          set -e
+
+          # Capture the index state without relying on pipeline exit codes so conflicts don't abort the script
+          conflict_index_output=$(git ls-files -u)
+
+          if [[ -n "$conflict_index_output" ]]; then
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+          elif [[ $MERGE_CODE -eq 0 ]]; then
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+            # Reset to clean state to avoid dirty workspace
+            git merge --abort || git reset --hard
+          else
+            echo "Merge failed with exit $MERGE_CODE and no indexed conflicts detected." >&2
+            exit "$MERGE_CODE"
+          fi
+
+      - name: Prepare conflict comment (and create gists)
+        if: steps.merge_try.outputs.conflicts == 'true'
+        id: prep_comment
+        shell: bash
+        env:
+          MAX_INLINE: ${{ env.MAX_INLINE }}
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          emit_inline_snippet() {
+            local file_label="$1"
+            local limit_bytes="$2"
+            local snippet_content="$3"
+            local truncated fence
+
+            if [[ -n "$limit_bytes" && "$limit_bytes" =~ ^[0-9]+$ && "$limit_bytes" -gt 0 ]]; then
+              truncated=$(printf '%s' "$snippet_content" | head -c "$limit_bytes")
+            else
+              truncated=$(printf '%s' "$snippet_content")
+            fi
+
+            if [[ "$truncated" == *\`\`\`* ]]; then
+              fence="~~~"
+            else
+              fence="\`\`\`"
+            fi
+
+            printf -- "- **%s** (conflict hunks inline)\n%s\n%s\n%s\n" \
+              "$file_label" "$fence" "$truncated" "$fence"
+          }
+
+          USE_GISTS=1
+          if [[ -z "${REPO_PAT:-}" ]]; then
+            echo "REPO_PAT is not set; falling back to inline conflict content." >&2
+            USE_GISTS=0
+          fi
+
+          CONFLICT_FILES=$(git ls-files -u | awk '{print $4}' | sort -u)
+          echo "Conflicted files: $CONFLICT_FILES" >&2
+
+          PREAMBLE_TEMPLATE=$(cat <<'TXT'
+          Automated context: attempted merging the repository default branch into BRANCH_PLACEHOLDER produced merge conflicts. Tagging @codex to resolve.
+
+          ---
+          **Resolution instructions for @codex (follow exactly):**
+
+          ```text
+          @codex You are resolving a Git merge conflict. I will provide the conflict hunks (with markers <<<<<<, =======, >>>>>>>) and limited surrounding context.
+
+          Your task:
+              Combine both conflicting changes so that no functionality is lost.
+              Prefer keeping new code from both branches unless it is clearly redundant or incompatible.
+              Preserve function signatures, imports, and surrounding context exactly unless they must change for the code to run.
+              Ensure the final code is syntactically correct and logically consistent.
+              Do NOT remove new functionality from either branch unless it is duplicated.
+              Resolve without adding comments, explanations, and be sure to remove conflict markers.
+
+          After producing the resolved file(s), overwrite the conflicted file(s), then run (from the repo root):
+              git add <file> && git commit -m "chore: AI-resolved merge conflicts (automated)" && git push origin HEAD
+
+          You should push using credentials that can push to this repository as the repository user.
+
+          END OF INSTRUCTIONS.
+          ```
+
+          ---
+
+          TXT
+          )
+
+          BRANCH_MARKDOWN=$(printf '\`%s\`' "$BRANCH")
+          PREAMBLE=${PREAMBLE_TEMPLATE//BRANCH_PLACEHOLDER/$BRANCH_MARKDOWN}
+
+
+          GIST_LINES=""
+          CONTEXT_LINES=5
+          for f in $CONFLICT_FILES; do
+            if [[ -f "$f" ]]; then
+              SNIPPET_CONTENT=$(python3 -c $'import pathlib\nimport sys\n\nFALLBACK_MESSAGE = "(Binary or non-text content; conflict hunks unavailable.)"\n\npath = pathlib.Path(sys.argv[1])\ncontext = int(sys.argv[2])\n\ntry:\n    raw_text = path.read_bytes().decode("utf-8", errors="replace")\nexcept Exception as exc:  # pragma: no cover - defensive\n    print(f"Failed to read conflicted file: {exc}", file=sys.stderr)\n    raw_text = ""\n\nif not raw_text:\n    raw_text = FALLBACK_MESSAGE\n\nlines = raw_text.splitlines()\nsnippets = []\nline_count = len(lines)\n\nidx = 0\nwhile idx < line_count:\n    if lines[idx].startswith("<<<<<<< "):\n        start = max(0, idx - context)\n        end = idx\n        while end < line_count and not lines[end].startswith(">>>>>>> "):\n            end += 1\n        if end >= line_count:\n            end = line_count - 1\n        snippet_lines = lines[start:end + 1]\n        header = f"Lines {start + 1}-{end + 1}:"\n        snippets.append((header, "\\n".join(snippet_lines)))\n        idx = end + 1\n    else:\n        idx += 1\n\nif snippets:\n    parts = []\n    for header, snippet in snippets:\n        parts.append(header)\n        parts.append(snippet)\n        parts.append("")\n    output = "\\n".join(parts).rstrip()\nelse:\n    output = raw_text if raw_text else FALLBACK_MESSAGE\n\nsys.stdout.write(output)\n' "$f" "$CONTEXT_LINES")
+
+              # Normalize Windows line endings if present
+              SNIPPET_CONTENT=$(printf '%s' "$SNIPPET_CONTENT" | sed 's/\r$//')
+
+              if [[ -z "$SNIPPET_CONTENT" ]]; then
+                SNIPPET_CONTENT="(Failed to extract conflict hunks; file was empty.)"
+              fi
+
+              if [[ "$USE_GISTS" -eq 1 ]]; then
+                # Create a private gist with the exact file content
+                GIST_NAME=${f//\//_}
+                GIST_PAYLOAD=$(jq -nc --arg name "$GIST_NAME" --arg content "$SNIPPET_CONTENT" \
+                  '{public:false, files:{($name):{content:$content}}}')
+
+                RESPONSE_FILE=$(mktemp)
+                set +e
+                CURL_HTTP_STATUS=$(curl -sS -w '%{http_code}' -o "$RESPONSE_FILE" \
+                  -H "Authorization: token $REPO_PAT" \
+                  -H "Content-Type: application/json" \
+                  -d "$GIST_PAYLOAD" https://api.github.com/gists)
+                CURL_EXIT=$?
+                set -e
+
+                CURL_HTTP_STATUS=$(printf '%s' "$CURL_HTTP_STATUS" | tr -dc '0-9')
+                GIST_RESPONSE=""
+                if [[ -f "$RESPONSE_FILE" ]]; then
+                  GIST_RESPONSE=$(cat "$RESPONSE_FILE")
+                fi
+                rm -f "$RESPONSE_FILE"
+
+                if [[ $CURL_EXIT -eq 0 && "$CURL_HTTP_STATUS" =~ ^2 ]]; then
+                  set +e
+                  GIST_URL=$(printf '%s' "$GIST_RESPONSE" | jq -r '.html_url // empty')
+                  JQ_STATUS=$?
+                  set -e
+                  if [[ $JQ_STATUS -eq 0 && -n "$GIST_URL" ]]; then
+                    GIST_LINES+="- **$f** (conflict hunks via gist): ${GIST_URL}\n"
+                    continue
+                  fi
+                  ERROR_MESSAGE=$(printf '%s' "$GIST_RESPONSE" | jq -r '.message // empty' 2>/dev/null || true)
+                  if [[ -n "$ERROR_MESSAGE" ]]; then
+                    echo "Failed to parse gist URL for $f (message: $ERROR_MESSAGE); falling back to inline snippet." >&2
+                  else
+                    echo "Failed to parse gist URL for $f; falling back to inline snippet." >&2
+                  fi
+                else
+                  if [[ -n "$GIST_RESPONSE" ]]; then
+                    GIST_ERRORS=$(printf '%s' "$GIST_RESPONSE" | jq -c '.errors // []' 2>/dev/null || printf '[]')
+                    echo "Failed to create gist for $f; falling back to inline snippet. errors=${GIST_ERRORS}" >&2
+                  fi
+
+                  ERROR_MESSAGE=""
+                  if [[ -n "$GIST_RESPONSE" ]]; then
+                    ERROR_MESSAGE=$(printf '%s' "$GIST_RESPONSE" | jq -r '.message // empty' 2>/dev/null || true)
+                  fi
+                  if [[ $CURL_EXIT -ne 0 ]]; then
+                    echo "Failed to create gist for $f (curl exit $CURL_EXIT); falling back to inline snippet." >&2
+                  elif [[ -n "$CURL_HTTP_STATUS" ]]; then
+                    if [[ -n "$ERROR_MESSAGE" ]]; then
+                      echo "Failed to create gist for $f (HTTP $CURL_HTTP_STATUS): $ERROR_MESSAGE; falling back to inline snippet." >&2
+                    else
+                      echo "Failed to create gist for $f (HTTP $CURL_HTTP_STATUS); falling back to inline snippet." >&2
+                    fi
+
+                  else
+                    echo "Failed to create gist for $f; falling back to inline snippet." >&2
+                  fi
+                fi
+              fi
+
+              GIST_LINES+="$(emit_inline_snippet "$f" "$MAX_INLINE" "$SNIPPET_CONTENT")"
+            else
+              GIST_LINES+="- **$f**: (file missing in working tree)\n"
+            fi
+          done
+
+          COMMENT_BODY="${PREAMBLE}**Conflicted files:**\n${GIST_LINES}"
+
+          # Expose prepared body to later steps and logs
+          {
+            echo 'prepared_comment<<EOF'
+            echo "$COMMENT_BODY"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find PR number
+        if: steps.merge_try.outputs.conflicts == 'true'
+        id: find_pr
+        shell: bash
+        env:
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # If we're in a PR run, we already have the number
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "pr_number=${{ github.event.number }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # workflow_dispatch path: look up PR by head branch
+          OWNER="${REPO%%/*}"
+          AUTH_TOKEN="${REPO_PAT:-${GITHUB_TOKEN:-}}"
+          if [[ -z "$AUTH_TOKEN" ]]; then
+            echo "No token available to query pull requests." >&2
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR=$(curl -s -H "Authorization: token $AUTH_TOKEN" \
+                "$GITHUB_API/repos/$REPO/pulls?head=${OWNER}:${BRANCH}" | jq -r '.[0].number // empty')
+          if [[ -z "$PR" || "$PR" == "null" ]]; then
+            echo "No PR found for $OWNER:$BRANCH" >&2
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr_number=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment to PR
+        if: steps.merge_try.outputs.conflicts == 'true' && steps.find_pr.outputs.pr_number != ''
+        id: post_comment
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
+          ISSUE_NUMBER: ${{ steps.find_pr.outputs.pr_number }}
+          REPO_PAT: ${{ env.REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          payload_file=$(mktemp)
+          response_file=$(mktemp)
+          trap 'rm -f "$payload_file" "$response_file"' EXIT
+
+          jq -n --arg body "$COMMENT_BODY" '{body:$body}' >"$payload_file"
+
+          auth_token="${REPO_PAT:-${GITHUB_TOKEN:-}}"
+          if [[ -z "$auth_token" ]]; then
+            echo "No token available for posting PR comment; falling back to log output." >&2
+            echo "posted=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          status=$(curl -sS -w '%{http_code}' -o "$response_file" -X POST \
+            -H "Authorization: token ${auth_token}" \
+            -H "Accept: application/vnd.github+json" \
+            -d @"$payload_file" "${GITHUB_API}/repos/${REPO}/issues/${ISSUE_NUMBER}/comments")
+
+          if [[ "$status" == "201" ]]; then
+            echo "Posted merge-conflict instructions comment to PR #${ISSUE_NUMBER} (status $status)."
+            echo "posted=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Failed to post PR comment (status $status). Response body:" >&2
+          cat "$response_file" >&2
+          echo "posted=false" >>"$GITHUB_OUTPUT"
+
+          if [[ "$status" == "403" ]]; then
+            echo "Comment permissions denied; will emit instructions to logs instead." >&2
+            exit 0
+          fi
+
+          exit 1
+
+      - name: Echo prepared comment (no PR found)
+        if: steps.merge_try.outputs.conflicts == 'true' && (steps.find_pr.outputs.pr_number == '' || steps.find_pr.outcome == 'failure' || steps.post_comment.outputs.posted != 'true')
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ steps.prep_comment.outputs.prepared_comment }}
+        run: |
+          set -euo pipefail
+          printf "%s\n" "$COMMENT_BODY"
+
