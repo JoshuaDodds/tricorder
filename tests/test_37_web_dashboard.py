@@ -2702,6 +2702,78 @@ def test_recording_indicator_motion_uses_snapshot_flag_immediately():
     assert result["state"] == "active"
 
 
+def test_resolve_next_motion_state_sequence_handling():
+    script = textwrap.dedent(
+        """
+        const live = { motion_active: true, sequence: 5 };
+        const stale = { motion_active: false, sequence: 4 };
+        const fresher = { motion_active: false, sequence: 6 };
+        const keepConnected = sandbox.resolveNextMotionState(stale, live, true);
+        const adoptConnected = sandbox.resolveNextMotionState(fresher, live, true);
+        const adoptDisconnected = sandbox.resolveNextMotionState(stale, live, false);
+        const keepMissing = sandbox.resolveNextMotionState(null, live, true);
+        const clearDisconnected = sandbox.resolveNextMotionState(null, live, false);
+        return {
+          keepConnectedMotion: keepConnected.motion_active,
+          keepConnectedSameReference: keepConnected === live,
+          adoptConnectedMotion: adoptConnected.motion_active,
+          adoptConnectedSequence: adoptConnected.sequence,
+          adoptDisconnectedMotion: adoptDisconnected.motion_active,
+          clearDisconnected: clearDisconnected === null,
+          keepMissingReference: keepMissing === live,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["keepConnectedMotion"] is True
+    assert result["keepConnectedSameReference"] is True
+    assert result["adoptConnectedMotion"] is False
+    assert result["adoptConnectedSequence"] == 6
+    assert result["adoptDisconnectedMotion"] is False
+    assert result["clearDisconnected"] is True
+    assert result["keepMissingReference"] is True
+
+
+def test_motion_indicator_ignores_stale_recordings_snapshot():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        const liveState = { motion_active: true, sequence: 5 };
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        state.motionState = liveState;
+        sandbox.setRecordingIndicatorStatus({ capturing: true, motion_active: true }, liveState);
+        const nextState = sandbox.resolveNextMotionState(
+          { motion_active: false, sequence: 4 },
+          state.motionState,
+          true
+        );
+        state.motionState = nextState;
+        sandbox.setRecordingIndicatorStatus(
+          { capturing: true, motion_active: false },
+          state.motionState
+        );
+        return {
+          motionBadgeHidden: motionBadge.hidden,
+          indicatorState: indicator.dataset.state,
+          liveMotion: state.motionState.motion_active,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["motionBadgeHidden"] is False
+    assert result["indicatorState"] == "active"
+    assert result["liveMotion"] is True
+
+
 def test_motion_trigger_detection_persists_for_recordings():
     script = textwrap.dedent(
         """
