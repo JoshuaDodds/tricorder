@@ -906,6 +906,25 @@ def test_normalize_adaptive_rms_payload_voiced_hold_bounds():
     assert normalized["voiced_hold_sec"] == web_streamer._adaptive_rms_defaults()["voiced_hold_sec"]
 
 
+def test_normalize_adaptive_rms_payload_allows_missing_min_thresh():
+    payload = _adaptive_payload_with()
+    payload.pop("min_thresh")
+
+    normalized, errors = web_streamer._normalize_adaptive_rms_payload(payload)
+
+    assert not errors
+    assert normalized["min_thresh"] == web_streamer._adaptive_rms_defaults()["min_thresh"]
+
+
+def test_normalize_adaptive_rms_payload_allows_blank_min_thresh():
+    normalized, errors = web_streamer._normalize_adaptive_rms_payload(
+        _adaptive_payload_with(min_thresh="   ")
+    )
+
+    assert not errors
+    assert normalized["min_thresh"] == web_streamer._adaptive_rms_defaults()["min_thresh"]
+
+
 def test_resolve_web_server_runtime_http_defaults():
     cfg = {"web_server": {"mode": "http", "listen_host": "127.0.0.1", "listen_port": 9090}}
     host, port, ssl_ctx, manager = web_streamer._resolve_web_server_runtime(cfg)

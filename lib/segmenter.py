@@ -299,6 +299,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
             source="recovery",
             existing_opus_path=None,
             manual_recording=False,
+            target_day=day_dir.name,
         )
         _schedule_recordings_refresh(
             job_id,
@@ -715,6 +716,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 source="recovery",
                 existing_opus_path=existing_opus_path,
                 manual_recording=False,
+                target_day=day_dir.name,
             )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
@@ -1518,7 +1520,12 @@ class _EncoderWorker(threading.Thread):
                 base_name: str
                 existing_opus: str | None = None
                 manual_recording = False
-                if isinstance(item, tuple) and len(item) >= 5:
+                target_day: str | None = None
+                if isinstance(item, tuple) and len(item) >= 6:
+                    job_id, wav_path, base_name, existing_opus, manual_flag, target_day = item[:6]
+                    manual_recording = bool(manual_flag)
+                    target_day = str(target_day) if target_day else None
+                elif isinstance(item, tuple) and len(item) >= 5:
                     job_id, wav_path, base_name, existing_opus, manual_flag = item[:5]
                     manual_recording = bool(manual_flag)
                 elif isinstance(item, tuple) and len(item) == 4:
@@ -1534,6 +1541,9 @@ class _EncoderWorker(threading.Thread):
                             existing_opus = item[2]
                         if len(item) >= 4:
                             manual_recording = bool(item[3])
+                        if len(item) >= 5:
+                            candidate_day = item[4]
+                            target_day = str(candidate_day) if candidate_day else None
                     else:
                         wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
@@ -1548,6 +1558,10 @@ class _EncoderWorker(threading.Thread):
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
                 env.setdefault("ENCODER_MIN_CLIP_SECONDS", str(MIN_CLIP_SECONDS))
+                if target_day:
+                    day_component = target_day.strip()
+                    if len(day_component) == 8 and day_component.isdigit():
+                        env["ENCODER_TARGET_DAY"] = day_component
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity
@@ -1597,11 +1611,18 @@ def _enqueue_encode_job(
     source: str = "live",
     existing_opus_path: str | None = None,
     manual_recording: bool = False,
+    target_day: str | None = None,
 ) -> int | None:
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
     job_id = ENCODING_STATUS.enqueue(base_name, source=source)
+    day_component: str | None = None
+    if target_day:
+        candidate = target_day.strip()
+        if len(candidate) == 8 and candidate.isdigit():
+            day_component = candidate
+
     payload = (
         job_id,
         tmp_wav_path,
@@ -1609,6 +1630,8 @@ def _enqueue_encode_job(
         existing_opus_path,
         bool(manual_recording),
     )
+    if day_component:
+        payload += (day_component,)
     try:
         ENCODE_QUEUE.put_nowait(payload)
     except queue.Full:
@@ -1689,7 +1712,26 @@ class AdaptiveRmsController:
     ) -> None:
         section = cfg_section or {}
         self.enabled = bool(section.get("enabled", False))
-        self.min_thresh_norm = min(1.0, max(0.0, float(section.get("min_thresh", 0.01))))
+
+        min_candidates: list[float] = []
+        static_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
+        min_candidates.append(static_norm)
+
+        raw_min_thresh = section.get("min_thresh")
+        try:
+            if isinstance(raw_min_thresh, (int, float)) and not isinstance(raw_min_thresh, bool):
+                min_candidates.append(max(0.0, min(float(raw_min_thresh), 1.0)))
+        except (TypeError, ValueError):
+            pass
+
+        raw_min_rms = section.get("min_rms")
+        if isinstance(raw_min_rms, (int, float)) and not isinstance(raw_min_rms, bool):
+            if math.isfinite(float(raw_min_rms)):
+                candidate = int(round(float(raw_min_rms)))
+                if candidate > 0:
+                    min_candidates.append(min(1.0, candidate / self._NORM))
+
+        self.min_thresh_norm = min(1.0, max(min_candidates) if min_candidates else 0.0)
         try:
             raw_max = float(section.get("max_thresh", 1.0))
         except (TypeError, ValueError):
@@ -3185,6 +3227,7 @@ class TimelineRecorder:
                 source=self._recording_source,
                 existing_opus_path=final_stream_path if reuse_mode else None,
                 manual_recording=manual_event,
+                target_day=day,
             )
             _schedule_recordings_refresh(
                 job_id,

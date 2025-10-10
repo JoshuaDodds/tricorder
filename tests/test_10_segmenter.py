@@ -1,6 +1,8 @@
 # tests/test_10_segmenter.py
 import builtins
+import collections
 import json
+import math
 import os
 import queue
 import re
@@ -11,14 +13,7 @@ import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
-import os
 import pytest
-
-import collections
-import os
-from datetime import datetime
-from pathlib import Path
-import wave
 
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
@@ -118,7 +113,7 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
     original_counters = segmenter.TimelineRecorder.event_counters
     segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
 
-    captured_jobs: list[tuple[str, str, str, str | None, bool]] = []
+    captured_jobs: list[tuple[str, str, str, str | None, bool, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -127,8 +122,9 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
         source: str,
         existing_opus_path: str | None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
-        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
+        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(captured_jobs)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -203,8 +199,10 @@ def test_manual_record_toggle_updates_status_and_encode(tmp_path, monkeypatch):
         source: str,
         existing_opus_path: str | None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
         manual_flags.append(manual_recording)
+        assert target_day is not None
         return len(manual_flags)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -540,11 +538,13 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
         source: str,
         existing_opus_path: str | None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
         captured_job["base"] = base_name
         captured_job["existing"] = existing_opus_path
         captured_job["source"] = source
         captured_job["manual"] = manual_recording
+        captured_job["target_day"] = target_day
         return 42
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -567,6 +567,7 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     assert Path(existing_path).exists()
     assert existing_path.endswith(segmenter.STREAMING_EXTENSION)
     assert Path(existing_path).parent == rec_dir / "20240102"
+    assert captured_job.get("target_day") == "20240102"
     waveform_path = Path(f"{existing_path}.waveform.json")
     assert waveform_path.exists()
     payload = json.loads(waveform_path.read_text(encoding="utf-8"))
@@ -741,6 +742,63 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
         assert not second_obs.updated
 
 
+def test_adaptive_min_floor_defaults_to_static_threshold(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    static_threshold = 360
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=static_threshold,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.0,
+            "margin": 1.0,
+            "update_interval_sec": 0.1,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    expected_norm = static_threshold / segmenter.AdaptiveRmsController._NORM
+    assert math.isclose(ctrl.min_thresh_norm, expected_norm, rel_tol=1e-6)
+
+
+def test_adaptive_min_rms_floor_holds(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=800,
+        cfg_section={
+            "enabled": True,
+            "min_rms": 400,
+            "margin": 1.0,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    for _ in range(8):
+        ctrl.observe(200, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear >= 400
+
+
 def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
     rec_dir = tmp_path / "rec"
@@ -800,11 +858,13 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
         source: str = "live",
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
         captured["tmp_wav_path"] = tmp_wav_path
         captured["base_name"] = base_name
         captured["existing_opus_path"] = existing_opus_path
         captured["manual_recording"] = manual_recording
+        captured["target_day"] = target_day
         return 123
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -812,6 +872,8 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
     rec = TimelineRecorder()
     for i in range(8):
         rec.ingest(make_frame(2000), i)
+    expected_day = rec.event_day
+    assert expected_day is not None
     rec.flush(20)
 
     assert encoder_instances, "expected streaming encoder to be initialised"
@@ -822,6 +884,7 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
 
     assert "existing_opus_path" in captured
     assert captured.get("existing_opus_path") is None, "fallback encode should not reuse streaming output"
+    assert captured.get("target_day") == expected_day
 
 
 def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
@@ -843,7 +906,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None, bool]] = []
+    calls: list[tuple[str, str, str, str | None, bool, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -852,8 +915,9 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
         source: str = "live",
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -878,7 +942,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     report = segmenter.perform_startup_recovery()
 
     assert calls, "expected encode job to be requeued"
-    tmp_arg, base_arg, source_arg, existing_arg, manual_flag = calls[0]
+    tmp_arg, base_arg, source_arg, existing_arg, manual_flag, target_day = calls[0]
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
@@ -887,6 +951,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     if not expected_extension.startswith("."):
         expected_extension = f".{expected_extension}"
     expected_opus = day_dir / f"{expected_final_base}{expected_extension}"
+    assert target_day == day_dir.name
     assert existing_arg == str(expected_opus)
 
     assert report.requeued == [expected_final_base]
@@ -908,7 +973,7 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None, bool]] = []
+    calls: list[tuple[str, str, str, str | None, bool, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -917,8 +982,9 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
         source: str = "live",
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -1021,6 +1087,56 @@ def test_event_base_name_uses_prepad(monkeypatch, tmp_path):
     assert rec.event_day == expected_day
 
     rec.flush(200)
+
+
+def test_encode_job_uses_event_day_when_crossing_midnight(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    real_strftime = segmenter.time.strftime
+    overrides = ["20241009", "20241010", "20241010"]
+
+    def fake_strftime(fmt: str, *args):
+        if fmt == "%Y%m%d" and overrides:
+            return overrides.pop(0)
+        return real_strftime(fmt, *args)
+
+    monkeypatch.setattr(segmenter.time, "strftime", fake_strftime)
+
+    captured: dict[str, str | None] = {}
+
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str = "live",
+        existing_opus_path: str | None = None,
+        manual_recording: bool = False,
+        target_day: str | None = None,
+    ) -> int | None:
+        captured["target_day"] = target_day
+        return 7
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+    rec.ingest(make_frame(4000), 0)
+    rec.flush(10)
+
+    assert captured.get("target_day") == "20241009"
 
 
 def test_adaptive_threshold_recovery(monkeypatch):

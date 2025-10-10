@@ -1094,6 +1094,7 @@ def _segmenter_defaults() -> dict[str, Any]:
 def _adaptive_rms_defaults() -> dict[str, Any]:
     return {
         "enabled": False,
+        "min_rms": None,
         "min_thresh": 0.01,
         "max_rms": None,
         "max_thresh": 1.0,
@@ -1321,6 +1322,14 @@ def _canonical_adaptive_rms_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         enabled = raw.get("enabled")
         if isinstance(enabled, bool):
             result["enabled"] = enabled
+
+        min_rms = raw.get("min_rms")
+        if isinstance(min_rms, (int, float)) and not isinstance(min_rms, bool):
+            if math.isfinite(float(min_rms)):
+                candidate = int(round(float(min_rms)))
+                result["min_rms"] = candidate if candidate > 0 else None
+        elif min_rms is None:
+            result["min_rms"] = None
 
         max_rms = raw.get("max_rms")
         if isinstance(max_rms, (int, float)) and not isinstance(max_rms, bool):
@@ -1918,11 +1927,34 @@ def _normalize_adaptive_rms_payload(payload: Any) -> tuple[dict[str, Any], list[
 
     normalized["enabled"] = _bool_from_any(payload.get("enabled"))
 
-    min_thresh = _coerce_float(
-        payload.get("min_thresh"), "min_thresh", errors, min_value=0.0, max_value=1.0
-    )
-    if min_thresh is not None:
-        normalized["min_thresh"] = min_thresh
+    raw_min_rms = payload.get("min_rms")
+    if raw_min_rms is None:
+        normalized["min_rms"] = None
+    elif isinstance(raw_min_rms, str) and not raw_min_rms.strip():
+        normalized["min_rms"] = None
+    else:
+        min_rms_value = _coerce_int(
+            raw_min_rms,
+            "min_rms",
+            errors,
+            min_value=0,
+            max_value=32767,
+        )
+        if min_rms_value is not None:
+            normalized["min_rms"] = min_rms_value or None
+
+    raw_min_thresh = payload.get("min_thresh")
+    if raw_min_thresh is None:
+        pass
+    elif isinstance(raw_min_thresh, str) and not raw_min_thresh.strip():
+        # Treat an empty string as "use the default" instead of raising a validation error.
+        normalized["min_thresh"] = _adaptive_rms_defaults()["min_thresh"]
+    else:
+        min_thresh = _coerce_float(
+            raw_min_thresh, "min_thresh", errors, min_value=0.0, max_value=1.0
+        )
+        if min_thresh is not None:
+            normalized["min_thresh"] = min_thresh
 
     raw_max_rms = payload.get("max_rms")
     if raw_max_rms is None:
