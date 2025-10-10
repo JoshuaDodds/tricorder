@@ -3564,6 +3564,30 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     dashboard_events.install_event_bus(event_bus)
     app[EVENT_BUS_KEY] = event_bus
 
+    def _publish_dashboard_event(event_type: str, payload: dict[str, Any]) -> None:
+        try:
+            dashboard_events.publish(event_type, payload)
+        except Exception:  # pragma: no cover - defensive logging
+            logging.getLogger("web_streamer").debug(
+                "Failed to publish dashboard event %s", event_type, exc_info=True
+            )
+
+    def _emit_config_updated(section: str) -> None:
+        if not section:
+            return
+        _publish_dashboard_event(
+            "config_updated",
+            {"section": section, "updated_at": time.time()},
+        )
+
+    def _emit_recordings_changed(reason: str, **extra: Any) -> None:
+        if not reason:
+            return
+        payload: dict[str, Any] = {"reason": reason, "updated_at": time.time()}
+        if extra:
+            payload.update(extra)
+        _publish_dashboard_event("recordings_changed", payload)
+
     async def _init_event_bus(_: web.Application) -> None:
         event_bus.set_loop(asyncio.get_running_loop())
 
@@ -3571,6 +3595,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         dashboard_events.uninstall_event_bus(event_bus)
 
     app.on_startup.append(_init_event_bus)
+
+    async def _start_health_broadcaster(_: web.Application) -> None:
+        await health_broadcaster.start()
+
+    async def _stop_health_broadcaster(_: web.Application) -> None:
+        await health_broadcaster.stop()
+
+    app.on_startup.append(_start_health_broadcaster)
 
 
     default_tmp = cfg.get("paths", {}).get("tmp_dir", "/apps/tricorder/tmp")
@@ -4751,6 +4783,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
     app.on_startup.append(_start_capture_status_bridge)
     app.on_cleanup.append(_stop_capture_status_bridge)
+    app.on_cleanup.append(_stop_health_broadcaster)
     app.on_cleanup.append(_cleanup_event_bus)
 
     def _motion_state_snapshot(*, include_events: bool = True) -> dict[str, object]:
@@ -5013,6 +5046,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             payload["recycle_bin_total_bytes"] = 0
         payload["capture_status"] = _read_capture_status()
         payload["motion_state"] = _motion_state_snapshot()
+        clip_path = payload.get("path") if isinstance(payload, dict) else None
+        extra: dict[str, Any] = {}
+        if clip_path:
+            extra["path"] = clip_path
+        _emit_recordings_changed("clipped", **extra)
+        restored_path = payload.get("path") if isinstance(payload, dict) else None
+        extra: dict[str, Any] = {}
+        if restored_path:
+            extra["path"] = restored_path
+        _emit_recordings_changed("clip_restored", **extra)
         return web.json_response(payload)
 
     async def integrations_api(request: web.Request) -> web.Response:
@@ -5276,6 +5319,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     break
                 break
 
+        if deleted:
+            _emit_recordings_changed(
+                "deleted",
+                paths=deleted,
+                count=len(deleted),
+            )
         return web.json_response({"deleted": deleted, "errors": errors})
 
     async def recordings_save(request: web.Request) -> web.Response:
@@ -5408,6 +5457,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     break
                 break
 
+        if saved:
+            _emit_recordings_changed(
+                "saved",
+                paths=saved,
+                count=len(saved),
+            )
         return web.json_response({"saved": saved, "errors": errors})
 
     async def recordings_unsave(request: web.Request) -> web.Response:
@@ -5538,6 +5593,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     break
                 break
 
+        if unsaved:
+            _emit_recordings_changed(
+                "unsaved",
+                paths=unsaved,
+                count=len(unsaved),
+            )
         return web.json_response({"unsaved": unsaved, "errors": errors})
 
     async def recycle_bin_list(request: web.Request) -> web.Response:
@@ -6075,6 +6136,13 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             except Exception:
                 pass
 
+        _emit_recordings_changed(
+            "renamed",
+            old_path=old_rel,
+            new_path=new_rel,
+            name=name_payload,
+            extension=extension_payload,
+        )
         return web.json_response(
             {
                 "old_path": old_rel,
@@ -6416,6 +6484,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         refreshed = reload_cfg()
         payload = _archival_response_payload(refreshed)
+        _emit_config_updated("archival")
         return web.json_response(payload)
 
     recorder_unit = VOICE_RECORDER_SERVICE_UNIT
@@ -6479,6 +6548,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload = _config_section_payload(section, cfg_snapshot, canonical_fn)
         restart_units = section_restart_units.get(section, [])
         payload["restart_results"] = await _restart_units(restart_units)
+        _emit_config_updated(section)
         return web.json_response(payload)
 
     async def config_audio_get(request: web.Request) -> web.Response:
@@ -6602,6 +6672,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             canonical_fn=_canonical_web_server_settings,
         )
 
+    SYSTEM_HEALTH_EVENT_INTERVAL_SECONDS = 3.0
+    SYSTEM_HEALTH_EVENT_MAX_STALE_SECONDS = 30.0
+
     cpu_last_sample: tuple[int, int] | None = None
     cpu_last_percent: float | None = None
     cpu_core_count = max(os.cpu_count() or 1, 1)
@@ -6679,7 +6752,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             "percent": percent,
         }
 
-    async def system_health(_: web.Request) -> web.Response:
+    def _collect_system_health_snapshot() -> dict[str, Any]:
         nonlocal cpu_last_sample, cpu_last_percent
 
         state = sd_card_health.load_state()
@@ -6744,6 +6817,102 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             },
         }
 
+        return payload
+
+    def _system_health_fingerprint(snapshot: dict[str, Any]) -> tuple[Any, ...]:
+        resources = snapshot.get("resources") or {}
+        cpu = resources.get("cpu") or {}
+        memory = resources.get("memory") or {}
+        sd_state = snapshot.get("sd_card") or {}
+        last_event = ""
+        sd_last_event = sd_state.get("last_event")
+        if isinstance(sd_last_event, dict):
+            last_event = str(sd_last_event.get("timestamp") or sd_last_event.get("message") or "")
+
+        def _round_percent(value: Any) -> float | None:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(numeric, 1)
+
+        return (
+            _round_percent(cpu.get("percent")),
+            _round_percent(memory.get("percent")),
+            bool(sd_state.get("warning_active")),
+            last_event,
+        )
+
+    class _SystemHealthBroadcaster:
+        def __init__(self, interval_seconds: float = SYSTEM_HEALTH_EVENT_INTERVAL_SECONDS) -> None:
+            self._interval = max(0.5, float(interval_seconds))
+            self._task: asyncio.Task | None = None
+            self._last_fingerprint: tuple[Any, ...] | None = None
+            self._last_emit: float = 0.0
+
+        async def start(self) -> None:
+            if self._task is not None:
+                return
+            loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._run())
+
+        async def stop(self) -> None:
+            task = self._task
+            if task is None:
+                return
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            self._task = None
+
+        def note_snapshot(self, snapshot: dict[str, Any]) -> None:
+            fingerprint = _system_health_fingerprint(snapshot)
+            self._last_fingerprint = fingerprint
+            generated_at = snapshot.get("generated_at")
+            try:
+                self._last_emit = max(self._last_emit, float(generated_at))
+            except (TypeError, ValueError):
+                self._last_emit = time.time()
+
+        async def _run(self) -> None:
+            try:
+                while True:
+                    await asyncio.sleep(self._interval)
+                    snapshot = await asyncio.to_thread(_collect_system_health_snapshot)
+                    if not isinstance(snapshot, dict):
+                        continue
+                    self._maybe_emit(snapshot)
+            except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                raise
+
+        def _maybe_emit(self, snapshot: dict[str, Any]) -> None:
+            fingerprint = _system_health_fingerprint(snapshot)
+            now = snapshot.get("generated_at")
+            try:
+                timestamp = float(now)
+            except (TypeError, ValueError):
+                timestamp = time.time()
+
+            should_emit = fingerprint != self._last_fingerprint
+            if not should_emit and (timestamp - self._last_emit) >= SYSTEM_HEALTH_EVENT_MAX_STALE_SECONDS:
+                should_emit = True
+
+            if not should_emit:
+                return
+
+            self._last_fingerprint = fingerprint
+            self._last_emit = timestamp
+            _publish_dashboard_event(
+                "system_health_updated",
+                {"updated_at": timestamp},
+            )
+
+    health_broadcaster = _SystemHealthBroadcaster()
+    app["system_health_broadcaster"] = health_broadcaster
+
+    async def system_health(_: web.Request) -> web.Response:
+        payload = _collect_system_health_snapshot()
+        health_broadcaster.note_snapshot(payload)
         return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
     async def dashboard_events_stream(request: web.Request) -> web.StreamResponse:
