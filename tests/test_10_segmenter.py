@@ -324,6 +324,8 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         event = status.get("event") or {}
         assert event.get("motion_active") is True
         assert event.get("motion_started_epoch") == 50.0
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is True
 
         store_motion_state(motion_state_path, motion_active=False, timestamp=75.0)
         rec._motion_watcher.force_refresh()
@@ -336,6 +338,8 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         last_event = cached.get("last_event") or {}
         assert last_event.get("motion_active") is False
         assert last_event.get("motion_started_epoch") == 50.0
+        cached_motion_state = cached.get("motion_state") or {}
+        assert cached_motion_state.get("motion_active") is False
     finally:
         rec.flush(3)
 
@@ -384,18 +388,27 @@ def test_motion_padding_delays_release(monkeypatch, tmp_path):
         deadline = getattr(rec, "_motion_release_deadline", None)
         assert deadline is not None
         assert deadline == pytest.approx(250.0, rel=0.001)
+        status = rec._status_cache or {}
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is False
 
         clock["now"] = 249.0
         rec._refresh_motion_state()
         assert rec._motion_forced_active is True
         remaining = rec._motion_status_extra().get("motion_padding_seconds_remaining")
         assert remaining is not None and remaining > 0
+        status = rec._status_cache or {}
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is False
 
         clock["now"] = 252.5
         rec._refresh_motion_state()
         assert rec._motion_forced_active is False
         assert getattr(rec, "_motion_release_deadline", None) is None
         assert rec._motion_status_extra().get("motion_padding_seconds_remaining") == 0.0
+        status = rec._status_cache or {}
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is False
     finally:
         rec.flush(3)
 

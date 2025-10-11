@@ -2187,6 +2187,12 @@ class TimelineRecorder:
             "motion_active": bool(getattr(self, '_motion_forced_active', False)),
             "motion_sequence": int(sequence),
         }
+        if motion_state is not None:
+            snapshot = motion_state.to_payload(include_events=False)
+            snapshot.setdefault("motion_active", motion_state.active)
+            if "motion_active_since" not in snapshot:
+                snapshot["motion_active_since"] = None
+            payload["motion_state"] = snapshot
         since = getattr(self, '_motion_active_since', None)
         if payload["motion_active"] and since is not None:
             payload["motion_active_since"] = float(since)
