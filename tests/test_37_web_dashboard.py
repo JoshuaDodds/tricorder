@@ -2681,6 +2681,50 @@ def test_recording_indicator_motion_uses_snapshot_flag_immediately():
     assert result["state"] == "active"
 
 
+def test_indicator_uses_cached_motion_when_snapshot_missing():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        const cachedState = { motion_active: false, sequence: 7 };
+        state.motionState = cachedState;
+        sandbox.setRecordingIndicatorStatus(
+          { capturing: true, motion_state: cachedState },
+          cachedState
+        );
+        const hiddenWithSnapshot = motionBadge.hidden === true;
+        const preservedState = sandbox.resolveNextMotionState(null, state.motionState, true);
+        state.motionState = preservedState;
+        sandbox.setRecordingIndicatorStatus(
+          { capturing: true, event: { motion_trigger_offset_seconds: 0.25 } },
+          state.motionState
+        );
+        const hiddenAfterFallback = motionBadge.hidden === true;
+        const storedMotion = state.motionState && state.motionState.motion_active;
+        return {
+          hiddenWithSnapshot,
+          hiddenAfterFallback,
+          storedMotion,
+          indicatorState: indicator.dataset.state,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["hiddenWithSnapshot"] is True
+    assert result["hiddenAfterFallback"] is True
+    assert result["storedMotion"] is False
+    assert result["indicatorState"] == "active"
+
+
 def test_resolve_next_motion_state_sequence_handling():
     script = textwrap.dedent(
         """
