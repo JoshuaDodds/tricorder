@@ -2725,6 +2725,59 @@ def test_indicator_uses_cached_motion_when_snapshot_missing():
     assert result["indicatorState"] == "active"
 
 
+def test_capture_status_merges_motion_padding_updates_without_sequence_bump():
+    script = textwrap.dedent(
+        """
+        sandbox.__setEventStreamConnectedForTests(true);
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        sandbox.requestRecordingsRefresh = () => {};
+        sandbox.renderRecords = () => {};
+        sandbox.updateSelectionUI = () => {};
+        sandbox.applyNowPlayingHighlight = () => {};
+        sandbox.syncPlayerPlacement = () => {};
+        sandbox.setRecordingIndicatorStatus = () => {};
+        sandbox.updateRmsIndicator = () => {};
+        sandbox.updateRecordingMeta = () => {};
+        sandbox.updateEncodingStatus = () => {};
+        sandbox.updateSplitEventButton = () => {};
+        sandbox.updateManualRecordButton = () => {};
+        state.motionState = {
+          sequence: 27,
+          motion_active: true,
+          motion_padding_seconds_remaining: 14,
+          motion_padding_deadline_epoch: 1_690_000_000,
+        };
+        const previous = state.motionState;
+        sandbox.applyCaptureStatusPush({
+          capturing: true,
+          motion_active: true,
+          motion_sequence: 27,
+          motion_padding_seconds_remaining: 9,
+          motion_padding_deadline_epoch: 1_690_000_030,
+        });
+        const updated = state.motionState;
+        const response = {
+          reusedReference: updated === previous,
+          paddingRemaining: updated.motion_padding_seconds_remaining,
+          paddingDeadline: updated.motion_padding_deadline_epoch,
+        };
+        sandbox.__setEventStreamConnectedForTests(false);
+        return response;
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["reusedReference"] is False
+    assert result["paddingRemaining"] == 9
+    assert result["paddingDeadline"] == 1_690_000_030
+
+
 def test_resolve_next_motion_state_sequence_handling():
     script = textwrap.dedent(
         """
