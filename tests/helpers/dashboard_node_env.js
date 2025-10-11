@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { URLSearchParams } = require("url");
 
 function createMockElement() {
   const element = {
@@ -162,6 +163,7 @@ function createWindowStub() {
 
   windowStub.window = windowStub;
   windowStub.document = document;
+  windowStub.URLSearchParams = URLSearchParams;
   return windowStub;
 }
 
@@ -209,6 +211,7 @@ function createSandbox() {
     setInterval,
     clearInterval,
   };
+  sandbox.URLSearchParams = URLSearchParams;
 
   vm.createContext(sandbox);
   return { sandbox, windowStub };
