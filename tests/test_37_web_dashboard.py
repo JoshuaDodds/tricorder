@@ -959,8 +959,10 @@ def test_system_health_reports_resources(dashboard_env):
 
             cpu = resources.get("cpu")
             memory = resources.get("memory")
+            temperature = resources.get("temperature")
             assert isinstance(cpu, dict)
             assert isinstance(memory, dict)
+            assert isinstance(temperature, dict)
 
             assert "percent" in cpu
             assert "load_1m" in cpu
@@ -998,6 +1000,21 @@ def test_system_health_reports_resources(dashboard_env):
             if memory_percent is not None:
                 assert isinstance(memory_percent, (int, float))
                 assert 0 <= memory_percent <= 100
+
+            assert "celsius" in temperature
+            assert "fahrenheit" in temperature
+            temp_c = temperature.get("celsius")
+            if temp_c is not None:
+                assert isinstance(temp_c, (int, float))
+                assert -100 <= temp_c <= 200
+            temp_f = temperature.get("fahrenheit")
+            if temp_f is not None:
+                assert isinstance(temp_f, (int, float))
+                assert -148 <= temp_f <= 392
+            sensor_name = temperature.get("sensor")
+            if sensor_name is not None:
+                assert isinstance(sensor_name, str)
+                assert sensor_name.strip() == sensor_name
         finally:
             await client.close()
             await server.close()
