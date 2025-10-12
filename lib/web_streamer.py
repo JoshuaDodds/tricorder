@@ -2907,6 +2907,9 @@ def _scan_recordings_worker(
                 "motion_release_offset_seconds": motion_release_offset,
                 "motion_started_epoch": motion_started_epoch,
                 "motion_released_epoch": motion_released_epoch,
+                "motion_segments": _normalize_motion_segments(
+                    waveform_meta.get("motion_segments") if waveform_meta else None
+                ),
                 "collection": collection_label,
             }
         )
@@ -2927,6 +2930,27 @@ def _is_safe_relative_path(value: str) -> bool:
     except Exception:
         return False
     return ".." not in parts
+
+
+def _normalize_motion_segments(
+    value: object,
+) -> list[dict[str, float | None]]:
+    if not isinstance(value, list):
+        return []
+    segments: list[dict[str, float | None]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        start_raw = entry.get("start")
+        if not isinstance(start_raw, (int, float)) or not math.isfinite(float(start_raw)):
+            continue
+        start_value = max(0.0, float(start_raw))
+        end_value = None
+        end_raw = entry.get("end")
+        if isinstance(end_raw, (int, float)) and math.isfinite(float(end_raw)):
+            end_value = max(start_value, float(end_raw))
+        segments.append({"start": start_value, "end": end_value})
+    return segments
 
 
 def _generate_recycle_entry_id(now: datetime | None = None) -> str:
@@ -3016,6 +3040,8 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     else:
         motion_released_epoch = None
 
+    motion_segments = _normalize_motion_segments(metadata.get("motion_segments"))
+
     waveform_name = metadata.get("waveform_name")
     if not isinstance(waveform_name, str):
         waveform_name = ""
@@ -3090,6 +3116,7 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "motion_release_offset_seconds": motion_release_offset,
         "motion_started_epoch": motion_started_epoch,
         "motion_released_epoch": motion_released_epoch,
+        "motion_segments": motion_segments,
     }
 
 
@@ -5322,6 +5349,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     if isinstance(entry.get("motion_released_epoch"), (int, float))
                     else None
                 ),
+                "motion_segments": _normalize_motion_segments(
+                    entry.get("motion_segments")
+                ),
                 "waveform_path": (
                     str(entry.get("waveform_path"))
                     if entry.get("waveform_path")
@@ -5596,6 +5626,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             motion_release_offset: float | None = None
             motion_started_epoch: float | None = None
             motion_released_epoch: float | None = None
+            motion_segments: list[dict[str, float | None]] = []
 
             if waveform_meta is not None:
                 raw_duration = waveform_meta.get("duration_seconds")
@@ -5625,6 +5656,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     float(raw_motion_released)
                 ):
                     motion_released_epoch = float(raw_motion_released)
+
+                motion_segments = _normalize_motion_segments(
+                    waveform_meta.get("motion_segments")
+                )
 
             start_epoch_value, started_at_value = _resolve_start_metadata(
                 rel_posix, resolved, stat_result, waveform_meta
@@ -5672,6 +5707,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     "motion_release_offset_seconds": motion_release_offset,
                     "motion_started_epoch": motion_started_epoch,
                     "motion_released_epoch": motion_released_epoch,
+                    "motion_segments": motion_segments,
                 }
                 with metadata_path.open("w", encoding="utf-8") as handle:
                     json.dump(metadata, handle)
@@ -6116,6 +6152,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                             float(data.get("motion_released_epoch"))
                             if isinstance(data.get("motion_released_epoch"), (int, float))
                             else None
+                        ),
+                        "motion_segments": _normalize_motion_segments(
+                            data.get("motion_segments")
                         ),
                         "restorable": restorable,
                         "waveform_available": bool(data.get("waveform_name")),
