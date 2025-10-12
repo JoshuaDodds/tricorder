@@ -3424,10 +3424,6 @@ body[data-theme="light"] .record-in-progress {
     order: 10;
   }
 
-  .status-bar .stat-last-updated {
-    order: 11;
-  }
-
   .card {
     padding: 1rem;
   }

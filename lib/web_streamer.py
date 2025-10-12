@@ -7090,6 +7090,71 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             "percent": percent,
         }
 
+    def _read_device_temperature() -> dict[str, float | str | None] | None:
+        def _iter_zone_paths() -> list[Path]:
+            seen: set[Path] = set()
+            zones: list[Path] = []
+            for base in (Path("/sys/class/thermal"), Path("/sys/devices/virtual/thermal")):
+                if not base.exists():
+                    continue
+                for temp_path in sorted(base.glob("thermal_zone*/temp")):
+                    if temp_path in seen:
+                        continue
+                    seen.add(temp_path)
+                    zones.append(temp_path)
+            return zones
+
+        best: dict[str, float | str | None] | None = None
+        fallback: dict[str, float | str | None] | None = None
+
+        for temp_path in _iter_zone_paths():
+            label: str | None = None
+            type_path = temp_path.with_name("type")
+            try:
+                raw_label = type_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                raw_label = ""
+            if raw_label:
+                label = raw_label
+
+            try:
+                raw_value = temp_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if not raw_value:
+                continue
+
+            try:
+                numeric_value = float(raw_value)
+            except ValueError:
+                continue
+
+            if numeric_value > 1000.0:
+                celsius = numeric_value / 1000.0
+            else:
+                celsius = numeric_value
+
+            if not math.isfinite(celsius):
+                continue
+
+            fahrenheit = (celsius * 9.0 / 5.0) + 32.0
+            sensor_name = label or temp_path.parent.name
+            reading: dict[str, float | str | None] = {
+                "celsius": celsius,
+                "fahrenheit": fahrenheit,
+                "sensor": sensor_name,
+            }
+
+            normalized_label = (label or "").lower()
+            if normalized_label:
+                if "cpu" in normalized_label or "soc" in normalized_label:
+                    best = reading
+                    break
+            if fallback is None:
+                fallback = reading
+
+        return best or fallback
+
     def _collect_system_health_snapshot() -> dict[str, Any]:
         nonlocal cpu_last_sample, cpu_last_percent
 
@@ -7141,6 +7206,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             memory_available = memory_stats.get("available_bytes")
             memory_used = memory_stats.get("used_bytes")
 
+        temperature_stats = _read_device_temperature()
+        if temperature_stats is None:
+            temperature_payload: dict[str, Any] = {
+                "celsius": None,
+                "fahrenheit": None,
+                "sensor": None,
+            }
+        else:
+            temperature_payload = {
+                "celsius": temperature_stats.get("celsius"),
+                "fahrenheit": temperature_stats.get("fahrenheit"),
+                "sensor": temperature_stats.get("sensor"),
+            }
+
         payload["resources"] = {
             "cpu": {
                 "percent": cpu_percent,
@@ -7153,6 +7232,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "available_bytes": memory_available,
                 "used_bytes": memory_used,
             },
+            "temperature": temperature_payload,
         }
 
         return payload
@@ -7161,6 +7241,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         resources = snapshot.get("resources") or {}
         cpu = resources.get("cpu") or {}
         memory = resources.get("memory") or {}
+        temperature = resources.get("temperature") or {}
         sd_state = snapshot.get("sd_card") or {}
         last_event = ""
         sd_last_event = sd_state.get("last_event")
@@ -7174,9 +7255,17 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 return None
             return round(numeric, 1)
 
+        def _round_temperature(value: Any) -> float | None:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(numeric, 1)
+
         return (
             _round_percent(cpu.get("percent")),
             _round_percent(memory.get("percent")),
+            _round_temperature(temperature.get("celsius")),
             bool(sd_state.get("warning_active")),
             last_event,
         )
