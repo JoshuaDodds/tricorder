@@ -325,6 +325,7 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             assert capture_status.get("service_running") is False
             assert capture_status.get("event") is None
             assert "encoding" not in capture_status
+            assert "recording_progress" not in capture_status
             assert capture_status.get("last_stop_reason") == "status stale"
             assert capture_status.get("manual_recording") is False
         finally:
@@ -361,6 +362,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert first_status.get("service_running") is False
             assert first_status.get("event") is None
             assert "encoding" not in first_status
+            assert "recording_progress" not in first_status
             assert first_status.get("last_stop_reason") == "service offline"
             assert first_status.get("manual_recording") is False
 
@@ -375,6 +377,7 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert second_status.get("service_running") is False
             assert second_status.get("event") is None
             assert "encoding" not in second_status
+            assert "recording_progress" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
             assert second_status.get("manual_recording") is False
         finally:
@@ -434,6 +437,14 @@ def test_recordings_capture_status_partial_rel_path(dashboard_env, monkeypatch):
             assert event.get("partial_recording_rel_path") == rel_path
             assert event.get("partial_recording_path", "").endswith("alpha.partial.opus")
             assert event.get("partial_waveform_rel_path") == waveform_rel
+            progress = capture_status.get("recording_progress", {})
+            assert progress.get("path") == rel_path
+            assert progress.get("size_bytes") == 5120
+            assert progress.get("duration_seconds") == pytest.approx(4.0, rel=0, abs=1e-6)
+            assert progress.get("extension") == "opus"
+            assert progress.get("name") == "alpha"
+            assert progress.get("isPartial") is True
+            assert progress.get("inProgress") is True
         finally:
             await client.close()
             await server.close()
@@ -948,8 +959,10 @@ def test_system_health_reports_resources(dashboard_env):
 
             cpu = resources.get("cpu")
             memory = resources.get("memory")
+            temperature = resources.get("temperature")
             assert isinstance(cpu, dict)
             assert isinstance(memory, dict)
+            assert isinstance(temperature, dict)
 
             assert "percent" in cpu
             assert "load_1m" in cpu
@@ -987,6 +1000,21 @@ def test_system_health_reports_resources(dashboard_env):
             if memory_percent is not None:
                 assert isinstance(memory_percent, (int, float))
                 assert 0 <= memory_percent <= 100
+
+            assert "celsius" in temperature
+            assert "fahrenheit" in temperature
+            temp_c = temperature.get("celsius")
+            if temp_c is not None:
+                assert isinstance(temp_c, (int, float))
+                assert -100 <= temp_c <= 200
+            temp_f = temperature.get("fahrenheit")
+            if temp_f is not None:
+                assert isinstance(temp_f, (int, float))
+                assert -148 <= temp_f <= 392
+            sensor_name = temperature.get("sensor")
+            if sensor_name is not None:
+                assert isinstance(sensor_name, str)
+                assert sensor_name.strip() == sensor_name
         finally:
             await client.close()
             await server.close()
@@ -2187,6 +2215,117 @@ def test_services_endpoint_parses_dst_timezone_epoch(monkeypatch, dashboard_env)
     asyncio.run(runner())
 
 
+def test_services_list_auto_restart_inactive_web_service(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Recorder",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+                "Tue 2024-05-14 12:34:56 UTC",
+            ),
+            "web-streamer.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "enabled",
+                "Web UI",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+                "Tue 2024-05-14 11:22:33 UTC",
+            ),
+        }
+
+        scheduled: list[tuple[str, list[str], float]] = []
+        monotonic_time = {"value": 1_000.0}
+
+        async def fake_systemctl(args):
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = show_map.get(
+                    unit,
+                    (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "yes",
+                        "yes",
+                        "no",
+                        "yes",
+                        "",
+                        "",
+                    ),
+                )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
+            return 0, "", ""
+
+        def fake_enqueue(unit: str, actions, delay: float = 0.5) -> None:
+            scheduled.append((unit, list(actions), delay))
+
+        def fake_monotonic() -> float:
+            return monotonic_time["value"]
+
+        def advance(seconds: float) -> None:
+            monotonic_time["value"] += seconds
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(web_streamer, "_enqueue_service_actions", fake_enqueue)
+        monkeypatch.setattr(web_streamer.time, "monotonic", fake_monotonic, raising=False)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            payload = await resp.json()
+            services = payload.get("services", [])
+            web_service = next(
+                item for item in services if item["unit"] == "web-streamer.service"
+            )
+            assert web_service.get("auto_restart_pending") is True
+            assert scheduled and scheduled[0][0] == "web-streamer.service"
+            assert scheduled[0][1] == ["start"]
+            assert scheduled[0][2] == pytest.approx(0.5, rel=0, abs=1e-6)
+
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            assert len(scheduled) == 1
+            web_service_repeat = next(
+                item for item in (await resp.json()).get("services", [])
+                if item["unit"] == "web-streamer.service"
+            )
+            assert web_service_repeat.get("auto_restart_pending") is True
+
+            advance(web_streamer.AUTO_RESTART_THROTTLE_SECONDS + 0.5)
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            assert len(scheduled) == 2
+            assert scheduled[1][0] == "web-streamer.service"
+            assert scheduled[1][1] == ["start"]
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_service_action_auto_restart(monkeypatch, dashboard_env):
     async def runner():
         show_map = {
@@ -2670,6 +2809,175 @@ def test_recording_indicator_motion_uses_snapshot_flag_immediately():
     assert result["state"] == "active"
 
 
+def test_indicator_uses_cached_motion_when_snapshot_missing():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        const cachedState = { motion_active: false, sequence: 7 };
+        state.motionState = cachedState;
+        sandbox.setRecordingIndicatorStatus(
+          { capturing: true, motion_state: cachedState },
+          cachedState
+        );
+        const hiddenWithSnapshot = motionBadge.hidden === true;
+        const preservedState = sandbox.resolveNextMotionState(null, state.motionState, true);
+        state.motionState = preservedState;
+        sandbox.setRecordingIndicatorStatus(
+          { capturing: true, event: { motion_trigger_offset_seconds: 0.25 } },
+          state.motionState
+        );
+        const hiddenAfterFallback = motionBadge.hidden === true;
+        const storedMotion = state.motionState && state.motionState.motion_active;
+        return {
+          hiddenWithSnapshot,
+          hiddenAfterFallback,
+          storedMotion,
+          indicatorState: indicator.dataset.state,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["hiddenWithSnapshot"] is True
+    assert result["hiddenAfterFallback"] is True
+    assert result["storedMotion"] is False
+    assert result["indicatorState"] == "active"
+
+
+def test_capture_status_merges_motion_padding_updates_without_sequence_bump():
+    script = textwrap.dedent(
+        """
+        sandbox.__setEventStreamConnectedForTests(true);
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        sandbox.requestRecordingsRefresh = () => {};
+        sandbox.renderRecords = () => {};
+        sandbox.updateSelectionUI = () => {};
+        sandbox.applyNowPlayingHighlight = () => {};
+        sandbox.syncPlayerPlacement = () => {};
+        sandbox.setRecordingIndicatorStatus = () => {};
+        sandbox.updateRmsIndicator = () => {};
+        sandbox.updateRecordingMeta = () => {};
+        sandbox.updateEncodingStatus = () => {};
+        sandbox.updateSplitEventButton = () => {};
+        sandbox.updateManualRecordButton = () => {};
+        state.motionState = {
+          sequence: 27,
+          motion_active: true,
+          motion_padding_seconds_remaining: 14,
+          motion_padding_deadline_epoch: 1_690_000_000,
+        };
+        const previous = state.motionState;
+        sandbox.applyCaptureStatusPush({
+          capturing: true,
+          motion_active: true,
+          motion_sequence: 27,
+          motion_padding_seconds_remaining: 9,
+          motion_padding_deadline_epoch: 1_690_000_030,
+        });
+        const updated = state.motionState;
+        const response = {
+          reusedReference: updated === previous,
+          paddingRemaining: updated.motion_padding_seconds_remaining,
+          paddingDeadline: updated.motion_padding_deadline_epoch,
+        };
+        sandbox.__setEventStreamConnectedForTests(false);
+        return response;
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["reusedReference"] is False
+    assert result["paddingRemaining"] == 9
+    assert result["paddingDeadline"] == 1_690_000_030
+
+
+def test_resolve_next_motion_state_sequence_handling():
+    script = textwrap.dedent(
+        """
+        const live = { motion_active: true, sequence: 5 };
+        const stale = { motion_active: false, sequence: 4 };
+        const fresher = { motion_active: false, sequence: 6 };
+        const keepConnected = sandbox.resolveNextMotionState(stale, live, true);
+        const adoptConnected = sandbox.resolveNextMotionState(fresher, live, true);
+        const adoptDisconnected = sandbox.resolveNextMotionState(stale, live, false);
+        const keepMissing = sandbox.resolveNextMotionState(null, live, true);
+        const clearDisconnected = sandbox.resolveNextMotionState(null, live, false);
+        return {
+          keepConnectedMotion: keepConnected.motion_active,
+          keepConnectedSameReference: keepConnected === live,
+          adoptConnectedMotion: adoptConnected.motion_active,
+          adoptConnectedSequence: adoptConnected.sequence,
+          adoptDisconnectedMotion: adoptDisconnected.motion_active,
+          clearDisconnected: clearDisconnected === null,
+          keepMissingReference: keepMissing === live,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(script)
+    assert result["keepConnectedMotion"] is True
+    assert result["keepConnectedSameReference"] is True
+    assert result["adoptConnectedMotion"] is False
+    assert result["adoptConnectedSequence"] == 6
+    assert result["adoptDisconnectedMotion"] is False
+    assert result["clearDisconnected"] is True
+    assert result["keepMissingReference"] is True
+
+
+def test_motion_indicator_ignores_stale_recordings_snapshot():
+    script = textwrap.dedent(
+        """
+        const indicator = sandbox.window.document.__getMockElement("recording-indicator");
+        const motionBadge = sandbox.window.document.__getMockElement("recording-indicator-motion");
+        motionBadge.hidden = true;
+        const liveState = { motion_active: true, sequence: 5 };
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        state.motionState = liveState;
+        sandbox.setRecordingIndicatorStatus({ capturing: true, motion_active: true }, liveState);
+        const nextState = sandbox.resolveNextMotionState(
+          { motion_active: false, sequence: 4 },
+          state.motionState,
+          true
+        );
+        state.motionState = nextState;
+        sandbox.setRecordingIndicatorStatus(
+          { capturing: true, motion_active: false },
+          state.motionState
+        );
+        return {
+          motionBadgeHidden: motionBadge.hidden,
+          indicatorState: indicator.dataset.state,
+          liveMotion: state.motionState.motion_active,
+        };
+        """
+    )
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "recording-indicator": True,
+            "recording-indicator-text": True,
+            "recording-indicator-motion": True,
+        },
+    )
+    assert result["motionBadgeHidden"] is False
+    assert result["indicatorState"] == "active"
+    assert result["liveMotion"] is True
+
+
 def test_motion_trigger_detection_persists_for_recordings():
     script = textwrap.dedent(
         """
@@ -2760,6 +3068,243 @@ def test_shift_click_uses_existing_anchor_when_available():
     assert "20240101/delta.opus" in result["selections"]
     assert "20240101/echo.opus" in result["selections"]
     assert "20240101/alpha.opus" not in result["selections"]
+
+
+def test_playback_source_defaults_to_processed_when_raw_available():
+    script = textwrap.dedent(
+        """
+        const group = sandbox.window.document.__getMockElement("playback-source-group");
+        sandbox.window.document.__getMockElement("playback-source-processed");
+        const raw = sandbox.window.document.__getMockElement("playback-source-raw");
+        const active = sandbox.window.document.__getMockElement("playback-source-active");
+        const hint = sandbox.window.document.__getMockElement("playback-source-hint");
+        const player = sandbox.window.document.__getMockElement("preview-player");
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+
+        player.currentTime = 0;
+        player.paused = true;
+        player.ended = false;
+        player._listeners = {};
+        player.addEventListener = (event, handler) => {
+          player._listeners[event] = handler;
+        };
+        player.removeEventListener = (event) => {
+          delete player._listeners[event];
+        };
+        player.play = () => {
+          player.paused = false;
+          return Promise.resolve();
+        };
+        player.pause = () => {
+          player.paused = true;
+        };
+        player.load = () => {};
+
+        state.current = {
+          path: "20240101/foo.opus",
+          raw_audio_path: "raw/20240101/foo.wav",
+        };
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: false });
+
+        return {
+          state: sandbox.getPlaybackSourceState(),
+          groupHidden: group.hidden === true,
+          groupSource: group.dataset.source,
+          rawDisabled: raw.disabled === true,
+          hintHidden: hint.hidden === true,
+          activeLabel: active.textContent,
+          rawAvailableFlag: group.dataset.rawAvailable,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "preview-player": True,
+            "player-meta": True,
+            "player-meta-text": True,
+            "player-meta-actions": True,
+            "player-download": True,
+            "player-rename": True,
+            "player-delete": True,
+            "player-transport": True,
+            "playback-source-group": True,
+            "playback-source-processed": True,
+            "playback-source-raw": True,
+            "playback-source-active": True,
+            "playback-source-hint": True,
+        },
+    )
+
+    assert result["state"]["mode"] == "processed"
+    assert result["state"]["hasRaw"] is True
+    assert result["groupHidden"] is False
+    assert result["groupSource"] == "processed"
+    assert result["rawAvailableFlag"] == "true"
+    assert result["rawDisabled"] is False
+    assert result["hintHidden"] is True
+    assert result["activeLabel"] == "Processed (Opus)"
+
+
+def test_playback_source_reverts_when_raw_unavailable():
+    script = textwrap.dedent(
+        """
+        const group = sandbox.window.document.__getMockElement("playback-source-group");
+        const raw = sandbox.window.document.__getMockElement("playback-source-raw");
+        const hint = sandbox.window.document.__getMockElement("playback-source-hint");
+        const player = sandbox.window.document.__getMockElement("preview-player");
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+
+        player.currentTime = 1.25;
+        player.paused = false;
+        player.ended = false;
+        player._listeners = {};
+        player.addEventListener = (event, handler) => {
+          player._listeners[event] = handler;
+        };
+        player.removeEventListener = (event) => {
+          delete player._listeners[event];
+        };
+        player.play = () => {
+          player.paused = false;
+          return Promise.resolve();
+        };
+        player.pause = () => {
+          player.paused = true;
+        };
+        player.load = () => {};
+
+        state.current = {
+          path: "20240101/bar.opus",
+          raw_audio_path: "raw/20240101/bar.wav",
+        };
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: false });
+        sandbox.setPlaybackSource("raw", { userInitiated: true });
+        if (player._listeners.loadedmetadata) {
+          player._listeners.loadedmetadata();
+        }
+
+        const afterRaw = sandbox.getPlaybackSourceState();
+
+        state.current = {
+          path: "20240101/bar.opus",
+          raw_audio_path: "",
+        };
+        const updateInfo = sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: true });
+
+        return {
+          afterRaw,
+          afterRemoval: {
+            state: sandbox.getPlaybackSourceState(),
+            rawDisabled: raw.disabled === true,
+            hintHidden: hint.hidden === true,
+            groupSource: group.dataset.source,
+            rawAvailableFlag: group.dataset.rawAvailable,
+          },
+          updateInfo,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "preview-player": True,
+            "player-meta": True,
+            "player-meta-text": True,
+            "player-meta-actions": True,
+            "player-download": True,
+            "player-rename": True,
+            "player-delete": True,
+            "player-transport": True,
+            "playback-source-group": True,
+            "playback-source-processed": True,
+            "playback-source-raw": True,
+            "playback-source-active": True,
+            "playback-source-hint": True,
+        },
+    )
+
+    assert result["afterRaw"]["mode"] == "raw"
+    assert result["afterRemoval"]["state"]["mode"] == "processed"
+    assert result["afterRemoval"]["state"]["hasRaw"] is False
+    assert result["afterRemoval"]["rawDisabled"] is True
+    assert result["afterRemoval"]["hintHidden"] is False
+    assert result["afterRemoval"]["groupSource"] == "processed"
+    assert result["afterRemoval"]["rawAvailableFlag"] == "false"
+    assert result["updateInfo"]["previousMode"] == "raw"
+    assert result["updateInfo"]["nextMode"] == "processed"
+
+
+def test_playback_source_poll_preserves_pending_seek():
+    script = textwrap.dedent(
+        """
+        const player = sandbox.window.document.__getMockElement("preview-player");
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+
+        player.currentTime = 1.25;
+        player.paused = false;
+        player.ended = false;
+        player._listeners = {};
+        player.addEventListener = (event, handler) => {
+          player._listeners[event] = handler;
+        };
+        player.removeEventListener = (event) => {
+          delete player._listeners[event];
+        };
+        player.play = () => {
+          player.paused = false;
+          return Promise.resolve();
+        };
+        player.pause = () => {
+          player.paused = true;
+        };
+        player.load = () => {};
+
+        state.current = {
+          path: "20240101/foo.opus",
+          raw_audio_path: "raw/20240101/foo.wav",
+        };
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: false });
+        sandbox.setPlaybackSource("raw", { userInitiated: true });
+
+        sandbox.updatePlaybackSourceForRecord(state.current, { preserveMode: true });
+
+        if (player._listeners.loadedmetadata) {
+          player.currentTime = 0;
+          player.paused = true;
+          player._listeners.loadedmetadata();
+        }
+
+        return {
+          currentTime: player.currentTime,
+          paused: player.paused,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "preview-player": True,
+            "player-meta": True,
+            "player-meta-text": True,
+            "player-meta-actions": True,
+            "player-download": True,
+            "player-rename": True,
+            "player-delete": True,
+            "player-transport": True,
+            "playback-source-group": True,
+            "playback-source-processed": True,
+            "playback-source-raw": True,
+            "playback-source-active": True,
+            "playback-source-hint": True,
+        },
+    )
+
+    assert result["currentTime"] == pytest.approx(1.25, rel=1e-6)
+    assert result["paused"] is False
 
 
 def test_sd_card_recovery_static_doc_served(dashboard_env):

@@ -31,7 +31,7 @@ Smart commit policy:
 - Ensure the Git author email matches a Jira user for smart-commit linkage.
 
 Ticket lifecycle expectations (Board: To Do → In Progress → In Review):
-1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket using the Jira API and env credentials available to you, add the startup comment, start a timer so you can log total time spent working on this task.
+1. **Start/pickup** – transition to **In Progress** and assign yourself to this ticket using the Jira API and env credentials available to you, add the startup comment, start a timer so you can log total time spent working on this task, Update the ticket title and description to be a well written description a developer can understand, estimate the complexity and update the ticket story points, then continue with your implementation task.
 2. **During work** – keep the ticket **In Progress**, post incremental commits with `<PROJECT>-<int>` keys and `#comment` tags, and perform Jira API updates to add time tracking information between commits and comments if applicable..
 3. **Complete** – final commit transitions to **In Review** using the smart commit format. Post a Jira comment summarizing work, update the jira time tracking field with actually mins for your task, current status (**In Review**), and links back to this CODEX task run and PR/commit diff, and finally include testing criteria and testing steps that a human can do to verify functionalilty. Do **not** move to Done.
 4. **Failures** – if transitions fail, comment the error, retry with backoff (5 attempts), and proceed with manual follow-up instructions.
@@ -41,8 +41,6 @@ Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` is available to you and they
 You are expected to strictly adhere to Jira API usage guidelines and not make any changes to the Jira UI. You are expected to send Jira API regularly to keep your work tracked.
 The ENV vars mentioned above are already configured for you. 
 
-Regarding time, we want actual duration between commits rounded to the minute and not an estimate of what it would have taken a human to complete the task. This means that you need to track your time spent working by starting a timer at your very first start of work and at your very last step before pushing your work check time elapsed so you know how long this task too you.
-
 ### Time tracking discipline (enforced for all agents)
 - Start a real timer (e.g., `time.perf_counter()` in a scratch Python shell or a physical stopwatch) **before** you run any repo command. Record the start timestamp in your scratchpad so you can recompute elapsed wall time at any moment.
 - Every time you make a commit, compute the actual minutes spent since the previous commit (or task start) and copy that exact rounded value into the `#time` smart-commit tag. Never reuse values from earlier worklogs or guess; always recompute from the timer.
@@ -50,6 +48,64 @@ Regarding time, we want actual duration between commits rounded to the minute an
 - Maintain a small running log in your scratchpad (e.g., `notes/time_tracking.txt` in your workspace or your terminal notes) that lists timestamp checkpoints and the cumulative elapsed minutes. Use it to double-check that Jira worklogs and `#time` values reconcile before you finish.
 - Before your final commit, add Jira worklog entries that sum to the same total minutes as your scratch timer. If you discover a mismatch, update the worklog to the correct value and mention the adjustment in your closing Jira comment.
 - Prior to calling `make_pr`, re-read the time tracking log and confirm the total duration you plan to report matches the wall-clock elapsed time for the session (rounded to the nearest minute). If there is a discrepancy, correct the worklog and amend the commit message before proceeding.
+
+### Imperative for when Frontend changes are made!!! Local dev backend + dashboard smoke checklist
+Follow this playbook whenever you need an end-to-end dashboard demo on a dev workstation or if you have made any changes to the frontend then this becomes imperative. 
+When you have made visual changes you must show visuals of the changes so that means running an actual browser client for snapshots after the steps below are run and a backend is running.
+
+1. **Bootstrap the Python env**
+   - `python -m venv .venv && source .venv/bin/activate`
+   - `pip install --upgrade pip`
+   - `pip install -r requirements-dev.txt`
+   - Ensure `ffmpeg`, `alsa-utils`, and `sox` are installed on the host (`sudo apt install ffmpeg alsa-utils sox`).
+2. **Point runtime paths at a writable sandbox**
+   - `mkdir -p .dev_env/{config,recordings,tmp,dropbox}`
+   - `cp config.yaml .dev_env/config/dev-config.yaml`
+   - `export TRICORDER_CONFIG=$(pwd)/.dev_env/config/dev-config.yaml`
+   - `export REC_DIR=$(pwd)/.dev_env/recordings`
+   - `export TMP_DIR=$(pwd)/.dev_env/tmp`
+   - `export DROPBOX_DIR=$(pwd)/.dev_env/dropbox`
+   - `export TRICORDER_TMP=$TMP_DIR`
+   - For machines without a physical microphone, load ALSA’s loopback module (`sudo modprobe snd-aloop`) and set `export AUDIO_DEV=hw:Loopback,1,0` so `arecord` has a live device.
+3. **Launch the backend in dev mode**
+   - `DEV=1 python main.py`
+   - Wait for `[dev] Running live_stream_daemon` and confirm `http://localhost:8080/healthz` returns `ok`.
+4. **Seed a sample clip for the dashboard list**
+   - Run the snippet below in a separate shell after step 3 so the `/recordings` API has content:
+     ```bash
+     python - <<'PY'
+     import json, os, time
+     from pathlib import Path
+
+     rec_root = Path(os.environ["REC_DIR"])
+     day_dir = rec_root / time.strftime("%Y%m%d")
+     day_dir.mkdir(parents=True, exist_ok=True)
+
+     clip_path = day_dir / "dev-sample.opus"
+     clip_path.write_bytes(b"OpusHead\x01dev-sample")
+
+     waveform = clip_path.with_suffix(clip_path.suffix + ".waveform.json")
+     payload = {
+         "version": 1,
+         "channels": 1,
+         "sample_rate": 48000,
+         "frame_count": 48000,
+         "duration_seconds": 1.0,
+         "peak_scale": 32767,
+         "peaks": [0, 0],
+         "rms_values": [0],
+         "start_epoch": time.time() - 5,
+         "started_epoch": time.time() - 5,
+         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+     }
+     waveform.write_text(json.dumps(payload), encoding="utf-8")
+     print(f"Seeded {clip_path.relative_to(rec_root)}")
+     PY
+     ```
+   - Refresh `http://localhost:8080/dashboard` and confirm the “dev-sample” clip appears.
+5. **Front-end regression checks**
+   - With the backend still running, execute `pytest tests/test_25_web_streamer.py tests/test_37_web_dashboard.py` to cover the dashboard API + UI helpers.
+   - Optionally run `curl http://localhost:8080/api/recordings?limit=5` to sanity-check the API payload that powers the clip list.
 
 Before final commit with smart commit messages pushing:
 1. Run tests (export DEV=1 && pytest -q). All tests must pass.
@@ -123,7 +179,7 @@ When modifying architecture or adding features, preserve these qualities: keep m
 
 ## Frontend assets (lib/webui)
 - Static assets are vanilla ES modules + plain CSS to remain compatible with Chromium/Firefox on Raspberry Pi OS.
-- When editing dashboard JS/HTML/CSS run the UI tests: `pytest tests/test_web_dashboard.py` and `pytest tests/test_25_web_streamer.py`.
+- When editing dashboard JS/HTML/CSS run the UI tests: `pytest tests/test_37_web_dashboard.py` and `pytest tests/test_25_web_streamer.py`.
 - Prefer small, testable modules and lazy load heavyweight UI pieces (waveform renderers, HLS player). Avoid introducing build steps that prevent the one-file static deploy model unless you also update install scripts and README.
 - Document any UI/API changes in `README.md`.
 

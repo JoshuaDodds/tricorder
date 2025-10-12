@@ -191,11 +191,14 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
+- Instant source toggle between processed Opus output and the raw capture for A/B checks without interrupting playback.
 - Adjustable waveform amplitude zoom control (0.25×–10×) for inspecting quiet or loud passages.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
+- Temperature widget next to the memory metric showing CPU/sensor readings (°C/°F) sourced from `/api/system-health`'s `resources.temperature` payload.
 - JSON APIs (`/api/recordings`, `/api/recycle-bin`, `/api/config`, `/api/integrations`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
+- Server-Sent Events (`/api/events`) streaming capture status, motion, and encoding updates to the dashboard for low-latency UI refreshes.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
 ### Audio filter chain tuning
@@ -434,9 +437,14 @@ Key configuration sections (see `config.yaml` for defaults and documentation):
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in.
 - `segmenter.motion_release_padding_minutes` keeps motion-forced recordings alive for the configured minutes after the motion integration clears, delaying the hand-off back to RMS/adaptive/VAD gating so conversation tails are not clipped.
 - Dashboard recordings mark any in-progress `.partial.*` capture with a live badge, streaming audio directly from the growing container until the encoder finalizes and renames it.
+- Background browser tabs surface motion-triggered recordings by prefixing the title with `● Motion` so Chrome and other Blink-based browsers, which block scripted tab attention flashing, still expose a visible change. Browsers that allow attention flashing (Firefox, Safari) continue to toggle the indicator when motion stays active.
 - `adaptive_rms` – background noise follower for automatically raising/lowering thresholds.
+  - `min_rms` pins the adaptive trigger to a lowest RMS value. Leave it blank to reuse
+    `segmenter.rms_threshold`, ensuring the adaptive controller never drops below the manual gate.
   - `max_rms` enforces a hard ceiling using linear RMS units (same scale as `segmenter.rms_threshold`).
     For example, set `max_rms: 250` to allow adaptive increases up to 250 and no higher.
+  - `min_thresh` remains available for advanced normalized tuning (0–1 scale) when a fractional
+    floor is preferred over linear RMS.
   - `voiced_hold_sec` lets the controller fall back to voiced frames after extended stretches without
     background samples so misclassified noise beds cannot pin the threshold at stale values.
 - `ingest` – file stability checks, extension filters, ignore suffixes.
@@ -559,7 +567,7 @@ Notable test modules:
 
 - `tests/test_00_install.py` / `tests/test_50_uninstall.py` – installer and cleanup coverage.
 - `tests/test_10_segmenter.py` / `tests/test_20__fault_handler.py` – segmentation pipeline + USB fault handling.
-- `tests/test_25_web_streamer.py` / `tests/test_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
+- `tests/test_25_web_streamer.py` / `tests/test_37_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
 - `tests/test_30_dropbox.py` – dropbox ingestion pipeline.
 - `tests/test_40_end_to_end.py` – WAV → event encoding → Opus artifact validation.
 - `tests/test_60_hls.py` – HLS controller lifecycle and playlist availability.

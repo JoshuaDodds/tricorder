@@ -1,6 +1,8 @@
 # tests/test_10_segmenter.py
 import builtins
+import collections
 import json
+import math
 import os
 import queue
 import re
@@ -11,14 +13,7 @@ import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
-import os
 import pytest
-
-import collections
-import os
-from datetime import datetime
-from pathlib import Path
-import wave
 
 from lib.segmenter import TimelineRecorder, FRAME_BYTES
 from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
@@ -118,7 +113,7 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
     original_counters = segmenter.TimelineRecorder.event_counters
     segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
 
-    captured_jobs: list[tuple[str, str, str, str | None, bool]] = []
+    captured_jobs: list[tuple[str, str, str, str | None, bool, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -127,8 +122,9 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
         source: str,
         existing_opus_path: str | None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
-        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
+        captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(captured_jobs)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -203,8 +199,10 @@ def test_manual_record_toggle_updates_status_and_encode(tmp_path, monkeypatch):
         source: str,
         existing_opus_path: str | None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
         manual_flags.append(manual_recording)
+        assert target_day is not None
         return len(manual_flags)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -259,6 +257,8 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         event = status.get("event") or {}
         assert event.get("motion_active") is True
         assert event.get("motion_started_epoch") == 50.0
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is True
 
         store_motion_state(motion_state_path, motion_active=False, timestamp=75.0)
         rec._motion_watcher.force_refresh()
@@ -271,6 +271,8 @@ def test_motion_state_forced_recording(monkeypatch, tmp_path):
         last_event = cached.get("last_event") or {}
         assert last_event.get("motion_active") is False
         assert last_event.get("motion_started_epoch") == 50.0
+        cached_motion_state = cached.get("motion_state") or {}
+        assert cached_motion_state.get("motion_active") is False
     finally:
         rec.flush(3)
 
@@ -319,18 +321,27 @@ def test_motion_padding_delays_release(monkeypatch, tmp_path):
         deadline = getattr(rec, "_motion_release_deadline", None)
         assert deadline is not None
         assert deadline == pytest.approx(250.0, rel=0.001)
+        status = rec._status_cache or {}
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is False
 
         clock["now"] = 249.0
         rec._refresh_motion_state()
         assert rec._motion_forced_active is True
         remaining = rec._motion_status_extra().get("motion_padding_seconds_remaining")
         assert remaining is not None and remaining > 0
+        status = rec._status_cache or {}
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is False
 
         clock["now"] = 252.5
         rec._refresh_motion_state()
         assert rec._motion_forced_active is False
         assert getattr(rec, "_motion_release_deadline", None) is None
         assert rec._motion_status_extra().get("motion_padding_seconds_remaining") == 0.0
+        status = rec._status_cache or {}
+        motion_state = status.get("motion_state") or {}
+        assert motion_state.get("motion_active") is False
     finally:
         rec.flush(3)
 
@@ -540,11 +551,13 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
         source: str,
         existing_opus_path: str | None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
         captured_job["base"] = base_name
         captured_job["existing"] = existing_opus_path
         captured_job["source"] = source
         captured_job["manual"] = manual_recording
+        captured_job["target_day"] = target_day
         return 42
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -567,6 +580,7 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
     assert Path(existing_path).exists()
     assert existing_path.endswith(segmenter.STREAMING_EXTENSION)
     assert Path(existing_path).parent == rec_dir / "20240102"
+    assert captured_job.get("target_day") == "20240102"
     waveform_path = Path(f"{existing_path}.waveform.json")
     assert waveform_path.exists()
     payload = json.loads(waveform_path.read_text(encoding="utf-8"))
@@ -741,6 +755,63 @@ def test_adaptive_threshold_hysteresis(monkeypatch):
         assert not second_obs.updated
 
 
+def test_adaptive_min_floor_defaults_to_static_threshold(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    static_threshold = 360
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=static_threshold,
+        cfg_section={
+            "enabled": True,
+            "min_thresh": 0.0,
+            "margin": 1.0,
+            "update_interval_sec": 0.1,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    expected_norm = static_threshold / segmenter.AdaptiveRmsController._NORM
+    assert math.isclose(ctrl.min_thresh_norm, expected_norm, rel_tol=1e-6)
+
+
+def test_adaptive_min_rms_floor_holds(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+
+    ctrl = segmenter.AdaptiveRmsController(
+        frame_ms=20,
+        initial_linear_threshold=800,
+        cfg_section={
+            "enabled": True,
+            "min_rms": 400,
+            "margin": 1.0,
+            "update_interval_sec": 0.05,
+            "window_sec": 0.1,
+            "hysteresis_tolerance": 0.0,
+        },
+        debug=False,
+    )
+
+    for _ in range(8):
+        ctrl.observe(200, voiced=False)
+        ctrl.pop_observation()
+        fake_time[0] += 0.05
+
+    assert ctrl.threshold_linear >= 400
+
+
 def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
     rec_dir = tmp_path / "rec"
@@ -800,11 +871,13 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
         source: str = "live",
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
         captured["tmp_wav_path"] = tmp_wav_path
         captured["base_name"] = base_name
         captured["existing_opus_path"] = existing_opus_path
         captured["manual_recording"] = manual_recording
+        captured["target_day"] = target_day
         return 123
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -812,6 +885,8 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
     rec = TimelineRecorder()
     for i in range(8):
         rec.ingest(make_frame(2000), i)
+    expected_day = rec.event_day
+    assert expected_day is not None
     rec.flush(20)
 
     assert encoder_instances, "expected streaming encoder to be initialised"
@@ -822,6 +897,7 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
 
     assert "existing_opus_path" in captured
     assert captured.get("existing_opus_path") is None, "fallback encode should not reuse streaming output"
+    assert captured.get("target_day") == expected_day
 
 
 def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
@@ -843,7 +919,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None, bool]] = []
+    calls: list[tuple[str, str, str, str | None, bool, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -852,8 +928,9 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
         source: str = "live",
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -878,7 +955,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     report = segmenter.perform_startup_recovery()
 
     assert calls, "expected encode job to be requeued"
-    tmp_arg, base_arg, source_arg, existing_arg, manual_flag = calls[0]
+    tmp_arg, base_arg, source_arg, existing_arg, manual_flag, target_day = calls[0]
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
@@ -887,6 +964,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     if not expected_extension.startswith("."):
         expected_extension = f".{expected_extension}"
     expected_opus = day_dir / f"{expected_final_base}{expected_extension}"
+    assert target_day == day_dir.name
     assert existing_arg == str(expected_opus)
 
     assert report.requeued == [expected_final_base]
@@ -908,7 +986,7 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None, bool]] = []
+    calls: list[tuple[str, str, str, str | None, bool, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -917,8 +995,9 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
         source: str = "live",
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
+        target_day: str | None = None,
     ):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording))
+        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -941,6 +1020,48 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     assert not calls, "final recording already exists so no encode job expected"
     assert not wav_path.exists()
     assert str(wav_path) in report.removed_wavs
+
+
+def test_encode_completion_emits_recordings_changed(monkeypatch, tmp_path):
+    rec_dir = tmp_path / "recordings"
+    rec_dir.mkdir()
+    day_dir = rec_dir / "20240102"
+    day_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", segmenter.EncodingStatus())
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def fake_publish(event_type, payload):
+        events.append((event_type, payload))
+
+    monkeypatch.setattr(segmenter.dashboard_events, "publish", fake_publish)
+
+    job_id = segmenter.ENCODING_STATUS.enqueue("20240102_Both_RMS-321_1", source="live")
+    final_path = day_dir / "20240102_Both_RMS-321_1.opus"
+
+    segmenter._schedule_recordings_refresh(
+        job_id,
+        final_path=str(final_path),
+        base_name="20240102_Both_RMS-321_1",
+        day="20240102",
+        manual=False,
+        source="live",
+    )
+
+    assert events == []
+
+    final_path.write_bytes(b"opus")
+
+    segmenter.ENCODING_STATUS.mark_finished(job_id)
+
+    assert any(
+        event_type == "recordings_changed"
+        and payload.get("reason") == "encode_completed"
+        and payload.get("paths") == ["20240102/20240102_Both_RMS-321_1.opus"]
+        for event_type, payload in events
+    )
 
 
 def test_event_base_name_uses_prepad(monkeypatch, tmp_path):
@@ -979,6 +1100,56 @@ def test_event_base_name_uses_prepad(monkeypatch, tmp_path):
     assert rec.event_day == expected_day
 
     rec.flush(200)
+
+
+def test_encode_job_uses_event_day_when_crossing_midnight(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+
+    real_strftime = segmenter.time.strftime
+    overrides = ["20241009", "20241010", "20241010"]
+
+    def fake_strftime(fmt: str, *args):
+        if fmt == "%Y%m%d" and overrides:
+            return overrides.pop(0)
+        return real_strftime(fmt, *args)
+
+    monkeypatch.setattr(segmenter.time, "strftime", fake_strftime)
+
+    captured: dict[str, str | None] = {}
+
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str = "live",
+        existing_opus_path: str | None = None,
+        manual_recording: bool = False,
+        target_day: str | None = None,
+    ) -> int | None:
+        captured["target_day"] = target_day
+        return 7
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+    rec.ingest(make_frame(4000), 0)
+    rec.flush(10)
+
+    assert captured.get("target_day") == "20241009"
 
 
 def test_adaptive_threshold_recovery(monkeypatch):
@@ -1371,7 +1542,9 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     systemd_stub.chmod(0o755)
 
-    existing_opus = tmp_path / "stream.opus"
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    existing_opus = recordings_dir / "stream.opus"
     existing_opus.write_bytes(b"opus")
     waveform = existing_opus.with_suffix(existing_opus.suffix + ".waveform.json")
     waveform.write_text("{}", encoding="utf-8")
@@ -1387,7 +1560,7 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     env["DENOISE"] = "0"
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
-    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["ENCODER_RECORDINGS_DIR"] = str(recordings_dir)
 
     result = subprocess.run(
         [str(script_path), str(wav_path), "sample", str(existing_opus)],
@@ -1457,12 +1630,23 @@ def test_encode_script_discards_short_new_clips(tmp_path):
     assert result.returncode == 0, result.stderr
     assert not wav_path.exists(), "temporary WAV should be removed"
     recordings_dir = tmp_path / "recordings"
-    opus_files = list(recordings_dir.rglob("*.opus"))
-    assert not opus_files, "short clips should be discarded"
-    waveform_files = list(recordings_dir.rglob("*.waveform.json"))
-    transcript_files = list(recordings_dir.rglob("*.transcript.json"))
-    assert not waveform_files, "waveforms should not be written for discarded clips"
-    assert not transcript_files, "transcripts should not be written for discarded clips"
+    recycle_root = recordings_dir / ".recycle_bin"
+    assert recycle_root.is_dir(), "recycle bin directory should be created"
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1, "short clip should produce a recycle bin entry"
+    entry_dir = entries[0]
+    stored_files = list(entry_dir.iterdir())
+    assert any(file.name.endswith(".opus") for file in stored_files), "audio should be moved into recycle bin"
+    metadata_path = entry_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    day = time.strftime("%Y%m%d", time.localtime())
+    assert metadata.get("original_path") == f"{day}/sample.opus"
+    assert metadata.get("duration_seconds") == pytest.approx(0.5, rel=1e-6)
+    assert metadata.get("reason") == "short_clip"
+    assert metadata.get("waveform_name") in ("", None)
+    assert metadata.get("transcript_name") in ("", None)
+    remaining_opus = list((recordings_dir / day).glob("*.opus")) if (recordings_dir / day).exists() else []
+    assert not remaining_opus, "no short clips should remain in the recordings directory"
     raw_dir = recordings_dir / ".original_wav"
     assert not raw_dir.exists(), "original WAVs should not be preserved for discarded clips"
 
@@ -1486,7 +1670,9 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
     systemd_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     systemd_stub.chmod(0o755)
 
-    existing_opus = tmp_path / "stream.opus"
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    existing_opus = recordings_dir / "stream.opus"
     existing_opus.write_bytes(b"opus")
     waveform = existing_opus.with_suffix(existing_opus.suffix + ".waveform.json")
     waveform.write_text("{}", encoding="utf-8")
@@ -1502,7 +1688,7 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
     env["DENOISE"] = "1"
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
-    env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["ENCODER_RECORDINGS_DIR"] = str(recordings_dir)
     env["ENCODER_MIN_CLIP_SECONDS"] = "1.0"
 
     result = subprocess.run(
@@ -1515,10 +1701,19 @@ def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert not wav_path.exists(), "temporary WAV should be removed"
-    assert not existing_opus.exists(), "short streaming clips should be discarded"
-    assert not waveform.exists(), "waveform sidecar should be removed for short clips"
-    assert not transcript.exists(), "transcript sidecar should be removed for short clips"
-    raw_dir = tmp_path / "recordings" / ".original_wav"
+    assert not existing_opus.exists(), "short streaming clips should be moved from the recordings directory"
+    assert not waveform.exists(), "waveform sidecar should be moved for short clips"
+    assert not transcript.exists(), "transcript sidecar should be moved for short clips"
+    recycle_root = recordings_dir / ".recycle_bin"
+    assert recycle_root.is_dir(), "recycle bin should exist after moving a short clip"
+    entries = list(recycle_root.iterdir())
+    assert len(entries) == 1, "short streaming clip should create a recycle bin entry"
+    entry_dir = entries[0]
+    metadata_path = entry_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata.get("duration_seconds") == pytest.approx(0.6, rel=1e-6)
+    assert metadata.get("original_path") == "stream.opus"
+    raw_dir = recordings_dir / ".original_wav"
     if raw_dir.exists():
         assert not any(raw_dir.rglob("*.wav")), "no original WAV should remain for discarded streaming clips"
 
