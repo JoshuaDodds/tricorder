@@ -2984,6 +2984,38 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     duration_raw = metadata.get("duration_seconds")
     duration = float(duration_raw) if isinstance(duration_raw, (int, float)) else None
 
+    motion_trigger_raw = metadata.get("motion_trigger_offset_seconds")
+    if isinstance(motion_trigger_raw, (int, float)) and math.isfinite(
+        float(motion_trigger_raw)
+    ):
+        motion_trigger_offset = float(motion_trigger_raw)
+    else:
+        motion_trigger_offset = None
+
+    motion_release_raw = metadata.get("motion_release_offset_seconds")
+    if isinstance(motion_release_raw, (int, float)) and math.isfinite(
+        float(motion_release_raw)
+    ):
+        motion_release_offset = float(motion_release_raw)
+    else:
+        motion_release_offset = None
+
+    motion_started_raw = metadata.get("motion_started_epoch")
+    if isinstance(motion_started_raw, (int, float)) and math.isfinite(
+        float(motion_started_raw)
+    ):
+        motion_started_epoch = float(motion_started_raw)
+    else:
+        motion_started_epoch = None
+
+    motion_released_raw = metadata.get("motion_released_epoch")
+    if isinstance(motion_released_raw, (int, float)) and math.isfinite(
+        float(motion_released_raw)
+    ):
+        motion_released_epoch = float(motion_released_raw)
+    else:
+        motion_released_epoch = None
+
     waveform_name = metadata.get("waveform_name")
     if not isinstance(waveform_name, str):
         waveform_name = ""
@@ -3054,6 +3086,10 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "raw_audio_name": raw_audio_name,
         "raw_audio_path": raw_audio_path,
         "reason": reason_value,
+        "motion_trigger_offset_seconds": motion_trigger_offset,
+        "motion_release_offset_seconds": motion_release_offset,
+        "motion_started_epoch": motion_started_epoch,
+        "motion_released_epoch": motion_released_epoch,
     }
 
 
@@ -5556,10 +5592,39 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             raw_audio_name = ""
             duration_value: float | None = None
 
+            motion_trigger_offset: float | None = None
+            motion_release_offset: float | None = None
+            motion_started_epoch: float | None = None
+            motion_released_epoch: float | None = None
+
             if waveform_meta is not None:
                 raw_duration = waveform_meta.get("duration_seconds")
                 if isinstance(raw_duration, (int, float)):
                     duration_value = float(raw_duration)
+
+                raw_motion_trigger = waveform_meta.get("motion_trigger_offset_seconds")
+                if isinstance(raw_motion_trigger, (int, float)) and math.isfinite(
+                    float(raw_motion_trigger)
+                ):
+                    motion_trigger_offset = float(raw_motion_trigger)
+
+                raw_motion_release = waveform_meta.get("motion_release_offset_seconds")
+                if isinstance(raw_motion_release, (int, float)) and math.isfinite(
+                    float(raw_motion_release)
+                ):
+                    motion_release_offset = float(raw_motion_release)
+
+                raw_motion_started = waveform_meta.get("motion_started_epoch")
+                if isinstance(raw_motion_started, (int, float)) and math.isfinite(
+                    float(raw_motion_started)
+                ):
+                    motion_started_epoch = float(raw_motion_started)
+
+                raw_motion_released = waveform_meta.get("motion_released_epoch")
+                if isinstance(raw_motion_released, (int, float)) and math.isfinite(
+                    float(raw_motion_released)
+                ):
+                    motion_released_epoch = float(raw_motion_released)
 
             start_epoch_value, started_at_value = _resolve_start_metadata(
                 rel_posix, resolved, stat_result, waveform_meta
@@ -5603,6 +5668,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     "started_epoch": start_epoch_value,
                     "started_at": started_at_value,
                     "reason": "manual",
+                    "motion_trigger_offset_seconds": motion_trigger_offset,
+                    "motion_release_offset_seconds": motion_release_offset,
+                    "motion_started_epoch": motion_started_epoch,
+                    "motion_released_epoch": motion_released_epoch,
                 }
                 with metadata_path.open("w", encoding="utf-8") as handle:
                     json.dump(metadata, handle)
@@ -6026,6 +6095,26 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         "duration_seconds": (
                             float(data.get("duration"))
                             if isinstance(data.get("duration"), (int, float))
+                            else None
+                        ),
+                        "motion_trigger_offset_seconds": (
+                            float(data.get("motion_trigger_offset_seconds"))
+                            if isinstance(data.get("motion_trigger_offset_seconds"), (int, float))
+                            else None
+                        ),
+                        "motion_release_offset_seconds": (
+                            float(data.get("motion_release_offset_seconds"))
+                            if isinstance(data.get("motion_release_offset_seconds"), (int, float))
+                            else None
+                        ),
+                        "motion_started_epoch": (
+                            float(data.get("motion_started_epoch"))
+                            if isinstance(data.get("motion_started_epoch"), (int, float))
+                            else None
+                        ),
+                        "motion_released_epoch": (
+                            float(data.get("motion_released_epoch"))
+                            if isinstance(data.get("motion_released_epoch"), (int, float))
                             else None
                         ),
                         "restorable": restorable,
