@@ -180,7 +180,7 @@ When modifying architecture or adding features, preserve these qualities: keep m
 
 ## Frontend assets (lib/webui)
 - Static assets are vanilla ES modules + plain CSS to remain compatible with Chromium/Firefox on Raspberry Pi OS.
-- When editing dashboard JS/HTML/CSS run the UI tests: `pytest tests/test_web_dashboard.py` and `pytest tests/test_25_web_streamer.py`.
+- When editing dashboard JS/HTML/CSS run the UI tests: `pytest tests/test_37_web_dashboard.py` and `pytest tests/test_25_web_streamer.py`.
 - Prefer small, testable modules and lazy load heavyweight UI pieces (waveform renderers, HLS player). Avoid introducing build steps that prevent the one-file static deploy model unless you also update install scripts and README.
 - Document any UI/API changes in `README.md`.
 
