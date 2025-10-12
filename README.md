@@ -565,7 +565,7 @@ Notable test modules:
 
 - `tests/test_00_install.py` / `tests/test_50_uninstall.py` – installer and cleanup coverage.
 - `tests/test_10_segmenter.py` / `tests/test_20__fault_handler.py` – segmentation pipeline + USB fault handling.
-- `tests/test_25_web_streamer.py` / `tests/test_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
+- `tests/test_25_web_streamer.py` / `tests/test_37_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
 - `tests/test_30_dropbox.py` – dropbox ingestion pipeline.
 - `tests/test_40_end_to_end.py` – WAV → event encoding → Opus artifact validation.
 - `tests/test_60_hls.py` – HLS controller lifecycle and playlist availability.
