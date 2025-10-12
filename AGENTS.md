@@ -41,8 +41,6 @@ Jira API usage requires `JIRA_EMAIL` and `JIRA_PAT` is available to you and they
 You are expected to strictly adhere to Jira API usage guidelines and not make any changes to the Jira UI. You are expected to send Jira API regularly to keep your work tracked.
 The ENV vars mentioned above are already configured for you. 
 
-Regarding time, we want actual duration between commits rounded to the minute and not an estimate of what it would have taken a human to complete the task. This means that you need to track your time spent working by starting a timer at your very first start of work and at your very last step before pushing your work check time elapsed so you know how long this task too you.
-
 ### Time tracking discipline (enforced for all agents)
 - Start a real timer (e.g., `time.perf_counter()` in a scratch Python shell or a physical stopwatch) **before** you run any repo command. Record the start timestamp in your scratchpad so you can recompute elapsed wall time at any moment.
 - Every time you make a commit, compute the actual minutes spent since the previous commit (or task start) and copy that exact rounded value into the `#time` smart-commit tag. Never reuse values from earlier worklogs or guess; always recompute from the timer.
