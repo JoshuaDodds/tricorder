@@ -959,8 +959,10 @@ def test_system_health_reports_resources(dashboard_env):
 
             cpu = resources.get("cpu")
             memory = resources.get("memory")
+            temperature = resources.get("temperature")
             assert isinstance(cpu, dict)
             assert isinstance(memory, dict)
+            assert isinstance(temperature, dict)
 
             assert "percent" in cpu
             assert "load_1m" in cpu
@@ -998,6 +1000,21 @@ def test_system_health_reports_resources(dashboard_env):
             if memory_percent is not None:
                 assert isinstance(memory_percent, (int, float))
                 assert 0 <= memory_percent <= 100
+
+            assert "celsius" in temperature
+            assert "fahrenheit" in temperature
+            temp_c = temperature.get("celsius")
+            if temp_c is not None:
+                assert isinstance(temp_c, (int, float))
+                assert -100 <= temp_c <= 200
+            temp_f = temperature.get("fahrenheit")
+            if temp_f is not None:
+                assert isinstance(temp_f, (int, float))
+                assert -148 <= temp_f <= 392
+            sensor_name = temperature.get("sensor")
+            if sensor_name is not None:
+                assert isinstance(sensor_name, str)
+                assert sensor_name.strip() == sensor_name
         finally:
             await client.close()
             await server.close()
@@ -2191,6 +2208,117 @@ def test_services_endpoint_parses_dst_timezone_epoch(monkeypatch, dashboard_env)
             expected_epoch = datetime(2025, 10, 8, 14, 33, tzinfo=timezone.utc).timestamp()
             assert recorder.get("active_enter_epoch") == pytest.approx(expected_epoch)
             assert recorder.get("active_enter_timestamp", "").startswith("2025-10-08T14:33:00")
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_services_list_auto_restart_inactive_web_service(monkeypatch, dashboard_env):
+    async def runner():
+        show_map = {
+            "voice-recorder.service": (
+                "loaded",
+                "active",
+                "running",
+                "enabled",
+                "Recorder",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+                "Tue 2024-05-14 12:34:56 UTC",
+            ),
+            "web-streamer.service": (
+                "loaded",
+                "inactive",
+                "dead",
+                "enabled",
+                "Web UI",
+                "yes",
+                "yes",
+                "no",
+                "yes",
+                "",
+                "Tue 2024-05-14 11:22:33 UTC",
+            ),
+        }
+
+        scheduled: list[tuple[str, list[str], float]] = []
+        monotonic_time = {"value": 1_000.0}
+
+        async def fake_systemctl(args):
+            if args and args[0] == "show" and len(args) >= 2:
+                unit = args[1]
+                values = show_map.get(
+                    unit,
+                    (
+                        "loaded",
+                        "inactive",
+                        "dead",
+                        "disabled",
+                        "",
+                        "yes",
+                        "yes",
+                        "no",
+                        "yes",
+                        "",
+                        "",
+                    ),
+                )
+                payload = "\n".join(
+                    f"{key}={value}"
+                    for key, value in zip(web_streamer._SYSTEMCTL_PROPERTIES, values)
+                )
+                return 0, f"{payload}\n", ""
+            return 0, "", ""
+
+        def fake_enqueue(unit: str, actions, delay: float = 0.5) -> None:
+            scheduled.append((unit, list(actions), delay))
+
+        def fake_monotonic() -> float:
+            return monotonic_time["value"]
+
+        def advance(seconds: float) -> None:
+            monotonic_time["value"] += seconds
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(web_streamer, "_enqueue_service_actions", fake_enqueue)
+        monkeypatch.setattr(web_streamer.time, "monotonic", fake_monotonic, raising=False)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            payload = await resp.json()
+            services = payload.get("services", [])
+            web_service = next(
+                item for item in services if item["unit"] == "web-streamer.service"
+            )
+            assert web_service.get("auto_restart_pending") is True
+            assert scheduled and scheduled[0][0] == "web-streamer.service"
+            assert scheduled[0][1] == ["start"]
+            assert scheduled[0][2] == pytest.approx(0.5, rel=0, abs=1e-6)
+
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            assert len(scheduled) == 1
+            web_service_repeat = next(
+                item for item in (await resp.json()).get("services", [])
+                if item["unit"] == "web-streamer.service"
+            )
+            assert web_service_repeat.get("auto_restart_pending") is True
+
+            advance(web_streamer.AUTO_RESTART_THROTTLE_SECONDS + 0.5)
+            resp = await client.get("/api/services")
+            assert resp.status == 200
+            assert len(scheduled) == 2
+            assert scheduled[1][0] == "web-streamer.service"
+            assert scheduled[1][1] == ["start"]
         finally:
             await client.close()
             await server.close()

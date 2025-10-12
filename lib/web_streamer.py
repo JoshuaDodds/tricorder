@@ -3227,6 +3227,9 @@ RECYCLE_BIN_ROOT_KEY: AppKey[Path] = web.AppKey("recycle_bin_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
 SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_services", list)
 AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
+AUTO_RESTART_STATE_KEY: AppKey[dict[str, float]] = web.AppKey(
+    "dashboard_auto_restart_state", dict
+)
 STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
 WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
 LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", object)
@@ -3540,8 +3543,31 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
     }
 
 
+AUTO_RESTART_THROTTLE_SECONDS = 10.0
+_AUTO_RESTART_STATE: dict[str, float] = {}
+
+
+def _ensure_auto_restart(
+    unit: str,
+    *,
+    state: dict[str, float] | None = None,
+    delay: float = 0.5,
+) -> bool:
+    mapping = state if state is not None else _AUTO_RESTART_STATE
+    now = time.monotonic()
+    last_attempt = mapping.get(unit)
+    if last_attempt is not None and now - last_attempt < AUTO_RESTART_THROTTLE_SECONDS:
+        return True
+    mapping[unit] = now
+    _enqueue_service_actions(unit, ["start"], delay=delay)
+    return True
+
+
 async def _collect_service_state(
-    entry: dict[str, str], auto_restart_units: set[str]
+    entry: dict[str, str],
+    auto_restart_units: set[str],
+    *,
+    auto_restart_state: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     status = await _fetch_service_status(entry["unit"])
     triggered_units = [unit for unit in status.pop("triggered_by", []) if unit]
@@ -3581,6 +3607,17 @@ async def _collect_service_state(
             related["status_state"] = _derive_status_category(related)
             related_units.append(related)
 
+    auto_restart_pending = False
+    unit_name = entry["unit"]
+    if (
+        unit_name in auto_restart_units
+        and status.get("available", False)
+        and not status.get("is_active", False)
+    ):
+        auto_restart_pending = _ensure_auto_restart(
+            unit_name, state=auto_restart_state, delay=0.5
+        )
+
     status_state = _derive_status_category(status)
     waiting_related = [
         rel
@@ -3602,6 +3639,7 @@ async def _collect_service_state(
             "auto_restart": entry["unit"] in auto_restart_units,
             "status_state": status_state,
             "related_units": related_units,
+            "auto_restart_pending": auto_restart_pending,
         }
     )
     return status
@@ -3815,6 +3853,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     service_entries, auto_restart_units = _normalize_dashboard_services(cfg)
     app[SERVICE_ENTRIES_KEY] = service_entries
     app[AUTO_RESTART_KEY] = auto_restart_units
+    app[AUTO_RESTART_STATE_KEY] = {}
 
     try:
         recordings_root_resolved = recordings_root.resolve()
@@ -7090,6 +7129,71 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             "percent": percent,
         }
 
+    def _read_device_temperature() -> dict[str, float | str | None] | None:
+        def _iter_zone_paths() -> list[Path]:
+            seen: set[Path] = set()
+            zones: list[Path] = []
+            for base in (Path("/sys/class/thermal"), Path("/sys/devices/virtual/thermal")):
+                if not base.exists():
+                    continue
+                for temp_path in sorted(base.glob("thermal_zone*/temp")):
+                    if temp_path in seen:
+                        continue
+                    seen.add(temp_path)
+                    zones.append(temp_path)
+            return zones
+
+        best: dict[str, float | str | None] | None = None
+        fallback: dict[str, float | str | None] | None = None
+
+        for temp_path in _iter_zone_paths():
+            label: str | None = None
+            type_path = temp_path.with_name("type")
+            try:
+                raw_label = type_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                raw_label = ""
+            if raw_label:
+                label = raw_label
+
+            try:
+                raw_value = temp_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if not raw_value:
+                continue
+
+            try:
+                numeric_value = float(raw_value)
+            except ValueError:
+                continue
+
+            if numeric_value > 1000.0:
+                celsius = numeric_value / 1000.0
+            else:
+                celsius = numeric_value
+
+            if not math.isfinite(celsius):
+                continue
+
+            fahrenheit = (celsius * 9.0 / 5.0) + 32.0
+            sensor_name = label or temp_path.parent.name
+            reading: dict[str, float | str | None] = {
+                "celsius": celsius,
+                "fahrenheit": fahrenheit,
+                "sensor": sensor_name,
+            }
+
+            normalized_label = (label or "").lower()
+            if normalized_label:
+                if "cpu" in normalized_label or "soc" in normalized_label:
+                    best = reading
+                    break
+            if fallback is None:
+                fallback = reading
+
+        return best or fallback
+
     def _collect_system_health_snapshot() -> dict[str, Any]:
         nonlocal cpu_last_sample, cpu_last_percent
 
@@ -7141,6 +7245,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             memory_available = memory_stats.get("available_bytes")
             memory_used = memory_stats.get("used_bytes")
 
+        temperature_stats = _read_device_temperature()
+        if temperature_stats is None:
+            temperature_payload: dict[str, Any] = {
+                "celsius": None,
+                "fahrenheit": None,
+                "sensor": None,
+            }
+        else:
+            temperature_payload = {
+                "celsius": temperature_stats.get("celsius"),
+                "fahrenheit": temperature_stats.get("fahrenheit"),
+                "sensor": temperature_stats.get("sensor"),
+            }
+
         payload["resources"] = {
             "cpu": {
                 "percent": cpu_percent,
@@ -7153,6 +7271,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "available_bytes": memory_available,
                 "used_bytes": memory_used,
             },
+            "temperature": temperature_payload,
         }
 
         return payload
@@ -7161,6 +7280,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         resources = snapshot.get("resources") or {}
         cpu = resources.get("cpu") or {}
         memory = resources.get("memory") or {}
+        temperature = resources.get("temperature") or {}
         sd_state = snapshot.get("sd_card") or {}
         last_event = ""
         sd_last_event = sd_state.get("last_event")
@@ -7174,9 +7294,17 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 return None
             return round(numeric, 1)
 
+        def _round_temperature(value: Any) -> float | None:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(numeric, 1)
+
         return (
             _round_percent(cpu.get("percent")),
             _round_percent(memory.get("percent")),
+            _round_temperature(temperature.get("celsius")),
             bool(sd_state.get("warning_active")),
             last_event,
         )
@@ -7346,8 +7474,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         auto_restart = request.app.get(AUTO_RESTART_KEY, set())
         if not entries:
             return web.json_response({"services": [], "updated_at": time.time()})
+        state = request.app.get(AUTO_RESTART_STATE_KEY)
         results = await asyncio.gather(
-            *(_collect_service_state(entry, auto_restart) for entry in entries)
+            *(
+                _collect_service_state(
+                    entry,
+                    auto_restart,
+                    auto_restart_state=state,
+                )
+                for entry in entries
+            )
         )
         return web.json_response({"services": results, "updated_at": time.time()})
 
@@ -7435,7 +7571,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if executed_action in {"stop", "restart"}:
             _kick_auto_restart_units(auto_restart, skip={unit})
 
-        status = await _collect_service_state(entry_map[unit], auto_restart)
+        state = request.app.get(AUTO_RESTART_STATE_KEY)
+        status = await _collect_service_state(
+            entry_map[unit],
+            auto_restart,
+            auto_restart_state=state,
+        )
         response["status"] = status
         return web.json_response(response)
 

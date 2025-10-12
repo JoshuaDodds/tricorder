@@ -196,6 +196,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
+- Temperature widget next to the memory metric showing CPU/sensor readings (°C/°F) sourced from `/api/system-health`'s `resources.temperature` payload.
 - JSON APIs (`/api/recordings`, `/api/recycle-bin`, `/api/config`, `/api/integrations`, `/api/recordings/delete`, `/hls/stats` or `/webrtc/stats`, etc.) consumed by the dashboard and available for automation.
 - Server-Sent Events (`/api/events`) streaming capture status, motion, and encoding updates to the dashboard for low-latency UI refreshes.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
@@ -565,7 +566,7 @@ Notable test modules:
 
 - `tests/test_00_install.py` / `tests/test_50_uninstall.py` – installer and cleanup coverage.
 - `tests/test_10_segmenter.py` / `tests/test_20__fault_handler.py` – segmentation pipeline + USB fault handling.
-- `tests/test_25_web_streamer.py` / `tests/test_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
+- `tests/test_25_web_streamer.py` / `tests/test_37_web_dashboard.py` – dashboard routes, assets, APIs, waveform rendering.
 - `tests/test_30_dropbox.py` – dropbox ingestion pipeline.
 - `tests/test_40_end_to_end.py` – WAV → event encoding → Opus artifact validation.
 - `tests/test_60_hls.py` – HLS controller lifecycle and playlist availability.

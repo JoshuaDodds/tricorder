@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from typing import Any, Sequence
 
 import audioop
 import webrtcvad
@@ -53,6 +54,81 @@ FRAME_MS = int(cfg["audio"]["frame_ms"])
 FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
 
 DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
+
+
+def _clone_filter_chain(existing: Any) -> dict[str, Any]:
+    if isinstance(existing, dict):
+        return deepcopy(existing)
+    if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes)):
+        cloned = [deepcopy(entry) for entry in existing if isinstance(entry, dict)]
+        return {"filters": cloned}
+    return {}
+
+
+def _filter_slot_capacity(chain_cfg: dict[str, Any]) -> int:
+    filters = chain_cfg.get("filters")
+    extra_filters = 0
+    if isinstance(filters, Sequence) and not isinstance(filters, (str, bytes)):
+        extra_filters = sum(1 for entry in filters if isinstance(entry, dict))
+
+    notch_stage = chain_cfg.get("notch")
+    base_slots = 1 if isinstance(notch_stage, dict) else 0
+
+    total_slots = base_slots + extra_filters
+    if total_slots <= 0:
+        return 1
+    return total_slots
+
+
+def _apply_notch_filters(
+    existing: Any,
+    recommendations: Sequence[dict[str, Any]],
+    keep_count: int,
+) -> dict[str, Any]:
+    chain_cfg = _clone_filter_chain(existing)
+    limit = max(0, keep_count)
+    trimmed = [
+        deepcopy(entry)
+        for entry in list(recommendations)[:limit]
+        if isinstance(entry, dict)
+    ]
+
+    if not trimmed:
+        chain_cfg.pop("filters", None)
+        notch_stage = chain_cfg.get("notch")
+        if isinstance(notch_stage, dict):
+            notch_stage["enabled"] = False
+        return chain_cfg
+
+    primary = trimmed[0]
+    notch_stage = chain_cfg.setdefault("notch", {})
+    notch_stage["enabled"] = True
+
+    freq = primary.get("frequency")
+    if freq is None:
+        freq = primary.get("freq_hz")
+    if freq is not None:
+        try:
+            notch_stage["freq_hz"] = float(freq)
+        except (TypeError, ValueError):
+            pass
+
+    quality = primary.get("q")
+    if quality is None:
+        quality = primary.get("quality")
+    if quality is not None:
+        try:
+            notch_stage["quality"] = float(quality)
+        except (TypeError, ValueError):
+            pass
+
+    extras = [deepcopy(entry) for entry in trimmed[1:]]
+    if extras:
+        chain_cfg["filters"] = extras
+    else:
+        chain_cfg.pop("filters", None)
+
+    return chain_cfg
 
 
 def spawn_arecord(audio_dev: str):
@@ -144,6 +220,7 @@ def main() -> int:
     parser.add_argument("--analyze-duration", type=float, default=10.0, help="Seconds of idle audio to capture when analyzing noise")
     parser.add_argument("--analyze-top", type=int, default=3, help="Number of dominant hum peaks to report")
     parser.add_argument("--auto-filter", choices=["print", "update"], nargs="?", const="print", help="Recommend or persist audio.filter_chain notch filters (implies --analyze-noise)")
+    parser.add_argument("--max-filters", type=int, default=None, help="Maximum notch filters to include when recommending updates (defaults to the current configuration capacity)")
     parser.add_argument("--dry-run", action="store_true", help="With --auto-filter update, show changes without writing config")
     args = parser.parse_args()
 
@@ -216,24 +293,35 @@ def main() -> int:
                 flush=True,
             )
             if args.auto_filter:
-                filters = recommend_notch_filters(
-                    peaks,
-                    max_filters=max(1, args.analyze_top),
-                )
+                existing_chain = cfg.get("audio", {}).get("filter_chain")
+                cloned_chain = _clone_filter_chain(existing_chain)
+                configured_slots = _filter_slot_capacity(cloned_chain)
+                analyze_slots = max(1, args.analyze_top)
+
+                if args.max_filters is not None:
+                    requested_slots = max(1, int(args.max_filters))
+                    if requested_slots > configured_slots:
+                        slot_label = "slot" if requested_slots == 1 else "slots"
+                        print(
+                            f"[room_tuner] Expanding notch filter recommendations to {requested_slots} {slot_label}; extra slots will be written to audio.filter_chain.filters.",
+                            flush=True,
+                        )
+                    limit = min(analyze_slots, requested_slots)
+                else:
+                    limit = min(analyze_slots, configured_slots)
+                    if analyze_slots > configured_slots:
+                        slot_label = "slot" if configured_slots == 1 else "slots"
+                        print(
+                            f"[room_tuner] Limiting notch filter recommendations to {configured_slots} {slot_label} based on current configuration. Use --max-filters to override.",
+                            flush=True,
+                        )
+
+                filters = recommend_notch_filters(peaks, max_filters=max(1, limit))
                 if not filters:
                     print("[room_tuner] No notch filters recommended.", flush=True)
                 else:
-                    chain_cfg = {}
-                    existing_chain = cfg.get("audio", {}).get("filter_chain")
-                    if isinstance(existing_chain, dict):
-                        chain_cfg = deepcopy(existing_chain)
-                    elif isinstance(existing_chain, (list, tuple)):
-                        chain_cfg = {"filters": list(existing_chain)}
-                    if filters:
-                        chain_cfg["filters"] = [deepcopy(entry) for entry in filters]
-                    else:
-                        chain_cfg.pop("filters", None)
-                    payload = {"filter_chain": chain_cfg}
+                    updated_chain = _apply_notch_filters(existing_chain, filters, keep_count=max(1, limit))
+                    payload = {"filter_chain": updated_chain}
                     print("[room_tuner] Recommended audio.filter_chain:", flush=True)
                     print(json.dumps(payload, indent=2), flush=True)
                     if args.auto_filter == "update":
