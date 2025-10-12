@@ -3227,6 +3227,9 @@ RECYCLE_BIN_ROOT_KEY: AppKey[Path] = web.AppKey("recycle_bin_root", Path)
 ALLOWED_EXT_KEY: AppKey[tuple[str, ...]] = web.AppKey("recordings_allowed_ext", tuple)
 SERVICE_ENTRIES_KEY: AppKey[list[dict[str, str]]] = web.AppKey("dashboard_services", list)
 AUTO_RESTART_KEY: AppKey[set[str]] = web.AppKey("dashboard_auto_restart", set)
+AUTO_RESTART_STATE_KEY: AppKey[dict[str, float]] = web.AppKey(
+    "dashboard_auto_restart_state", dict
+)
 STREAM_MODE_KEY: AppKey[str] = web.AppKey("stream_mode", str)
 WEBRTC_MANAGER_KEY: AppKey[Any] = web.AppKey("webrtc_manager", object)
 LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", object)
@@ -3540,8 +3543,31 @@ async def _fetch_service_status(unit: str) -> dict[str, Any]:
     }
 
 
+AUTO_RESTART_THROTTLE_SECONDS = 10.0
+_AUTO_RESTART_STATE: dict[str, float] = {}
+
+
+def _ensure_auto_restart(
+    unit: str,
+    *,
+    state: dict[str, float] | None = None,
+    delay: float = 0.5,
+) -> bool:
+    mapping = state if state is not None else _AUTO_RESTART_STATE
+    now = time.monotonic()
+    last_attempt = mapping.get(unit)
+    if last_attempt is not None and now - last_attempt < AUTO_RESTART_THROTTLE_SECONDS:
+        return True
+    mapping[unit] = now
+    _enqueue_service_actions(unit, ["start"], delay=delay)
+    return True
+
+
 async def _collect_service_state(
-    entry: dict[str, str], auto_restart_units: set[str]
+    entry: dict[str, str],
+    auto_restart_units: set[str],
+    *,
+    auto_restart_state: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     status = await _fetch_service_status(entry["unit"])
     triggered_units = [unit for unit in status.pop("triggered_by", []) if unit]
@@ -3581,6 +3607,17 @@ async def _collect_service_state(
             related["status_state"] = _derive_status_category(related)
             related_units.append(related)
 
+    auto_restart_pending = False
+    unit_name = entry["unit"]
+    if (
+        unit_name in auto_restart_units
+        and status.get("available", False)
+        and not status.get("is_active", False)
+    ):
+        auto_restart_pending = _ensure_auto_restart(
+            unit_name, state=auto_restart_state, delay=0.5
+        )
+
     status_state = _derive_status_category(status)
     waiting_related = [
         rel
@@ -3602,6 +3639,7 @@ async def _collect_service_state(
             "auto_restart": entry["unit"] in auto_restart_units,
             "status_state": status_state,
             "related_units": related_units,
+            "auto_restart_pending": auto_restart_pending,
         }
     )
     return status
@@ -3815,6 +3853,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     service_entries, auto_restart_units = _normalize_dashboard_services(cfg)
     app[SERVICE_ENTRIES_KEY] = service_entries
     app[AUTO_RESTART_KEY] = auto_restart_units
+    app[AUTO_RESTART_STATE_KEY] = {}
 
     try:
         recordings_root_resolved = recordings_root.resolve()
@@ -7346,8 +7385,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         auto_restart = request.app.get(AUTO_RESTART_KEY, set())
         if not entries:
             return web.json_response({"services": [], "updated_at": time.time()})
+        state = request.app.get(AUTO_RESTART_STATE_KEY)
         results = await asyncio.gather(
-            *(_collect_service_state(entry, auto_restart) for entry in entries)
+            *(
+                _collect_service_state(
+                    entry,
+                    auto_restart,
+                    auto_restart_state=state,
+                )
+                for entry in entries
+            )
         )
         return web.json_response({"services": results, "updated_at": time.time()})
 
@@ -7435,7 +7482,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if executed_action in {"stop", "restart"}:
             _kick_auto_restart_units(auto_restart, skip={unit})
 
-        status = await _collect_service_state(entry_map[unit], auto_restart)
+        state = request.app.get(AUTO_RESTART_STATE_KEY)
+        status = await _collect_service_state(
+            entry_map[unit],
+            auto_restart,
+            auto_restart_state=state,
+        )
         response["status"] = status
         return web.json_response(response)
 
