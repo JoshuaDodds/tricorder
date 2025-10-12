@@ -156,6 +156,27 @@ def move_short_recording_to_recycle_bin(
         if isinstance(started_at_raw, str):
             started_at_value = started_at_raw
 
+    motion_trigger_offset = (
+        _extract_float(waveform_meta.get("motion_trigger_offset_seconds"))
+        if waveform_meta is not None
+        else None
+    )
+    motion_release_offset = (
+        _extract_float(waveform_meta.get("motion_release_offset_seconds"))
+        if waveform_meta is not None
+        else None
+    )
+    motion_started_epoch = (
+        _extract_float(waveform_meta.get("motion_started_epoch"))
+        if waveform_meta is not None
+        else None
+    )
+    motion_released_epoch = (
+        _extract_float(waveform_meta.get("motion_released_epoch"))
+        if waveform_meta is not None
+        else None
+    )
+
     try:
         stat_result = audio_resolved.stat()
     except OSError as exc:  # pragma: no cover - propagated for caller handling
@@ -223,6 +244,10 @@ def move_short_recording_to_recycle_bin(
             "started_epoch": start_epoch_value,
             "started_at": started_at_value,
             "reason": reason,
+            "motion_trigger_offset_seconds": motion_trigger_offset,
+            "motion_release_offset_seconds": motion_release_offset,
+            "motion_started_epoch": motion_started_epoch,
+            "motion_released_epoch": motion_released_epoch,
         }
         with metadata_path.open("w", encoding="utf-8") as handle:
             json.dump(metadata, handle)
