@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import secrets
 import shutil
@@ -75,6 +76,30 @@ def _extract_float(value: object) -> float | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _normalize_motion_segments(value: object) -> list[dict[str, float | None]]:
+    if not isinstance(value, list):
+        return []
+    segments: list[dict[str, float | None]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        start_raw = entry.get("start")
+        if not isinstance(start_raw, (int, float)):
+            continue
+        start_float = float(start_raw)
+        if not math.isfinite(start_float):
+            continue
+        start_value = max(0.0, start_float)
+        end_value: float | None = None
+        end_raw = entry.get("end")
+        if isinstance(end_raw, (int, float)):
+            end_float = float(end_raw)
+            if math.isfinite(end_float):
+                end_value = max(start_value, end_float)
+        segments.append({"start": start_value, "end": end_value})
+    return segments
 
 
 def move_short_recording_to_recycle_bin(
@@ -176,6 +201,11 @@ def move_short_recording_to_recycle_bin(
         if waveform_meta is not None
         else None
     )
+    motion_segments = (
+        _normalize_motion_segments(waveform_meta.get("motion_segments"))
+        if waveform_meta is not None
+        else []
+    )
 
     try:
         stat_result = audio_resolved.stat()
@@ -248,6 +278,7 @@ def move_short_recording_to_recycle_bin(
             "motion_release_offset_seconds": motion_release_offset,
             "motion_started_epoch": motion_started_epoch,
             "motion_released_epoch": motion_released_epoch,
+            "motion_segments": motion_segments,
         }
         with metadata_path.open("w", encoding="utf-8") as handle:
             json.dump(metadata, handle)

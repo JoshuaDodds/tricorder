@@ -210,6 +210,7 @@ def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
             "motion_release_offset_seconds": 1.25,
             "motion_started_epoch": 1_700_000_100.0,
             "motion_released_epoch": 1_700_000_101.5,
+            "motion_segments": [{"start": 0.5, "end": 1.25}],
         }
         _write_waveform_stub(
             file_path.with_suffix(file_path.suffix + ".waveform.json"),
@@ -232,6 +233,9 @@ def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
             assert item["motion_release_offset_seconds"] == pytest.approx(1.25)
             assert item["motion_started_epoch"] == pytest.approx(1_700_000_100.0)
             assert item["motion_released_epoch"] == pytest.approx(1_700_000_101.5)
+            assert item["motion_segments"] == [
+                {"start": pytest.approx(0.5), "end": pytest.approx(1.25)}
+            ]
         finally:
             await client.close()
             await server.close()

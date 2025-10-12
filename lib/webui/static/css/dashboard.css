@@ -1899,6 +1899,34 @@ button.small {
   white-space: nowrap;
 }
 
+.waveform-motion-segments {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.waveform-motion-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(147, 51, 234, 0.18);
+  border-left: 2px solid rgba(147, 51, 234, 0.45);
+  border-right: 2px solid rgba(147, 51, 234, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.waveform-motion-segment[data-open="true"] {
+  border-right-style: dashed;
+  border-right-width: 1px;
+}
+
+.waveform-container[data-ready="true"] .waveform-motion-segment {
+  opacity: 1;
+}
+
 .waveform-marker[data-align="left"] {
   transform: translateX(0);
 }
