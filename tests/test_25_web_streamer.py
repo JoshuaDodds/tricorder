@@ -1382,7 +1382,15 @@ async def test_recycle_bin_list_includes_duration_and_reason(
     manual_path.write_bytes(b"manual")
     manual_waveform = manual_path.with_suffix(manual_path.suffix + ".waveform.json")
     manual_waveform.write_text(
-        json.dumps({"duration_seconds": 2.5}),
+        json.dumps(
+            {
+                "duration_seconds": 2.5,
+                "motion_trigger_offset_seconds": 0.5,
+                "motion_release_offset_seconds": 0.75,
+                "motion_started_epoch": 1_700_000_000,
+                "motion_released_epoch": 1_700_000_005,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1412,8 +1420,19 @@ async def test_recycle_bin_list_includes_duration_and_reason(
     assert "manual" in reasons
     assert "short_clip" in reasons
 
-    assert pytest.approx(reasons["manual"].get("duration_seconds"), rel=1e-3) == 2.5
-    assert pytest.approx(reasons["short_clip"].get("duration_seconds"), rel=1e-3) == 1.25
+    manual_entry = reasons["manual"]
+    auto_entry = reasons["short_clip"]
+
+    assert pytest.approx(manual_entry.get("duration_seconds"), rel=1e-3) == 2.5
+    assert pytest.approx(auto_entry.get("duration_seconds"), rel=1e-3) == 1.25
+    assert pytest.approx(manual_entry.get("motion_trigger_offset_seconds"), rel=1e-3) == 0.5
+    assert pytest.approx(manual_entry.get("motion_release_offset_seconds"), rel=1e-3) == 0.75
+    assert pytest.approx(manual_entry.get("motion_started_epoch"), rel=1e-3) == 1_700_000_000
+    assert pytest.approx(manual_entry.get("motion_released_epoch"), rel=1e-3) == 1_700_000_005
+    assert auto_entry.get("motion_trigger_offset_seconds") is None
+    assert auto_entry.get("motion_release_offset_seconds") is None
+    assert auto_entry.get("motion_started_epoch") is None
+    assert auto_entry.get("motion_released_epoch") is None
 
 
 @pytest.mark.asyncio
