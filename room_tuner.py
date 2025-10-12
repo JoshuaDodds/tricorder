@@ -67,10 +67,17 @@ def _clone_filter_chain(existing: Any) -> dict[str, Any]:
 
 def _filter_slot_capacity(chain_cfg: dict[str, Any]) -> int:
     filters = chain_cfg.get("filters")
+    extra_filters = 0
     if isinstance(filters, Sequence) and not isinstance(filters, (str, bytes)):
-        count = sum(1 for entry in filters if isinstance(entry, dict))
-        return max(1, count)
-    return 1
+        extra_filters = sum(1 for entry in filters if isinstance(entry, dict))
+
+    notch_stage = chain_cfg.get("notch")
+    base_slots = 1 if isinstance(notch_stage, dict) else 0
+
+    total_slots = base_slots + extra_filters
+    if total_slots <= 0:
+        return 1
+    return total_slots
 
 
 def _apply_notch_filters(

@@ -20,6 +20,14 @@ def test_filter_slot_capacity_counts_filters():
     assert _filter_slot_capacity(chain) == 2
 
 
+def test_filter_slot_capacity_includes_notch_stage():
+    chain = {
+        "notch": {"enabled": True, "freq_hz": 60.0, "quality": 30.0},
+        "filters": [{"type": "notch"}, {"type": "notch"}],
+    }
+    assert _filter_slot_capacity(chain) == 3
+
+
 def test_apply_notch_filters_updates_stage_and_extras():
     existing = {
         "notch": {"enabled": False, "freq_hz": 60.0, "quality": 30.0},
