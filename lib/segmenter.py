@@ -2038,6 +2038,16 @@ class TimelineRecorder:
             motion_state.active_since if motion_state.active else None
         )
         self._current_motion_event_end: float | None = None
+        self._motion_event_segments: list[dict[str, float | None]] = []
+        if self._current_motion_event_start is not None:
+            try:
+                initial_start = float(self._current_motion_event_start)
+            except (TypeError, ValueError):
+                initial_start = None
+            if initial_start is not None:
+                self._motion_event_segments.append(
+                    {"start": initial_start, "end": None}
+                )
         self._motion_release_padding_seconds = float(MOTION_RELEASE_PADDING_SECONDS)
         self._motion_release_deadline: float | None = None
         self._motion_padding_started_at: float | None = None
@@ -2220,50 +2230,119 @@ class TimelineRecorder:
             payload.pop("motion_padding_started_epoch", None)
         return payload
 
+    def _reset_motion_segments(self) -> None:
+        self._motion_event_segments = []
+
+    def _record_motion_segment_start(self, start_epoch: float | None) -> None:
+        try:
+            start_value = float(start_epoch)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        segments = getattr(self, "_motion_event_segments", None)
+        if segments is None:
+            segments = []
+            self._motion_event_segments = segments
+        if segments and segments[-1].get("end") is None:
+            current_start = segments[-1].get("start")
+            if not isinstance(current_start, (int, float)) or start_value < float(current_start):
+                segments[-1]["start"] = start_value
+        else:
+            segments.append({"start": start_value, "end": None})
+        if self._current_motion_event_start is None:
+            self._current_motion_event_start = start_value
+        else:
+            try:
+                current = float(self._current_motion_event_start)
+            except (TypeError, ValueError):
+                self._current_motion_event_start = start_value
+            else:
+                if start_value < current:
+                    self._current_motion_event_start = start_value
+
+    def _record_motion_segment_end(self, end_epoch: float | None) -> None:
+        try:
+            end_value = float(end_epoch)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        segments = getattr(self, "_motion_event_segments", None)
+        if not segments:
+            self._motion_event_segments = [{"start": None, "end": end_value}]
+        else:
+            current = segments[-1]
+            start_value = current.get("start")
+            if isinstance(start_value, (int, float)) and end_value < float(start_value):
+                end_value = float(start_value)
+            current["end"] = end_value
+        self._current_motion_event_end = end_value
+
+    def _motion_segments_offsets(
+        self,
+        *,
+        duration_seconds: float | None = None,
+    ) -> list[dict[str, float | None]]:
+        start_epoch = self.event_started_epoch
+        segments = getattr(self, "_motion_event_segments", None)
+        if start_epoch is None or not segments:
+            return []
+        if duration_seconds is None and self.frames_written > 0:
+            duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+        duration = (
+            float(duration_seconds)
+            if isinstance(duration_seconds, (int, float)) and duration_seconds > 0
+            else None
+        )
+        offsets: list[dict[str, float | None]] = []
+        for entry in segments:
+            raw_start = entry.get("start")
+            if raw_start is None:
+                continue
+            try:
+                start_offset = max(0.0, float(raw_start) - float(start_epoch))
+            except (TypeError, ValueError):
+                continue
+            if duration is not None:
+                start_offset = min(start_offset, duration)
+            end_offset: float | None = None
+            raw_end = entry.get("end")
+            if raw_end is not None:
+                try:
+                    end_offset = max(0.0, float(raw_end) - float(start_epoch))
+                except (TypeError, ValueError):
+                    end_offset = None
+                else:
+                    if duration is not None:
+                        end_offset = min(end_offset, duration)
+                    if end_offset < start_offset:
+                        end_offset = start_offset
+            offsets.append({"start": start_offset, "end": end_offset})
+        return offsets
+
     def _motion_offset_values(
         self,
         *,
         duration_seconds: float | None = None,
     ) -> dict[str, float | None]:
-        trigger_offset: float | None = None
-        release_offset: float | None = None
-
-        start_epoch = self.event_started_epoch
-        if start_epoch is None:
+        offsets = self._motion_segments_offsets(
+            duration_seconds=duration_seconds
+        )
+        if not offsets:
             return {
                 "motion_trigger_offset_seconds": None,
                 "motion_release_offset_seconds": None,
             }
 
-        motion_start = getattr(self, "_current_motion_event_start", None)
-        if motion_start is not None:
-            try:
-                trigger_offset = max(0.0, float(motion_start) - float(start_epoch))
-            except (TypeError, ValueError):
-                trigger_offset = None
-
-        motion_end = getattr(self, "_current_motion_event_end", None)
-        if motion_end is not None:
-            try:
-                release_offset = max(0.0, float(motion_end) - float(start_epoch))
-            except (TypeError, ValueError):
-                release_offset = None
-
-        if duration_seconds is None and self.frames_written > 0:
-            duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
-
-        if duration_seconds is not None and duration_seconds > 0:
-            if trigger_offset is not None:
-                trigger_offset = min(trigger_offset, duration_seconds)
-            if release_offset is not None:
-                release_offset = min(release_offset, duration_seconds)
-
-        if (
-            trigger_offset is not None
-            and release_offset is not None
-            and release_offset < trigger_offset
-        ):
-            release_offset = trigger_offset
+        trigger_offset = offsets[0].get("start")
+        release_offset: float | None = None
+        for entry in reversed(offsets):
+            candidate = entry.get("end")
+            if isinstance(candidate, (int, float)):
+                release_offset = float(candidate)
+                break
+        if release_offset is None and offsets:
+            last = offsets[-1]
+            last_start = last.get("start")
+            if isinstance(last_start, (int, float)):
+                release_offset = float(last_start)
 
         return {
             "motion_trigger_offset_seconds": trigger_offset,
@@ -2286,6 +2365,9 @@ class TimelineRecorder:
         offsets = self._motion_offset_values(duration_seconds=duration_seconds)
         payload["motion_trigger_offset_seconds"] = offsets["motion_trigger_offset_seconds"]
         payload["motion_release_offset_seconds"] = offsets["motion_release_offset_seconds"]
+        segments = self._motion_segments_offsets(duration_seconds=duration_seconds)
+        if segments:
+            payload["motion_segments"] = segments
         watcher = getattr(self, '_motion_watcher', None)
         motion_state = watcher.state if watcher is not None else None
         if motion_state is not None:
@@ -2365,8 +2447,7 @@ class TimelineRecorder:
             self._motion_active_since = start_epoch
             self._motion_release_deadline = None
             self._motion_padding_started_at = None
-            if self._current_motion_event_start is None:
-                self._current_motion_event_start = start_epoch
+            self._record_motion_segment_start(start_epoch)
             self._current_motion_event_end = None
             if not self.active:
                 self._motion_pending_start = True
@@ -2402,22 +2483,23 @@ class TimelineRecorder:
                 if self._motion_active_since is None:
                     self._motion_active_since = updated.active_since or updated.updated_at
                 if self._current_motion_event_start is None:
-                    self._current_motion_event_start = updated.active_since or updated.updated_at
+                    self._record_motion_segment_start(updated.active_since or updated.updated_at)
                 if self.active and self._current_motion_event_start is not None:
-                    self._current_motion_event_end = release_epoch
-                else:
-                    if not self.active:
-                        self._current_motion_event_start = None
-                        self._current_motion_event_end = None
+                    self._record_motion_segment_end(release_epoch)
+                elif not self.active:
+                    self._current_motion_event_start = None
+                    self._current_motion_event_end = None
+                    self._reset_motion_segments()
             else:
                 self._motion_forced_active = False
                 self._motion_active_since = None
                 self._motion_pending_start = False
                 if self.active and self._current_motion_event_start is not None:
-                    self._current_motion_event_end = release_epoch
+                    self._record_motion_segment_end(release_epoch)
                 else:
                     self._current_motion_event_start = None
                     self._current_motion_event_end = None
+                    self._reset_motion_segments()
                 if previous_forced:
                     try:
                         self.recent_active.clear()
@@ -2428,7 +2510,7 @@ class TimelineRecorder:
                 if getattr(self, "_manual_recording", False):
                     self._manual_motion_released = True
         if effective_active and self.active and self._current_motion_event_start is None:
-            self._current_motion_event_start = updated.active_since or updated.updated_at
+            self._record_motion_segment_start(updated.active_since or updated.updated_at)
         self._publish_motion_status()
 
     def set_manual_recording(self, enabled: bool) -> None:
@@ -2469,6 +2551,7 @@ class TimelineRecorder:
             self._current_motion_event_end = None
             self._motion_release_deadline = None
             self._motion_padding_started_at = None
+            self._reset_motion_segments()
             if previously_active or previous_pending or had_start or had_end:
                 self._publish_motion_status()
 
@@ -2943,7 +3026,9 @@ class TimelineRecorder:
                 self._motion_pending_start = False
                 self._current_motion_event_end = None
                 if self._motion_forced_active and self._current_motion_event_start is None:
-                    self._current_motion_event_start = self._motion_active_since or time.time()
+                    self._record_motion_segment_start(
+                        self._motion_active_since or time.time()
+                    )
                 self.post_count = POST_PAD_FRAMES
                 self.saw_voiced = voiced
                 self.saw_loud = loud
@@ -3319,6 +3404,7 @@ class TimelineRecorder:
             "motion_release_offset_seconds": last_event_status.get(
                 "motion_release_offset_seconds"
             ),
+            "motion_segments": last_event_status.get("motion_segments"),
         }
         if waveform_path:
             self._annotate_waveform_metadata(waveform_path, metadata_payload)
@@ -3527,6 +3613,7 @@ class TimelineRecorder:
         self._manual_motion_released = False
         self._current_motion_event_start = None
         self._current_motion_event_end = None
+        self._reset_motion_segments()
         self._cleanup_live_waveform()
 
     def flush(self, idx: int):

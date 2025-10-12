@@ -1389,6 +1389,7 @@ async def test_recycle_bin_list_includes_duration_and_reason(
                 "motion_release_offset_seconds": 0.75,
                 "motion_started_epoch": 1_700_000_000,
                 "motion_released_epoch": 1_700_000_005,
+                "motion_segments": [{"start": 0.5, "end": 0.75}],
             }
         ),
         encoding="utf-8",
@@ -1429,10 +1430,14 @@ async def test_recycle_bin_list_includes_duration_and_reason(
     assert pytest.approx(manual_entry.get("motion_release_offset_seconds"), rel=1e-3) == 0.75
     assert pytest.approx(manual_entry.get("motion_started_epoch"), rel=1e-3) == 1_700_000_000
     assert pytest.approx(manual_entry.get("motion_released_epoch"), rel=1e-3) == 1_700_000_005
+    assert manual_entry.get("motion_segments") == [
+        {"start": pytest.approx(0.5, rel=1e-3), "end": pytest.approx(0.75, rel=1e-3)}
+    ]
     assert auto_entry.get("motion_trigger_offset_seconds") is None
     assert auto_entry.get("motion_release_offset_seconds") is None
     assert auto_entry.get("motion_started_epoch") is None
     assert auto_entry.get("motion_released_epoch") is None
+    assert auto_entry.get("motion_segments") == []
 
 
 @pytest.mark.asyncio
