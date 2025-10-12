@@ -51,8 +51,9 @@ Regarding time, we want actual duration between commits rounded to the minute an
 - Before your final commit, add Jira worklog entries that sum to the same total minutes as your scratch timer. If you discover a mismatch, update the worklog to the correct value and mention the adjustment in your closing Jira comment.
 - Prior to calling `make_pr`, re-read the time tracking log and confirm the total duration you plan to report matches the wall-clock elapsed time for the session (rounded to the nearest minute). If there is a discrepancy, correct the worklog and amend the commit message before proceeding.
 
-### Local dev backend + dashboard smoke checklist
-Follow this playbook whenever you need an end-to-end dashboard demo on a dev workstation:
+### Imperative for when Frontend changes are made!!! Local dev backend + dashboard smoke checklist
+Follow this playbook whenever you need an end-to-end dashboard demo on a dev workstation or if you have made any changes to the frontend then this becomes imperative. 
+When you have made visual changes you must show visuals of the changes so that means running an actual browser client for snapshots after the steps below are run and a backend is running.
 
 1. **Bootstrap the Python env**
    - `python -m venv .venv && source .venv/bin/activate`
