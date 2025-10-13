@@ -8,6 +8,7 @@ import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 import wave
 from datetime import datetime, timezone
@@ -1101,6 +1102,32 @@ def test_encode_completion_emits_recordings_changed(monkeypatch, tmp_path):
         and payload.get("paths") == ["20240102/20240102_Both_RMS-321_1.opus"]
         for event_type, payload in events
     )
+
+
+def test_enqueue_encode_job_defers_when_queue_full(monkeypatch):
+    queue_obj = queue.Queue(maxsize=1)
+    queue_obj.put(("occupied",))
+    monkeypatch.setattr(segmenter, "ENCODE_QUEUE", queue_obj, raising=False)
+    monkeypatch.setattr(segmenter, "_ensure_encoder_worker", lambda: None)
+    monkeypatch.setattr(segmenter, "_ENCODE_WORKERS", [], raising=False)
+    monkeypatch.setattr(segmenter, "_ENCODE_DISPATCHER", None, raising=False)
+    monkeypatch.setattr(segmenter, "_DEFERRED_LOCK", threading.Lock(), raising=False)
+    deferred = collections.deque()
+    event = threading.Event()
+    monkeypatch.setattr(segmenter, "_DEFERRED_ENCODE_JOBS", deferred, raising=False)
+    monkeypatch.setattr(segmenter, "_DEFERRED_EVENT", event, raising=False)
+
+    statuses = segmenter.EncodingStatus()
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", statuses, raising=False)
+
+    job_id = segmenter._enqueue_encode_job("/tmp/path.wav", "20240102_Both_RMS-321_1")
+
+    assert job_id is not None
+    assert len(deferred) == 1
+    snapshot = statuses.snapshot()
+    assert snapshot is not None
+    pending = snapshot.get("pending", [])
+    assert pending and pending[0]["queue_state"] == "deferred"
 
 
 def test_event_base_name_uses_prepad(monkeypatch, tmp_path):
