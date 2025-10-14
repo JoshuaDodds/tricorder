@@ -3133,7 +3133,7 @@ def test_shift_click_uses_existing_anchor_when_available():
     assert "20240101/alpha.opus" not in result["selections"]
 
 
-def test_playback_source_defaults_to_processed_when_raw_available():
+def test_playback_source_defaults_to_raw_when_available():
     script = textwrap.dedent(
         """
         const group = sandbox.window.document.__getMockElement("playback-source-group");
@@ -3200,14 +3200,14 @@ def test_playback_source_defaults_to_processed_when_raw_available():
         },
     )
 
-    assert result["state"]["mode"] == "processed"
+    assert result["state"]["mode"] == "raw"
     assert result["state"]["hasRaw"] is True
     assert result["groupHidden"] is False
-    assert result["groupSource"] == "processed"
+    assert result["groupSource"] == "raw"
     assert result["rawAvailableFlag"] == "true"
     assert result["rawDisabled"] is False
     assert result["hintHidden"] is True
-    assert result["activeLabel"] == "Processed (Opus)"
+    assert result["activeLabel"] == "Raw capture (PCM)"
 
 
 def test_playback_source_reverts_when_raw_unavailable():
