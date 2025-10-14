@@ -136,6 +136,9 @@ segmenter:
   # Use this to retain context around motion-triggered events before RMS/VAD regain control.
   motion_release_padding_minutes: 0.0
 
+  # Allow motion to override the dashboard auto-record toggle when true. Disable to require manual capture.
+  auto_record_motion_override: true
+
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
   rms_threshold: 300

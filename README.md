@@ -187,6 +187,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Live recorder status and listener counts with encoder start/stop controls.
 - Recorder uptime tile showing how long `voice-recorder.service` has been active since the last start.
 - Manual **Split Event** control to finalize the current recording and immediately begin a new segment without interrupting encoding.
+- **Auto Capture** toggle to pause RMS/VAD-triggered recordings while keeping live streaming and manual capture available.
 - Manual **Record** toggle to force continuous recording and skip offline filter passes when you need uninterrupted capture.
 - Recording browser with search, day filtering, pagination, and a recycle bin for safe deletion and restoration.
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.

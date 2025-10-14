@@ -336,6 +336,10 @@ try:
 except (TypeError, ValueError):
     MOTION_RELEASE_PADDING_SECONDS = 0.0
 
+AUTO_RECORD_MOTION_OVERRIDE = bool(
+    cfg["segmenter"].get("auto_record_motion_override", True)
+)
+
 STREAMING_ENCODE_ENABLED = bool(
     cfg["segmenter"].get("streaming_encode", False)
 )
@@ -2089,6 +2093,8 @@ class TimelineRecorder:
         self._manual_recording = False
         self._event_manual_recording = False
         self._manual_motion_released = False
+        self._auto_recording_enabled = True
+        self._motion_override_enabled = bool(AUTO_RECORD_MOTION_OVERRIDE)
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -2160,6 +2166,8 @@ class TimelineRecorder:
                     "partial_recording_path": None,
                     "streaming_container_format": None,
                     "manual_recording": False,
+                    "auto_recording_enabled": bool(self._auto_recording_enabled),
+                    "auto_record_motion_override": bool(self._motion_override_enabled),
                     **self._motion_status_extra(),
                 },
             )
@@ -2203,6 +2211,12 @@ class TimelineRecorder:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
             payload["adaptive_rms_enabled"] = bool(self._adaptive.enabled)
             payload["manual_recording"] = bool(getattr(self, "_manual_recording", False))
+            payload["auto_recording_enabled"] = bool(
+                getattr(self, "_auto_recording_enabled", True)
+            )
+            payload["auto_record_motion_override"] = bool(
+                getattr(self, "_motion_override_enabled", False)
+            )
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -2236,6 +2250,8 @@ class TimelineRecorder:
                 "partial_waveform_rel_path",
                 "encoding",
                 "manual_recording",
+                "auto_recording_enabled",
+                "auto_record_motion_override",
             )
             if extra and self._status_mode == "live":
                 for key, value in extra.items():
@@ -2649,6 +2665,25 @@ class TimelineRecorder:
             if previously_active or previous_pending or had_start or had_end:
                 self._publish_motion_status()
 
+    def set_auto_recording_enabled(self, enabled: bool) -> None:
+        next_state = bool(enabled)
+        if next_state == getattr(self, "_auto_recording_enabled", True):
+            return
+        self._auto_recording_enabled = next_state
+        if not next_state:
+            if (
+                self.active
+                and not self._manual_recording
+                and not (
+                    self._motion_forced_active and self._motion_override_enabled
+                )
+            ):
+                self._finalize_event(reason="auto recording disabled")
+            else:
+                self._refresh_capture_status()
+            return
+        self._refresh_capture_status()
+
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
         with self._status_lock:
             capturing = self.active
@@ -2938,8 +2973,14 @@ class TimelineRecorder:
             frame_active = True
             loud = True
             voiced = True
-        if self._motion_forced_active:
-            frame_active = True
+        else:
+            if self._motion_forced_active:
+                if self._auto_recording_enabled or self._motion_override_enabled:
+                    frame_active = True
+                else:
+                    frame_active = False
+            elif not self._auto_recording_enabled:
+                frame_active = False
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)
