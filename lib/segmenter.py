@@ -93,6 +93,11 @@ def _set_single_core_affinity() -> None:
 
         if hasattr(os, "sched_setaffinity"):
             os.sched_setaffinity(0, {int(target_cpu)})
+        if hasattr(os, "nice"):
+            try:
+                os.nice(5)
+            except OSError:
+                pass
     except (AttributeError, OSError, ValueError):
         pass
 
@@ -430,6 +435,9 @@ FILTER_CHAIN_LOG_THROTTLE_SEC = float(
 # buffered writes
 FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
 MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
+MAX_PENDING_ENCODE_JOBS = max(
+    1, int(cfg["segmenter"].get("max_pending_encodes", 8))
+)
 
 
 @dataclass
@@ -1235,10 +1243,57 @@ class LiveWaveformWriter:
         return payload
 
 # ---------- Async encoder worker ----------
-ENCODE_QUEUE: queue.Queue = queue.Queue()
+ENCODE_QUEUE: queue.Queue = queue.Queue(maxsize=MAX_PENDING_ENCODE_JOBS)
+_DEFERRED_ENCODE_JOBS: collections.deque[tuple[object, ...]] = collections.deque()
+_DEFERRED_LOCK = threading.Lock()
+_DEFERRED_EVENT = threading.Event()
 _ENCODE_WORKERS: list['_EncoderWorker'] = []
+_ENCODE_DISPATCHER: threading.Thread | None = None
 _ENCODE_LOCK = threading.Lock()
 SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
+
+
+def _encode_dispatcher_main() -> None:
+    while True:
+        _DEFERRED_EVENT.wait()
+        while True:
+            with _DEFERRED_LOCK:
+                if not _DEFERRED_ENCODE_JOBS:
+                    _DEFERRED_EVENT.clear()
+                    break
+                payload = _DEFERRED_ENCODE_JOBS.popleft()
+            job_id = None
+            if isinstance(payload, tuple) and payload:
+                candidate = payload[0]
+                if isinstance(candidate, int):
+                    job_id = candidate
+            while True:
+                try:
+                    ENCODE_QUEUE.put(payload, timeout=1.0)
+                except queue.Full:
+                    if not _DEFERRED_EVENT.wait(timeout=0.5):
+                        continue
+                else:
+                    if job_id is not None:
+                        ENCODING_STATUS.update_pending_state(job_id, "queued")
+                    break
+
+
+def _defer_encode_payload(payload: tuple[object, ...]) -> None:
+    with _DEFERRED_LOCK:
+        _DEFERRED_ENCODE_JOBS.append(payload)
+    _DEFERRED_EVENT.set()
+
+
+def _try_submit_encode_payload(payload: tuple[object, ...]) -> bool:
+    if MAX_PENDING_ENCODE_JOBS <= 0:
+        ENCODE_QUEUE.put(payload)
+        return True
+    try:
+        ENCODE_QUEUE.put_nowait(payload)
+        return True
+    except queue.Full:
+        return False
 
 
 def _append_recordings_event(event_type: str, payload: dict[str, object]) -> None:
@@ -1314,6 +1369,7 @@ class EncodingStatus:
                 "queued_at": entry.get("queued_at"),
                 "source": entry.get("source"),
                 "status": "pending",
+                "queue_state": entry.get("queue_state", "queued"),
             }
             for entry in pending
         ]
@@ -1325,6 +1381,7 @@ class EncodingStatus:
                 "started_at": entry.get("started_at"),
                 "source": entry.get("source"),
                 "status": "active",
+                "queue_state": "active",
             }
             for entry in sorted(
                 active_items,
@@ -1350,7 +1407,13 @@ class EncodingStatus:
             except Exception:
                 pass
 
-    def enqueue(self, base_name: str, *, source: str = "live") -> int:
+    def enqueue(
+        self,
+        base_name: str,
+        *,
+        source: str = "live",
+        queue_state: str = "queued",
+    ) -> int:
         with self._cond:
             job_id = self._next_id
             self._next_id += 1
@@ -1360,11 +1423,24 @@ class EncodingStatus:
                     "base_name": base_name,
                     "queued_at": time.time(),
                     "source": source,
+                    "queue_state": queue_state,
                 }
             )
             self._cond.notify_all()
         self._notify()
         return job_id
+
+    def update_pending_state(self, job_id: int, state: str) -> None:
+        updated = False
+        with self._cond:
+            for entry in self._pending:
+                if entry.get("id") == job_id:
+                    entry["queue_state"] = state
+                    updated = True
+                    self._cond.notify_all()
+                    break
+        if updated:
+            self._notify()
 
     def register_completion_callback(self, job_id: int, callback: Callable[[], None]) -> None:
         if not callable(callback):
@@ -1403,6 +1479,7 @@ class EncodingStatus:
                 job["base_name"] = base_name
                 if "source" not in job or not isinstance(job.get("source"), str):
                     job["source"] = "unknown"
+            job["queue_state"] = "active"
             job["started_at"] = time.time()
             self._active[job_id] = job
             self._cond.notify_all()
@@ -1590,7 +1667,7 @@ class _EncoderWorker(threading.Thread):
 
 
 def _ensure_encoder_worker() -> None:
-    global _ENCODE_WORKERS
+    global _ENCODE_WORKERS, _ENCODE_DISPATCHER
     with _ENCODE_LOCK:
         alive = []
         for worker in _ENCODE_WORKERS:
@@ -1602,6 +1679,14 @@ def _ensure_encoder_worker() -> None:
             worker = _EncoderWorker(ENCODE_QUEUE)
             worker.start()
             _ENCODE_WORKERS.append(worker)
+        if _ENCODE_DISPATCHER is None or not _ENCODE_DISPATCHER.is_alive():
+            dispatcher = threading.Thread(
+                target=_encode_dispatcher_main,
+                name="encode-dispatcher",
+                daemon=True,
+            )
+            dispatcher.start()
+            _ENCODE_DISPATCHER = dispatcher
 
 
 def _enqueue_encode_job(
@@ -1616,7 +1701,7 @@ def _enqueue_encode_job(
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
-    job_id = ENCODING_STATUS.enqueue(base_name, source=source)
+    job_id = ENCODING_STATUS.enqueue(base_name, source=source, queue_state="queued")
     day_component: str | None = None
     if target_day:
         candidate = target_day.strip()
@@ -1632,11 +1717,20 @@ def _enqueue_encode_job(
     )
     if day_component:
         payload += (day_component,)
-    try:
-        ENCODE_QUEUE.put_nowait(payload)
-    except queue.Full:
-        ENCODE_QUEUE.put(payload)
-    print(f"[segmenter] queued encode job for {base_name}", flush=True)
+    if _try_submit_encode_payload(payload):
+        print(f"[segmenter] queued encode job for {base_name}", flush=True)
+        return job_id
+
+    ENCODING_STATUS.update_pending_state(job_id, "deferred")
+    _defer_encode_payload(payload)
+    with _DEFERRED_LOCK:
+        deferred_count = len(_DEFERRED_ENCODE_JOBS)
+    pending_count = ENCODE_QUEUE.qsize()
+    print(
+        f"[segmenter] encode queue full; deferred job for {base_name} "
+        f"(pending={pending_count}, deferred={deferred_count})",
+        flush=True,
+    )
     return job_id
 
 
