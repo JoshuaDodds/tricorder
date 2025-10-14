@@ -2095,6 +2095,7 @@ class TimelineRecorder:
         self._manual_motion_released = False
         self._auto_recording_enabled = True
         self._motion_override_enabled = bool(AUTO_RECORD_MOTION_OVERRIDE)
+        self._motion_override_event_active = False
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -2980,7 +2981,10 @@ class TimelineRecorder:
                 else:
                     frame_active = False
             elif not self._auto_recording_enabled:
-                frame_active = False
+                if self._motion_override_event_active:
+                    frame_active = bool(loud or voiced)
+                else:
+                    frame_active = False
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)
@@ -3158,6 +3162,14 @@ class TimelineRecorder:
 
                 self.active = True
                 self._event_manual_recording = self._manual_recording
+                self._motion_override_event_active = bool(
+                    self._motion_override_enabled
+                    and not self._auto_recording_enabled
+                    and (
+                        self._motion_forced_active
+                        or getattr(self, "_motion_pending_start", False)
+                    )
+                )
                 self._motion_pending_start = False
                 self._current_motion_event_end = None
                 if self._motion_forced_active and self._current_motion_event_start is None:
@@ -3746,6 +3758,7 @@ class TimelineRecorder:
         self._manual_split_requested = False
         self._event_manual_recording = False
         self._manual_motion_released = False
+        self._motion_override_event_active = False
         self._current_motion_event_start = None
         self._current_motion_event_end = None
         self._reset_motion_segments()
