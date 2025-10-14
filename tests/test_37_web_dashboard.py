@@ -332,6 +332,8 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             assert "recording_progress" not in capture_status
             assert capture_status.get("last_stop_reason") == "status stale"
             assert capture_status.get("manual_recording") is False
+            assert capture_status.get("auto_recording_enabled") is True
+            assert capture_status.get("auto_record_motion_override") is True
         finally:
             await client.close()
             await server.close()
@@ -369,6 +371,8 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert "recording_progress" not in first_status
             assert first_status.get("last_stop_reason") == "service offline"
             assert first_status.get("manual_recording") is False
+            assert first_status.get("auto_recording_enabled") is True
+            assert first_status.get("auto_record_motion_override") is True
 
             offline_payload["last_stop_reason"] = "shutdown"
             status_path.write_text(json.dumps(offline_payload), encoding="utf-8")
@@ -384,6 +388,8 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert "recording_progress" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
             assert second_status.get("manual_recording") is False
+            assert second_status.get("auto_recording_enabled") is True
+            assert second_status.get("auto_record_motion_override") is True
         finally:
             await client.close()
             await server.close()
@@ -2656,6 +2662,58 @@ def test_capture_manual_record_invalid_payload(dashboard_env):
     asyncio.run(runner())
 
 
+def test_capture_auto_record_endpoint(dashboard_env):
+    async def runner():
+        auto_state_path = Path(os.environ["TMP_DIR"]) / "auto_record_state.json"
+        if auto_state_path.exists():
+            auto_state_path.unlink()
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/auto-record", json={"enabled": False})
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("ok") is True
+            assert payload.get("enabled") is False
+            data = json.loads(auto_state_path.read_text(encoding="utf-8"))
+            assert data.get("enabled") is False
+
+            resp = await client.post("/api/capture/auto-record", json={"enabled": True})
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("enabled") is True
+            data = json.loads(auto_state_path.read_text(encoding="utf-8"))
+            assert data.get("enabled") is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_auto_record_invalid_payload(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/auto-record", json={"enabled": "sometimes"})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload.get("ok") is False
+            resp_invalid = await client.post(
+                "/api/capture/auto-record", data=b"not-json", headers={"Content-Type": "application/json"}
+            )
+            assert resp_invalid.status == 400
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_bulk_download_includes_sidecars(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"
@@ -2872,6 +2930,7 @@ def test_capture_status_merges_motion_padding_updates_without_sequence_bump():
         sandbox.updateRecordingMeta = () => {};
         sandbox.updateEncodingStatus = () => {};
         sandbox.updateSplitEventButton = () => {};
+        sandbox.updateAutoRecordButton = () => {};
         sandbox.updateManualRecordButton = () => {};
         state.motionState = {
           sequence: 27,

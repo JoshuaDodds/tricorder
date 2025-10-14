@@ -475,6 +475,158 @@ def test_motion_payload_includes_offsets(monkeypatch, tmp_path):
         rec.flush(0)
 
 
+def test_auto_record_toggle_blocks_rms(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", True)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.set_auto_recording_enabled(False)
+        cache = rec._status_cache or {}
+        assert cache.get("auto_recording_enabled") is False
+
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is False
+
+        rec.set_auto_recording_enabled(True)
+        cache = rec._status_cache or {}
+        assert cache.get("auto_recording_enabled") is True
+
+        rec.ingest(make_frame(4000), 1)
+        assert rec.active is True
+    finally:
+        rec.flush(0)
+
+
+def test_auto_record_motion_override_allows_capture(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", True)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=25.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        assert rec._motion_forced_active is True
+        rec.set_auto_recording_enabled(False)
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is True
+    finally:
+        rec.flush(0)
+
+
+def test_auto_record_motion_override_disabled_blocks_motion(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", False)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=40.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        assert rec._motion_forced_active is True
+        rec.set_auto_recording_enabled(False)
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is False
+    finally:
+        rec.flush(0)
+
+def test_motion_override_event_uses_rms_after_motion_release(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "is_voice", lambda buf: any(buf))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", True)
+    monkeypatch.setattr(segmenter, "MOTION_RELEASE_PADDING_SECONDS", 0.0)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=50.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.set_auto_recording_enabled(False)
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is True
+        assert rec._motion_override_event_active is True
+
+        store_motion_state(motion_state_path, motion_active=False, timestamp=55.0)
+        rec._motion_watcher.force_refresh()
+        rec._refresh_motion_state()
+        assert rec._motion_forced_active is False
+        rec.ingest(make_frame(4000), 1)
+        assert rec.active is True
+        assert rec._motion_override_event_active is True
+
+        rec.ingest(make_frame(0), 2)
+        rec.ingest(make_frame(0), 3)
+        assert rec.active is False
+        assert rec._motion_override_event_active is False
+
+        rec.ingest(make_frame(4000), 4)
+        assert rec.active is False
+    finally:
+        rec.flush(0)
+
+
 def test_motion_payload_tracks_multiple_segments(monkeypatch, tmp_path):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"

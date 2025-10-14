@@ -56,6 +56,8 @@ AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
 MANUAL_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_record_state.json")
 MANUAL_POLL_INTERVAL = 0.5
+AUTO_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "auto_record_state.json")
+AUTO_POLL_INTERVAL = 0.5
 
 ARECORD_CMD = [
     "arecord",
@@ -89,6 +91,26 @@ def _manual_record_snapshot(path: str) -> tuple[bool, float]:
     enabled = False
     if isinstance(data, dict):
         enabled = bool(data.get("enabled", False))
+    elif isinstance(data, bool):
+        enabled = bool(data)
+    return enabled, stat.st_mtime
+
+
+def _auto_record_snapshot(path: str) -> tuple[bool, float]:
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return True, 0.0
+    except OSError:
+        return True, 0.0
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return True, stat.st_mtime
+    enabled = True
+    if isinstance(data, dict):
+        enabled = bool(data.get("enabled", True))
     elif isinstance(data, bool):
         enabled = bool(data)
     return enabled, stat.st_mtime
@@ -402,6 +424,7 @@ def main():
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
 
     manual_record_enabled, manual_record_mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
+    auto_record_enabled, auto_record_mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
 
     try:
         recovery_report = perform_startup_recovery()
@@ -495,7 +518,17 @@ def main():
             manual_record_enabled, manual_record_mtime = _manual_record_snapshot(
                 MANUAL_RECORD_PATH
             )
+            auto_record_enabled, auto_record_mtime = _auto_record_snapshot(
+                AUTO_RECORD_PATH
+            )
             rec = TimelineRecorder()
+            try:
+                rec.set_auto_recording_enabled(auto_record_enabled)
+            except Exception as exc:
+                print(
+                    f"[live] WARN: failed to apply auto recording state: {exc!r}",
+                    flush=True,
+                )
             if manual_record_enabled:
                 try:
                     rec.set_manual_recording(True)
@@ -510,6 +543,7 @@ def main():
             next_state_poll = 0.0
             filter_chain_error_logged = False
             next_manual_poll = 0.0
+            next_auto_poll = 0.0
 
             def flush_processed(frames: list[Tuple[bytes, Optional[str]]]) -> None:
                 nonlocal frame_idx, last_frame_time, filter_chain_error_logged
@@ -586,6 +620,20 @@ def main():
                         except Exception as exc:
                             print(
                                 f"[live] WARN: failed to update manual recording mode: {exc!r}",
+                                flush=True,
+                            )
+
+                if now >= next_auto_poll:
+                    next_auto_poll = now + AUTO_POLL_INTERVAL
+                    enabled, mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
+                    if mtime != auto_record_mtime or enabled != auto_record_enabled:
+                        auto_record_enabled = enabled
+                        auto_record_mtime = mtime
+                        try:
+                            rec.set_auto_recording_enabled(auto_record_enabled)
+                        except Exception as exc:
+                            print(
+                                f"[live] WARN: failed to update auto recording mode: {exc!r}",
                                 flush=True,
                             )
 

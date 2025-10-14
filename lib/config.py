@@ -119,6 +119,7 @@ _DEFAULTS: Dict[str, Any] = {
         "max_queue_frames": 512,
         "min_clip_seconds": 0.0,
         "motion_release_padding_minutes": 0.0,
+        "auto_record_motion_override": True,
         "event_tags": EVENT_TAG_DEFAULTS.copy(),
     },
     "adaptive_rms": {

@@ -4637,8 +4637,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     manual_record_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), "manual_record_state.json"
     )
+    auto_record_state_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), "auto_record_state.json"
+    )
     motion_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
+    )
+    auto_motion_override_default = bool(
+        cfg.get("segmenter", {}).get("auto_record_motion_override", True)
     )
 
     def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
@@ -4691,6 +4697,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if isinstance(payload, bool):
             return bool(payload)
         return False
+
+    def _read_auto_record_flag() -> bool:
+        try:
+            with open(auto_record_state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return True
+        except (json.JSONDecodeError, OSError):
+            return True
+        if isinstance(payload, dict):
+            return bool(payload.get("enabled", True))
+        if isinstance(payload, bool):
+            return bool(payload)
+        return True
 
     def _float_or_none(value: object) -> float | None:
         if isinstance(value, (int, float)) and math.isfinite(value):
@@ -4855,6 +4875,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "capturing": False,
                 "updated_at": None,
                 "manual_recording": _read_manual_record_flag(),
+                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_record_motion_override": auto_motion_override_default,
             }
         except json.JSONDecodeError:
             return {
@@ -4862,12 +4884,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "updated_at": None,
                 "error": "invalid",
                 "manual_recording": _read_manual_record_flag(),
+                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_record_motion_override": auto_motion_override_default,
             }
         except OSError:
             return {
                 "capturing": False,
                 "updated_at": None,
                 "manual_recording": _read_manual_record_flag(),
+                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_record_motion_override": auto_motion_override_default,
             }
 
         status: dict[str, object] = {
@@ -4879,6 +4905,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status["manual_recording"] = manual_flag
         else:
             status["manual_recording"] = _read_manual_record_flag()
+        auto_flag = raw.get("auto_recording_enabled")
+        if isinstance(auto_flag, bool):
+            status["auto_recording_enabled"] = auto_flag
+        else:
+            status["auto_recording_enabled"] = _read_auto_record_flag()
+        motion_override_flag = raw.get("auto_record_motion_override")
+        if isinstance(motion_override_flag, bool):
+            status["auto_record_motion_override"] = motion_override_flag
+        else:
+            status["auto_record_motion_override"] = auto_motion_override_default
         updated_at = raw.get("updated_at")
         if isinstance(updated_at, (int, float)):
             status["updated_at"] = float(updated_at)
@@ -7717,6 +7753,51 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return web.json_response({"ok": False, "error": message}, status=502)
         return web.json_response({"ok": True})
 
+    async def capture_auto_record(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
+
+        raw_enabled = payload.get("enabled") if isinstance(payload, dict) else None
+        enabled: bool | None
+        if isinstance(raw_enabled, bool):
+            enabled = raw_enabled
+        elif isinstance(raw_enabled, (int, float)):
+            enabled = bool(raw_enabled)
+        elif isinstance(raw_enabled, str):
+            normalized = raw_enabled.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                enabled = True
+            elif normalized in {"0", "false", "no", "off"}:
+                enabled = False
+            else:
+                enabled = None
+        else:
+            enabled = None
+
+        if enabled is None:
+            return web.json_response(
+                {"ok": False, "error": "Payload must include boolean 'enabled'"},
+                status=400,
+            )
+
+        try:
+            os.makedirs(os.path.dirname(auto_record_state_path), exist_ok=True)
+            with open(auto_record_state_path, "w", encoding="utf-8") as handle:
+                json.dump({"enabled": bool(enabled), "updated_at": time.time()}, handle)
+                handle.write("\n")
+        except OSError as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": f"Failed to update auto record state: {exc}",
+                },
+                status=500,
+            )
+
+        return web.json_response({"ok": True, "enabled": bool(enabled)})
+
     async def capture_manual_record(request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -7908,6 +7989,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/integrations", integrations_api)
     app.router.add_post("/api/services/{unit}/action", service_action)
     app.router.add_post("/api/capture/split", capture_split)
+    app.router.add_post("/api/capture/auto-record", capture_auto_record)
     app.router.add_post("/api/capture/manual-record", capture_manual_record)
 
     if stream_mode == "hls":

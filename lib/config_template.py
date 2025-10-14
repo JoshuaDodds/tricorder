@@ -145,6 +145,10 @@ segmenter:
   # Helpful when the external motion sensor tends to flicker but you still want RMS/VAD to wait.
   motion_release_padding_minutes: 0.0
 
+  # When the dashboard disables automatic recordings, motion can still force events when this is true.
+  # Set to false to require manual recording even if motion is detected.
+  auto_record_motion_override: true
+
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
   rms_threshold: 300
