@@ -267,7 +267,7 @@ async def test_dashboard_page_structure(aiohttp_client):
     assert 'id="recordings-table"' in body
     assert 'id="config-viewer"' in body
     assert 'href="/static/css/dashboard.css"' in body
-    assert 'src="/static/js/dashboard.js"' in body
+    assert 'src="/static/js/dashboard/bootstrap.js"' in body
     assert 'data-tricorder-stream-mode="hls"' in body
     assert "data-tricorder-webrtc-ice-servers" in body
 
@@ -428,6 +428,12 @@ async def test_web_streamer_static_assets_available(aiohttp_client):
     assert "const START_ENDPOINT" in js_body
     assert "const SESSION_STORAGE_KEY" in js_body
     assert "withSession" in js_body
+
+    bootstrap_js = await client.get("/static/js/dashboard/bootstrap.js")
+    assert bootstrap_js.status == 200
+    bootstrap_body = await bootstrap_js.text()
+    assert "../dashboard.js" in bootstrap_body
+    assert "export { bootstrapDashboard }" in bootstrap_body
 
     dashboard_js = await client.get("/static/js/dashboard.js")
     assert dashboard_js.status == 200
