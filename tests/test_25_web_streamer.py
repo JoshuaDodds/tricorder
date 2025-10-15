@@ -432,8 +432,8 @@ async def test_web_streamer_static_assets_available(aiohttp_client):
     dashboard_js = await client.get("/static/js/dashboard.js")
     assert dashboard_js.status == 200
     dashboard_body = await dashboard_js.text()
-    assert "const STREAM_MODE" in dashboard_body
-    assert "const OFFER_ENDPOINT" in dashboard_body
+    assert 'from "./config.js"' in dashboard_body
+    assert 'from "./formatters.js"' in dashboard_body
 
 
 @pytest.mark.asyncio
