@@ -3590,6 +3590,7 @@ class TimelineRecorder:
 
         last_event_status["end_reason"] = reason
         last_event_status["in_progress"] = False
+        last_event_status["manual"] = manual_event
         if final_stream_path:
             last_event_status["recording_path"] = final_stream_path
             last_event_status["streaming_container_format"] = STREAMING_CONTAINER_FORMAT
@@ -3601,6 +3602,34 @@ class TimelineRecorder:
             if waveform_rel:
                 last_event_status["waveform_rel_path"] = waveform_rel
 
+        trigger_sources: set[str] = set()
+        if manual_event:
+            trigger_sources.add("manual")
+        normalized_reason = (reason or "").strip().lower()
+        if normalized_reason and "split" in normalized_reason:
+            trigger_sources.add("split")
+        motion_fields = (
+            "motion_trigger_offset_seconds",
+            "motion_release_offset_seconds",
+            "motion_started_epoch",
+            "motion_released_epoch",
+        )
+        motion_detected = any(
+            last_event_status.get(field) is not None for field in motion_fields
+        )
+        if not motion_detected:
+            segments = last_event_status.get("motion_segments")
+            if isinstance(segments, list) and segments:
+                motion_detected = True
+        if motion_detected:
+            trigger_sources.add("motion")
+        if self.saw_loud:
+            trigger_sources.add("rms")
+        if self.saw_voiced:
+            trigger_sources.add("vad")
+        if trigger_sources:
+            last_event_status["trigger_sources"] = sorted(trigger_sources)
+
         metadata_payload = {
             "motion_started_epoch": last_event_status.get("motion_started_epoch"),
             "motion_released_epoch": last_event_status.get("motion_released_epoch"),
@@ -3611,6 +3640,11 @@ class TimelineRecorder:
                 "motion_release_offset_seconds"
             ),
             "motion_segments": last_event_status.get("motion_segments"),
+            "manual_event": manual_event,
+            "trigger_sources": sorted(trigger_sources),
+            "detected_rms": bool(self.saw_loud),
+            "detected_vad": bool(self.saw_voiced),
+            "end_reason": reason,
         }
         if waveform_path:
             self._annotate_waveform_metadata(waveform_path, metadata_payload)
@@ -3644,6 +3678,7 @@ class TimelineRecorder:
                 "manual": manual_event,
                 "day": self.event_day,
                 "updated_at": time.time(),
+                "trigger_sources": sorted(trigger_sources),
             }
         )
         self._cleanup_live_waveform()

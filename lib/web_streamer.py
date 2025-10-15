@@ -2873,6 +2873,33 @@ def _scan_recordings_worker(
             waveform_meta.get("motion_released_epoch") if waveform_meta else None
         )
 
+        manual_event_flag = False
+        detected_rms_flag = False
+        detected_vad_flag = False
+        trigger_source_list: list[str] = []
+        end_reason_value = ""
+        if waveform_meta is not None:
+            manual_event_flag = bool(waveform_meta.get("manual_event"))
+            detected_rms_flag = bool(waveform_meta.get("detected_rms"))
+            detected_vad_flag = bool(
+                waveform_meta.get("detected_vad")
+                or waveform_meta.get("detected_bad")
+            )
+            raw_end_reason = waveform_meta.get("end_reason")
+            if isinstance(raw_end_reason, str):
+                end_reason_value = raw_end_reason.strip()
+            raw_triggers = waveform_meta.get("trigger_sources")
+            if isinstance(raw_triggers, list):
+                seen_triggers: set[str] = set()
+                for entry in raw_triggers:
+                    if isinstance(entry, str):
+                        normalized = entry.strip().lower()
+                        if normalized == "bad":
+                            normalized = "vad"
+                        if normalized and normalized not in seen_triggers:
+                            seen_triggers.add(normalized)
+                            trigger_source_list.append(normalized)
+
         rel_posix = rel_with_prefix.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
@@ -2917,6 +2944,11 @@ def _scan_recordings_worker(
                 "motion_segments": _normalize_motion_segments(
                     waveform_meta.get("motion_segments") if waveform_meta else None
                 ),
+                "manual_event": manual_event_flag,
+                "trigger_sources": trigger_source_list,
+                "detected_rms": detected_rms_flag,
+                "detected_vad": detected_vad_flag,
+                "end_reason": end_reason_value,
                 "collection": collection_label,
             }
         )
@@ -2958,6 +2990,24 @@ def _normalize_motion_segments(
             end_value = max(start_value, float(end_raw))
         segments.append({"start": start_value, "end": end_value})
     return segments
+
+
+def _normalize_trigger_sources(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        token = entry.strip().lower()
+        if token == "bad":
+            token = "vad"
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
 
 
 def _generate_recycle_entry_id(now: datetime | None = None) -> str:
@@ -5441,6 +5491,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     str(entry.get("raw_audio_path"))
                     if entry.get("raw_audio_path")
                     else ""
+                ),
+                "manual_event": bool(entry.get("manual_event")),
+                "detected_rms": bool(entry.get("detected_rms")),
+                "detected_vad": bool(
+                    entry.get("detected_vad")
+                    or entry.get("detected_bad")
+                ),
+                "end_reason": (
+                    str(entry.get("end_reason")).strip()
+                    if isinstance(entry.get("end_reason"), str)
+                    else ""
+                ),
+                "trigger_sources": (
+                    _normalize_trigger_sources(entry.get("trigger_sources"))
                 ),
             }
             for entry in window

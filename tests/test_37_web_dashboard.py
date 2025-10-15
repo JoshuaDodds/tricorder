@@ -198,6 +198,155 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
     asyncio.run(runner())
 
 
+def test_render_records_adds_trigger_badges_and_pills():
+    script = textwrap.dedent(
+        """
+        const table = sandbox.window.document.querySelector('#recordings-table tbody');
+        sandbox.window.document.__setMockElement('toggle-all', {
+          checked: false,
+          indeterminate: false,
+          disabled: false,
+        });
+        sandbox.window.document.__setMockElement('selected-count', { textContent: '' });
+        sandbox.window.document.__setMockElement('delete-selected', { disabled: false });
+        sandbox.window.document.__setMockElement('download-selected', { disabled: false });
+        sandbox.window.document.__setMockElement('rename-selected', { disabled: false });
+        sandbox.window.document.__setMockElement('results-summary', {});
+        sandbox.window.document.__setMockElement('pagination-controls', {});
+        sandbox.window.document.__setMockElement('pagination-status', {});
+        sandbox.window.document.__setMockElement('page-prev', { disabled: false });
+        sandbox.window.document.__setMockElement('page-next', { disabled: false });
+
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        state.records = [
+          {
+            path: '20250102/manual.opus',
+            name: 'Manual clip',
+            day: '20250102',
+            modified: 1700100000,
+            modified_iso: new Date(1700100000 * 1000).toISOString(),
+            duration_seconds: 30,
+            size_bytes: 12345,
+            extension: 'opus',
+            trigger_sources: ['manual', 'split', 'rms', 'bad'],
+          },
+          {
+            path: '20250102/auto.opus',
+            name: 'Auto clip',
+            day: '20250102',
+            modified: 1700000000,
+            modified_iso: new Date(1700000000 * 1000).toISOString(),
+            duration_seconds: 20,
+            size_bytes: 54321,
+            extension: 'opus',
+            trigger_sources: [],
+          },
+        ];
+        state.total = state.records.length;
+        state.filteredSize = 0;
+        state.offset = 0;
+        state.selections = new Set();
+
+        sandbox.renderRecords({ force: true });
+
+        const toArray = (value) => {
+          if (!value) {
+            return [];
+          }
+          if (Array.isArray(value)) {
+            return value;
+          }
+          return Array.from(value);
+        };
+
+        const rows = toArray(table.children);
+        return rows.map((row) => {
+          if (!row) {
+            return null;
+          }
+          const summary = {
+            path: row.dataset ? row.dataset.path || '' : '',
+            badges: [],
+            pills: [],
+          };
+          const cells = toArray(row.children);
+          const nameCell = cells.find((cell) => cell && cell.className === 'cell-name');
+          if (nameCell) {
+            const title = toArray(nameCell.children).find(
+              (child) => child && child.className === 'record-title',
+            );
+            if (title) {
+              for (const child of toArray(title.children)) {
+                if (child && child.dataset && child.dataset.triggerRole) {
+                  summary.badges.push({
+                    role: child.dataset.triggerRole,
+                    text: child.textContent,
+                    className: child.className,
+                    hidden: Boolean(child.hidden),
+                  });
+                }
+              }
+            }
+            const mobileMeta = toArray(nameCell.children).find(
+              (child) => child && child.className === 'record-mobile-meta',
+            );
+            if (mobileMeta) {
+              for (const pill of toArray(mobileMeta.children)) {
+                if (pill && pill.dataset && pill.dataset.metaRole) {
+                  summary.pills.push({
+                    role: pill.dataset.metaRole,
+                    text: pill.textContent,
+                    className: pill.className,
+                    hidden: Boolean(pill.hidden),
+                  });
+                }
+              }
+            }
+          }
+          return summary;
+        });
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "toggle-all": {"checked": False, "indeterminate": False, "disabled": False},
+            "selected-count": {"textContent": ""},
+            "delete-selected": {"disabled": False},
+            "download-selected": {"disabled": False},
+            "rename-selected": {"disabled": False},
+            "results-summary": True,
+            "pagination-controls": True,
+            "pagination-status": True,
+            "page-prev": {"disabled": False},
+            "page-next": {"disabled": False},
+        },
+    )
+    assert isinstance(result, list)
+    assert len(result) == 2
+
+    manual = next(entry for entry in result if entry and entry["path"] == "20250102/manual.opus")
+    auto = next(entry for entry in result if entry and entry["path"] == "20250102/auto.opus")
+
+    manual_badges = {badge["role"]: badge for badge in manual["badges"]}
+    assert set(manual_badges) == {"manual", "split", "rmsvad"}
+    assert manual_badges["manual"]["text"] == "Manual"
+    assert manual_badges["split"]["text"] == "Split"
+    assert manual_badges["rmsvad"]["text"] == "RMS + VAD"
+    assert all(badge["hidden"] is False for badge in manual_badges.values())
+
+    manual_pills = {pill["role"]: pill for pill in manual["pills"]}
+    for expected in ("manual-trigger", "split-trigger", "rmsvad-trigger"):
+        assert expected in manual_pills
+        assert manual_pills[expected]["hidden"] is False
+
+    assert all(pill["text"] for pill in manual_pills.values())
+
+    assert auto["badges"] == []
+    assert all(pill["role"] not in {"manual-trigger", "split-trigger", "rmsvad-trigger"} for pill in auto["pills"])
+
+
 def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
     async def runner():
         day_dir = dashboard_env / "20240201"

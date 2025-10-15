@@ -4,6 +4,7 @@ const vm = require("vm");
 const { URLSearchParams } = require("url");
 
 function createMockElement() {
+  const childList = [];
   const element = {
     dataset: {},
     hidden: false,
@@ -18,29 +19,43 @@ function createMockElement() {
         return false;
       },
     },
-    children: [],
+    children: childList,
+    childNodes: childList,
     append(...nodes) {
       for (const node of nodes) {
         if (node !== undefined && node !== null) {
-          element.children.push(node);
+          childList.push(node);
         }
       }
+      return element;
     },
     appendChild(node) {
       if (node !== undefined && node !== null) {
-        element.children.push(node);
+        childList.push(node);
+      }
+      return node;
+    },
+    insertBefore(node, reference) {
+      if (node === undefined || node === null) {
+        return null;
+      }
+      const index = childList.indexOf(reference);
+      if (index === -1 || reference === undefined || reference === null) {
+        childList.push(node);
+      } else {
+        childList.splice(index, 0, node);
       }
       return node;
     },
     removeChild(node) {
-      const index = element.children.indexOf(node);
+      const index = childList.indexOf(node);
       if (index !== -1) {
-        element.children.splice(index, 1);
+        childList.splice(index, 1);
       }
       return node;
     },
     get childElementCount() {
-      return element.children.length;
+      return childList.length;
     },
     setAttribute() {},
     removeAttribute() {},
@@ -56,6 +71,17 @@ function createMockElement() {
       return { top: 0, left: 0, width: 0, height: 0 };
     },
   };
+  Object.defineProperty(element, "innerHTML", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return element._innerHTML || "";
+    },
+    set(value) {
+      element._innerHTML = typeof value === "string" ? value : "";
+      childList.length = 0;
+    },
+  });
   return element;
 }
 
@@ -96,8 +122,45 @@ function createWindowStub() {
     addEventListener: () => {},
     removeEventListener: () => {},
     getElementById: (id) => (elementStore.has(id) ? elementStore.get(id) : null),
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: (selector) => {
+      if (typeof selector !== "string") {
+        return null;
+      }
+      const trimmed = selector.trim();
+      if (!trimmed) {
+        return null;
+      }
+      if (trimmed.startsWith("#")) {
+        const parts = trimmed.slice(1).split(/\s+/, 2);
+        const id = parts[0];
+        if (!id) {
+          return null;
+        }
+        const element = elementStore.get(id) || ensureElement(id);
+        if (!element) {
+          return null;
+        }
+        if (parts.length > 1) {
+          const descendant = parts[1].toLowerCase();
+          if (descendant === "tbody") {
+            if (!element.__tbody) {
+              const tbody = createMockElement();
+              tbody.parentElement = element;
+              element.__tbody = tbody;
+              element.children.push(tbody);
+            }
+            return element.__tbody;
+          }
+          return null;
+        }
+        return element;
+      }
+      return null;
+    },
+    querySelectorAll: (selector) => {
+      const single = document.querySelector(selector);
+      return single ? [single] : [];
+    },
     createElement: () => createMockElement(),
     body: (() => {
       const bodyElement = createMockElement();
