@@ -10,7 +10,10 @@ function createMockElement() {
     hidden: false,
     textContent: "",
     value: "",
-    style: {},
+    style: {
+      setProperty() {},
+      removeProperty() {},
+    },
     classList: {
       add() {},
       remove() {},
@@ -214,10 +217,10 @@ function createWindowStub() {
     localStorage: storageStub,
     sessionStorage: { ...storageStub },
     matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop }),
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout: () => 0,
+    clearTimeout: noop,
+    setInterval: () => 0,
+    clearInterval: noop,
     navigator: {
       languages: ["en-US"],
       language: "en-US",
@@ -288,12 +291,18 @@ function createSandbox() {
     Element: function Element() {},
     HTMLElement: function HTMLElement() {},
     HTMLInputElement: function HTMLInputElement() {},
+    HTMLSelectElement: function HTMLSelectElement() {},
+    HTMLButtonElement: function HTMLButtonElement() {},
     TextEncoder,
     TextDecoder,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout() {
+      return 0;
+    },
+    clearTimeout() {},
+    setInterval() {
+      return 0;
+    },
+    clearInterval() {},
   };
   sandbox.URLSearchParams = URLSearchParams;
 
@@ -304,25 +313,158 @@ function createSandbox() {
 function loadDependency(context, filePath, key) {
   const absolutePath = path.resolve(filePath);
   const source = fs.readFileSync(absolutePath, "utf8");
-  const exportNames = [];
+  const exportEntries = [];
+  const importEntries = [];
+
+  function registerExport(localName, exportedName) {
+    if (!localName) {
+      return;
+    }
+    const exportName = exportedName || localName;
+    exportEntries.push({ localName, exportName });
+  }
+
+  function normalizeImportKey(request) {
+    if (typeof request !== "string" || !request) {
+      return request;
+    }
+    if (request.startsWith(".")) {
+      const baseDir = path.posix.dirname(key);
+      const joined = path.posix.join(baseDir, request);
+      const normalized = path.posix.normalize(joined);
+      return normalized.startsWith("./") ? normalized.slice(2) : normalized;
+    }
+    return request;
+  }
+
   let transformed = source.replace(/export\s+function\s+([A-Za-z0-9_]+)/g, (match, name) => {
-    exportNames.push(name);
+    registerExport(name);
     return `function ${name}`;
   });
   transformed = transformed.replace(/export\s+const\s+([A-Za-z0-9_]+)/g, (match, name) => {
-    exportNames.push(name);
+    registerExport(name);
     return `const ${name}`;
   });
+  transformed = transformed.replace(/export\s+class\s+([A-Za-z0-9_]+)/g, (match, name) => {
+    registerExport(name);
+    return `class ${name}`;
+  });
+  transformed = transformed.replace(
+    /export\s+default\s+([A-Za-z0-9_]+)/g,
+    (match, name) => {
+      registerExport(name, "default");
+      return name;
+    },
+  );
+  transformed = transformed.replace(
+    /export\s+\{([\s\S]*?)\}\s*;?/g,
+    (match, body) => {
+      const entries = body
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+      for (const entry of entries) {
+        const [local, alias] = entry.split(/\s+as\s+/);
+        const localName = (local || "").trim();
+        const exportName = (alias || localName).trim();
+        registerExport(localName, exportName);
+      }
+      return "";
+    },
+  );
+  transformed = transformed.replace(/export\s+default\s+/g, "");
+  transformed = transformed.replace(
+    /import\s+([\s\S]+?)\s+from\s+["']([^"']+)["'];?/g,
+    (match, specifier, request) => {
+      importEntries.push({ specifier: specifier.trim(), request: request.trim() });
+      return "";
+    },
+  );
   const lines = [];
   lines.push("(function(){");
+  let importCounter = 0;
+  for (const entry of importEntries) {
+    const moduleKey = normalizeImportKey(entry.request);
+    const refName = `__import${importCounter++}`;
+    lines.push(
+      `  const ${refName} = globalThis.__dashboardModules[${JSON.stringify(moduleKey)}] || {};`,
+    );
+    const spec = entry.specifier;
+    if (spec.startsWith("{")) {
+      const inner = spec.replace(/^\{/, "").replace(/\}$/, "");
+      const parts = inner
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+      for (const part of parts) {
+        const [exported, local] = part.split(/\s+as\s+/);
+        const exportName = (exported || "").trim();
+        const localName = (local || exportName).trim();
+        if (!localName) {
+          continue;
+        }
+        const property = exportName || localName;
+        lines.push(
+          `  const ${localName} = ${refName}[${JSON.stringify(property)}];`,
+        );
+      }
+    } else if (spec.startsWith("*")) {
+      const matchNamespace = spec.match(/^\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$/);
+      if (matchNamespace) {
+        const localName = matchNamespace[1];
+        lines.push(`  const ${localName} = ${refName};`);
+      }
+    } else {
+      const defaultMatch = spec.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*\{([\s\S]*)\})?$/);
+      if (defaultMatch) {
+        const defaultName = defaultMatch[1];
+        if (defaultName) {
+          lines.push(
+            `  const ${defaultName} = ${refName}[${JSON.stringify("default")}];`,
+          );
+        }
+        const namedSection = defaultMatch[2];
+        if (namedSection) {
+          const parts = namedSection
+            .split(",")
+            .map((part) => part.trim())
+            .filter(Boolean);
+          for (const part of parts) {
+            const [exported, local] = part.split(/\s+as\s+/);
+            const exportName = (exported || "").trim();
+            const localName = (local || exportName).trim();
+            if (!localName) {
+              continue;
+            }
+            const property = exportName || localName;
+            lines.push(
+              `  const ${localName} = ${refName}[${JSON.stringify(property)}];`,
+            );
+          }
+        }
+      } else if (spec) {
+        const identifier = spec.trim();
+        if (identifier) {
+          lines.push(
+            `  const ${identifier} = ${refName}[${JSON.stringify("default")}];`,
+          );
+        }
+      }
+    }
+  }
   lines.push("  const exports = {};");
   const indented = transformed
     .split(/\n/)
     .map((line) => (line ? `  ${line}` : line))
     .join("\n");
   lines.push(indented);
-  for (const name of exportNames) {
-    lines.push(`  exports.${name} = ${name};`);
+  for (const entry of exportEntries) {
+    if (!entry.localName || !entry.exportName) {
+      continue;
+    }
+    lines.push(
+      `  exports[${JSON.stringify(entry.exportName)}] = ${entry.localName};`,
+    );
   }
   lines.push(
     `  globalThis.__dashboardModules[${JSON.stringify(key)}] = exports;`,
@@ -332,23 +474,107 @@ function loadDependency(context, filePath, key) {
   vm.runInContext(wrapped, context, { filename: path.basename(absolutePath) });
 }
 
+function loadScript(context, filePath) {
+  const absolutePath = path.resolve(filePath);
+  const source = fs.readFileSync(absolutePath, "utf8");
+  vm.runInContext(source, context, { filename: path.basename(absolutePath) });
+}
+
 async function loadDashboard() {
   const { sandbox } = createSandbox();
   sandbox.__dashboardModules = {};
 
   const baseDir = path.join(__dirname, "..", "..", "lib", "webui", "static", "js");
+  loadDependency(sandbox, path.join(baseDir, "config.js"), "config.js");
   loadDependency(sandbox, path.join(baseDir, "api.js"), "api.js");
   loadDependency(sandbox, path.join(baseDir, "events.js"), "events.js");
+  loadDependency(sandbox, path.join(baseDir, "formatters.js"), "formatters.js");
+  loadScript(sandbox, path.join(baseDir, "state.js"));
+  const stateApi = sandbox.TRICORDER_STATE || {};
+  const noop = () => {};
+  sandbox.splitEventState = stateApi.splitEventState || { pending: false };
+  sandbox.healthState = stateApi.healthState || { sdCard: null, lastUpdated: null, resources: {} };
+  sandbox.updateSplitEventState =
+    stateApi.updateSplitEventState || ((fn) => (typeof fn === "function" ? fn(sandbox.splitEventState) : sandbox.splitEventState));
+  sandbox.updateDashboardState =
+    stateApi.updateDashboardState || ((fn) => (typeof fn === "function" ? fn(stateApi.dashboardState || {}) : stateApi.dashboardState));
+  sandbox.updateHealthState =
+    stateApi.updateHealthState || ((fn) => (typeof fn === "function" ? fn(stateApi.healthState || {}) : stateApi.healthState));
+  sandbox.getPendingSelectionRange =
+    stateApi.getPendingSelectionRange || (() => (stateApi.pendingSelectionRange || null));
+  sandbox.setPendingSelectionRange = stateApi.setPendingSelectionRange || noop;
+  sandbox.clearPendingSelectionRange = stateApi.clearPendingSelectionRange || (() => null);
+  sandbox.getStateEvents = stateApi.getStateEvents || (() => []);
+  const componentsDir = path.join(baseDir, "dashboard", "components");
+  loadScript(sandbox, path.join(componentsDir, "clipList.js"));
+  loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
+  loadScript(sandbox, path.join(componentsDir, "playbackPane.js"));
 
   const dashboardPath = path.join(baseDir, "dashboard.js");
   let dashboardSource = fs.readFileSync(dashboardPath, "utf8");
-  dashboardSource = dashboardSource.replace(/^import[^\n]*\n/gm, "");
+  dashboardSource = dashboardSource.replace(
+    /import[\s\S]+?from\s+["'][^"']+["'];?\s*/g,
+    "",
+  );
+  dashboardSource = dashboardSource.replace(/(^|\n)export\s+\{[\s\S]*?\}\s*;?\s*/g, "$1");
+  dashboardSource = dashboardSource.replace(/(^|\n)export\s+default\s+/g, "$1");
   const header = [
     `const { createApiClient } = globalThis.__dashboardModules[${JSON.stringify("api.js")}] || {};`,
     `const { createEventStreamFactory } = globalThis.__dashboardModules[${JSON.stringify("events.js")}] || {};`,
+    `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
+    `const { DEFAULT_LIMIT, WAVEFORM_ZOOM_DEFAULT, WAVEFORM_ZOOM_MIN, WAVEFORM_ZOOM_MAX, clampPlaybackRateValue } = configModule || {};`,
+    `const formattersModule = globalThis.__dashboardModules[${JSON.stringify("formatters.js")}];`,
+    `const {`,
+    `  dateFormatter = undefined,`,
+    `  formatBytes = undefined,`,
+    `  formatClockTime = undefined,`,
+    `  formatClipLengthText = undefined,`,
+    `  formatDate = undefined,`,
+    `  formatDbDisplay = undefined,`,
+    `  formatDuration = undefined,`,
+    `  formatEncodingSource = undefined,`,
+    `  formatHzDisplay = undefined,`,
+    `  formatIsoDateTime = undefined,`,
+    `  formatPlaybackRateLabel = undefined,`,
+    `  formatQualityDisplay = undefined,`,
+    `  formatRecorderUptimeHint = undefined,`,
+    `  formatRecorderUptimeValue = undefined,`,
+    `  formatRecordingStartTime = undefined,`,
+    `  formatRatioDisplay = undefined,`,
+    `  formatShortDuration = undefined,`,
+    `  formatTimeSlug = undefined,`,
+    `  formatTimecode = undefined,`,
+    `  formatTransportClock = undefined,`,
+    `  formatUnitless = undefined,`,
+    `  formatWaveformZoom = undefined,`,
+    `  normalizeEncodingSource = undefined,`,
+    `  timeFormatter = undefined,`,
+    `  userLocales = undefined,`,
+    `} = formattersModule || {};`,
+    `if (formattersModule) { Object.assign(globalThis, formattersModule); }`,
   ].join("\n");
   const wrapped = `${header}\n${dashboardSource}`;
   vm.runInContext(wrapped, sandbox, { filename: "dashboard.js" });
+
+  const dashboardState = sandbox.window.TRICORDER_DASHBOARD_STATE || {};
+  sandbox.updateDashboardState = (mutator) => {
+    if (typeof mutator === "function") {
+      mutator(dashboardState);
+    }
+    return dashboardState;
+  };
+  sandbox.updateHealthState = (mutator) => {
+    if (typeof mutator === "function") {
+      mutator(sandbox.healthState);
+    }
+    return sandbox.healthState;
+  };
+  sandbox.updateSplitEventState = (mutator) => {
+    if (typeof mutator === "function") {
+      mutator(sandbox.splitEventState);
+    }
+    return sandbox.splitEventState;
+  };
 
   delete sandbox.__dashboardModules;
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
