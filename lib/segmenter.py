@@ -436,6 +436,29 @@ FILTER_CHAIN_LOG_THROTTLE_SEC = float(
     cfg["segmenter"].get("filter_chain_log_throttle_sec", 30.0)
 )
 
+_AUTOSPLIT_RAW = cfg["segmenter"].get("autosplit_interval_minutes", 15.0)
+_AUTOSPLIT_LIMIT_SECONDS: float | None
+_AUTOSPLIT_LIMIT_FRAMES: int | None
+try:
+    if _AUTOSPLIT_RAW is None:
+        raise TypeError("autosplit disabled")
+    autosplit_minutes = float(_AUTOSPLIT_RAW)
+except (TypeError, ValueError):
+    autosplit_minutes = 15.0
+    print(
+        "[segmenter] WARN: invalid segmenter.autosplit_interval_minutes value; "
+        "defaulting to 15 minutes",
+        flush=True,
+    )
+if autosplit_minutes <= 0.0:
+    _AUTOSPLIT_LIMIT_SECONDS = None
+    _AUTOSPLIT_LIMIT_FRAMES = None
+else:
+    _AUTOSPLIT_LIMIT_SECONDS = autosplit_minutes * 60.0
+    _AUTOSPLIT_LIMIT_FRAMES = max(
+        1, int(round((_AUTOSPLIT_LIMIT_SECONDS * 1000.0) / FRAME_MS))
+    )
+
 # buffered writes
 FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
 MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
@@ -2062,6 +2085,9 @@ class TimelineRecorder:
         self._parallel_last_check: float = 0.0
         self._parallel_day_dir: str | None = None
 
+        self._autosplit_limit_seconds = _AUTOSPLIT_LIMIT_SECONDS
+        self._autosplit_limit_frames = _AUTOSPLIT_LIMIT_FRAMES
+
         self._live_waveform: LiveWaveformWriter | None = None
         self._live_waveform_path: str | None = None
         self._live_waveform_rel_path: str | None = None
@@ -2218,6 +2244,11 @@ class TimelineRecorder:
             payload["auto_record_motion_override"] = bool(
                 getattr(self, "_motion_override_enabled", False)
             )
+            autosplit_seconds = getattr(self, "_autosplit_limit_seconds", None)
+            if autosplit_seconds and autosplit_seconds > 0:
+                payload["autosplit_config_seconds"] = float(autosplit_seconds)
+            else:
+                payload.pop("autosplit_config_seconds", None)
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -2253,6 +2284,7 @@ class TimelineRecorder:
                 "manual_recording",
                 "auto_recording_enabled",
                 "auto_record_motion_override",
+                "autosplit_config_seconds",
             )
             if extra and self._status_mode == "live":
                 for key, value in extra.items():
@@ -2944,6 +2976,33 @@ class TimelineRecorder:
 
     def ingest(self, buf: bytes, idx: int) -> bytes:
         force_restart = False
+        if (
+            self._autosplit_limit_frames is not None
+            and self.active
+            and self.frames_written >= self._autosplit_limit_frames
+        ):
+            limit_seconds = float(self._autosplit_limit_seconds or 0.0)
+            if limit_seconds > 0.0:
+                minutes = limit_seconds / 60.0
+                if minutes >= 10.0:
+                    human = f"{minutes:.0f}m"
+                elif minutes >= 1.0:
+                    human = f"{minutes:.1f}m"
+                else:
+                    human = f"{limit_seconds:.0f}s"
+                reason = f"autosplit after {human}"
+            else:
+                human = "limit reached"
+                reason = "autosplit limit reached"
+            current_name = self.base_name or "<pending>"
+            print(
+                f"[segmenter] Autosplitting {current_name} ({reason})",
+                flush=True,
+            )
+            self._finalize_event(reason=reason)
+            self.prebuf.clear()
+            force_restart = True
+
         if self._manual_split_requested:
             if self.active:
                 print("[segmenter] Manual split requested; finalizing current event", flush=True)

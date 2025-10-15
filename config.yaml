@@ -132,6 +132,10 @@ segmenter:
   # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
   post_pad_ms: 3000
 
+  # Maximum continuous recording length before the segmenter forces a split (minutes).
+  # Set to 0 to disable automatic rotation. Default keeps encoder workloads bounded.
+  autosplit_interval_minutes: 15.0
+
   # Extra time to keep motion-forced recordings alive after the motion integration clears (minutes).
   # Use this to retain context around motion-triggered events before RMS/VAD regain control.
   motion_release_padding_minutes: 0.0
