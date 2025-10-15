@@ -544,6 +544,7 @@ async function loadDashboard() {
     `  userLocales = undefined,`,
     `} = formattersModule || {};`,
     `const stateModule = globalThis.__dashboardModules[${JSON.stringify("state.js")}] || {};`,
+    `const stateApi = stateModule;`,
     `const {`,
     `  dashboardState: state = stateModule.dashboardState || {},`,
     `  healthState = stateModule.healthState || {},`,
