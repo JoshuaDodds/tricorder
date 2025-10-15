@@ -303,116 +303,21 @@ function createSandbox() {
 
 async function loadDashboard() {
   const { sandbox } = createSandbox();
-  const baseDir = path.join(__dirname, "..", "..", "lib", "webui", "static", "js");
-
-  const transformModule = (source, moduleId) => {
-    const importRegex = /import\s+\{([\s\S]*?)\}\s+from\s+["'](.+?)["'];?/g;
-    source = source.replace(importRegex, (_, bindings, specifier) => {
-      const parts = bindings
-        .split(",")
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .map((part) => {
-          const match = part.match(/^(.*?)\s+as\s+(.*)$/);
-          if (match) {
-            return `${match[1].trim()}: ${match[2].trim()}`;
-          }
-          return part;
-        });
-      return `const { ${parts.join(", ")} } = require("${specifier}");`;
-    });
-
-    const exportRegex = /export\s*\{([\s\S]*?)\};?/g;
-    source = source.replace(exportRegex, (_, exportsList) => {
-      return `Object.assign(exports, { ${exportsList.trim()} });`;
-    });
-
-    return source;
-  };
-
-  const moduleCache = new Map();
-  const posix = path.posix;
-
-  const normalizeId = (identifier) => {
-    const normalized = posix.normalize(identifier);
-    if (normalized.startsWith("/")) {
-      return normalized;
-    }
-    if (normalized.startsWith("./") || normalized.startsWith("../")) {
-      return normalized;
-    }
-    return `./${normalized}`;
-  };
-
-  const evaluateModule = (identifier) => {
-    const moduleId = normalizeId(identifier);
-    if (moduleCache.has(moduleId)) {
-      return moduleCache.get(moduleId);
-    }
-    const filePath = path.join(baseDir, moduleId);
-    const rawSource = fs.readFileSync(filePath, "utf8");
-    const transformed = transformModule(rawSource);
-    const wrapped = `(function(exports, module, require) {\n${transformed}\n})`;
-    const script = new vm.Script(wrapped, { filename: moduleId });
-    const module = { exports: {} };
-    const requireFn = (specifier) => {
-      const resolved = normalizeId(posix.join(posix.dirname(moduleId), specifier));
-      return evaluateModule(resolved);
-    };
-    const compiled = script.runInContext(sandbox);
-    compiled(module.exports, module, requireFn);
-    moduleCache.set(moduleId, module.exports);
-    return module.exports;
-  };
-
-  const dashboardExports = evaluateModule("./dashboard.js") || {};
-  const overrideScripts = new Map();
-  const applyingOverrides = new Set();
-  const overrideToken = "__dashboardOverrideValue";
-
-  const setPublicApiValue = (key, newValue) => {
-    dashboardExports[key] = newValue;
-    if (sandbox.window && typeof sandbox.window === "object") {
-      sandbox.window[key] = newValue;
-    }
-    sandbox[overrideToken] = newValue;
-    let script = overrideScripts.get(key);
-    if (!script) {
-      script = new vm.Script(`${key} = globalThis.${overrideToken};`, {
-        filename: `<dashboard-override-${key}>`,
-      });
-      overrideScripts.set(key, script);
-    }
-    try {
-      applyingOverrides.add(key);
-      script.runInContext(sandbox);
-    } finally {
-      applyingOverrides.delete(key);
-      delete sandbox[overrideToken];
-    }
-  };
-
-  for (const [key, value] of Object.entries(dashboardExports)) {
-    Object.defineProperty(sandbox, key, {
-      configurable: true,
-      enumerable: true,
-      get() {
-        return dashboardExports[key];
-      },
-      set(newValue) {
-        if (applyingOverrides.has(key)) {
-          dashboardExports[key] = newValue;
-          if (sandbox.window && typeof sandbox.window === "object") {
-            sandbox.window[key] = newValue;
-          }
-          return;
-        }
-        setPublicApiValue(key, newValue);
-      },
-    });
-    setPublicApiValue(key, value);
-  }
-
+  const statePath = path.join(
+    __dirname,
+    "..",
+    "..",
+    "lib",
+    "webui",
+    "static",
+    "js",
+    "state.js",
+  );
+  const stateCode = fs.readFileSync(statePath, "utf8");
+  vm.runInContext(stateCode, sandbox, { filename: "state.js" });
+  const dashboardPath = path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard.js");
+  const code = fs.readFileSync(dashboardPath, "utf8");
+  vm.runInContext(code, sandbox, { filename: "dashboard.js" });
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
     delete globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
   }
