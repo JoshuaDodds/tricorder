@@ -303,18 +303,15 @@ function createSandbox() {
 
 async function loadDashboard() {
   const { sandbox } = createSandbox();
-  const statePath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "lib",
-    "webui",
-    "static",
-    "js",
-    "state.js",
-  );
-  const stateCode = fs.readFileSync(statePath, "utf8");
-  vm.runInContext(stateCode, sandbox, { filename: "state.js" });
+  const componentRoots = [
+    path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "clipList.js"),
+    path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "filtersPanel.js"),
+    path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "playbackPane.js"),
+  ];
+  for (const componentPath of componentRoots) {
+    const componentCode = fs.readFileSync(componentPath, "utf8");
+    vm.runInContext(componentCode, sandbox, { filename: path.basename(componentPath) });
+  }
   const dashboardPath = path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard.js");
   const code = fs.readFileSync(dashboardPath, "utf8");
   vm.runInContext(code, sandbox, { filename: "dashboard.js" });
