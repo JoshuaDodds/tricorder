@@ -100,6 +100,22 @@ function createWindowStub() {
     return element;
   };
 
+  const defaultElementIds = [
+    "toggle-all",
+    "selected-count",
+    "delete-selected",
+    "download-selected",
+    "rename-selected",
+    "results-summary",
+    "pagination-controls",
+    "pagination-status",
+    "page-prev",
+    "page-next",
+  ];
+  for (const id of defaultElementIds) {
+    ensureElement(id);
+  }
+
   const overrides = globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
   if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
     for (const [id, props] of Object.entries(overrides)) {
@@ -121,7 +137,12 @@ function createWindowStub() {
     readyState: "loading",
     addEventListener: () => {},
     removeEventListener: () => {},
-    getElementById: (id) => (elementStore.has(id) ? elementStore.get(id) : null),
+    getElementById: (id) => {
+      if (elementStore.has(id)) {
+        return elementStore.get(id);
+      }
+      return ensureElement(id);
+    },
     querySelector: (selector) => {
       if (typeof selector !== "string") {
         return null;
@@ -280,19 +301,118 @@ function createSandbox() {
   return { sandbox, windowStub };
 }
 
-function loadDashboard() {
+async function loadDashboard() {
   const { sandbox } = createSandbox();
-  const dashboardPath = path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard.js");
-  let code = fs.readFileSync(dashboardPath, "utf8");
-  code = code.replace(
-    /export\s+\{\s*bootstrapDashboard\s*\};?/g,
-    "window.bootstrapDashboard = bootstrapDashboard;",
-  );
-  code = code.replace(
-    /export\s+default\s+bootstrapDashboard;?/g,
-    "",
-  );
-  vm.runInContext(code, sandbox, { filename: "dashboard.js" });
+  const baseDir = path.join(__dirname, "..", "..", "lib", "webui", "static", "js");
+
+  const transformModule = (source, moduleId) => {
+    const importRegex = /import\s+\{([\s\S]*?)\}\s+from\s+["'](.+?)["'];?/g;
+    source = source.replace(importRegex, (_, bindings, specifier) => {
+      const parts = bindings
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+          const match = part.match(/^(.*?)\s+as\s+(.*)$/);
+          if (match) {
+            return `${match[1].trim()}: ${match[2].trim()}`;
+          }
+          return part;
+        });
+      return `const { ${parts.join(", ")} } = require("${specifier}");`;
+    });
+
+    const exportRegex = /export\s*\{([\s\S]*?)\};?/g;
+    source = source.replace(exportRegex, (_, exportsList) => {
+      return `Object.assign(exports, { ${exportsList.trim()} });`;
+    });
+
+    return source;
+  };
+
+  const moduleCache = new Map();
+  const posix = path.posix;
+
+  const normalizeId = (identifier) => {
+    const normalized = posix.normalize(identifier);
+    if (normalized.startsWith("/")) {
+      return normalized;
+    }
+    if (normalized.startsWith("./") || normalized.startsWith("../")) {
+      return normalized;
+    }
+    return `./${normalized}`;
+  };
+
+  const evaluateModule = (identifier) => {
+    const moduleId = normalizeId(identifier);
+    if (moduleCache.has(moduleId)) {
+      return moduleCache.get(moduleId);
+    }
+    const filePath = path.join(baseDir, moduleId);
+    const rawSource = fs.readFileSync(filePath, "utf8");
+    const transformed = transformModule(rawSource);
+    const wrapped = `(function(exports, module, require) {\n${transformed}\n})`;
+    const script = new vm.Script(wrapped, { filename: moduleId });
+    const module = { exports: {} };
+    const requireFn = (specifier) => {
+      const resolved = normalizeId(posix.join(posix.dirname(moduleId), specifier));
+      return evaluateModule(resolved);
+    };
+    const compiled = script.runInContext(sandbox);
+    compiled(module.exports, module, requireFn);
+    moduleCache.set(moduleId, module.exports);
+    return module.exports;
+  };
+
+  const dashboardExports = evaluateModule("./dashboard.js") || {};
+  const overrideScripts = new Map();
+  const applyingOverrides = new Set();
+  const overrideToken = "__dashboardOverrideValue";
+
+  const setPublicApiValue = (key, newValue) => {
+    dashboardExports[key] = newValue;
+    if (sandbox.window && typeof sandbox.window === "object") {
+      sandbox.window[key] = newValue;
+    }
+    sandbox[overrideToken] = newValue;
+    let script = overrideScripts.get(key);
+    if (!script) {
+      script = new vm.Script(`${key} = globalThis.${overrideToken};`, {
+        filename: `<dashboard-override-${key}>`,
+      });
+      overrideScripts.set(key, script);
+    }
+    try {
+      applyingOverrides.add(key);
+      script.runInContext(sandbox);
+    } finally {
+      applyingOverrides.delete(key);
+      delete sandbox[overrideToken];
+    }
+  };
+
+  for (const [key, value] of Object.entries(dashboardExports)) {
+    Object.defineProperty(sandbox, key, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return dashboardExports[key];
+      },
+      set(newValue) {
+        if (applyingOverrides.has(key)) {
+          dashboardExports[key] = newValue;
+          if (sandbox.window && typeof sandbox.window === "object") {
+            sandbox.window[key] = newValue;
+          }
+          return;
+        }
+        setPublicApiValue(key, newValue);
+      },
+    });
+    setPublicApiValue(key, value);
+  }
+
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
     delete globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
   }
