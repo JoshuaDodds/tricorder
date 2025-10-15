@@ -282,6 +282,18 @@ function createSandbox() {
 
 function loadDashboard() {
   const { sandbox } = createSandbox();
+  const statePath = path.join(
+    __dirname,
+    "..",
+    "..",
+    "lib",
+    "webui",
+    "static",
+    "js",
+    "state.js",
+  );
+  const stateCode = fs.readFileSync(statePath, "utf8");
+  vm.runInContext(stateCode, sandbox, { filename: "state.js" });
   const dashboardPath = path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard.js");
   const code = fs.readFileSync(dashboardPath, "utf8");
   vm.runInContext(code, sandbox, { filename: "dashboard.js" });
