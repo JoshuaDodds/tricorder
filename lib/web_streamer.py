@@ -6348,13 +6348,18 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 errors.append({"item": entry_id, "error": f"unable to prepare destination: {exc}"})
                 continue
 
+            completed_moves: list[tuple[Path, Path]] = []
             try:
                 shutil.move(str(audio_path), str(target_path))
             except Exception as exc:
                 errors.append({"item": entry_id, "error": f"unable to restore audio: {exc}"})
                 continue
+            else:
+                completed_moves.append((target_path, audio_path))
 
             sidecar_errors: list[str] = []
+            restore_failed = False
+
             waveform_name = data.get("waveform_name")
             if isinstance(waveform_name, str) and waveform_name:
                 source = data["dir"] / waveform_name
@@ -6364,6 +6369,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         shutil.move(str(source), str(destination))
                     except Exception as exc:
                         sidecar_errors.append(f"waveform: {exc}")
+                    else:
+                        completed_moves.append((destination, source))
 
             transcript_name = data.get("transcript_name")
             if isinstance(transcript_name, str) and transcript_name:
@@ -6374,24 +6381,88 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         shutil.move(str(source), str(destination))
                     except Exception as exc:
                         sidecar_errors.append(f"transcript: {exc}")
+                    else:
+                        completed_moves.append((destination, source))
 
-            raw_audio_name = data.get("raw_audio_name")
-            raw_audio_rel = data.get("raw_audio_path")
-            if (
-                isinstance(raw_audio_name, str)
-                and raw_audio_name
-                and isinstance(raw_audio_rel, str)
-                and raw_audio_rel
-                and _is_safe_relative_path(raw_audio_rel)
-            ):
+            raw_audio_name_raw = data.get("raw_audio_name")
+            raw_audio_name = raw_audio_name_raw.strip() if isinstance(raw_audio_name_raw, str) else ""
+            if raw_audio_name and Path(raw_audio_name).name != raw_audio_name:
+                sidecar_errors.append("raw audio: invalid filename")
+                restore_failed = True
+
+            raw_source: Path | None = None
+            raw_destination: Path | None = None
+            raw_source_exists = False
+            if raw_audio_name:
                 raw_source = data["dir"] / raw_audio_name
-                raw_destination = recordings_root / raw_audio_rel
-                if raw_source.exists():
+                raw_source_exists = raw_source.exists()
+
+                raw_audio_rel_raw = data.get("raw_audio_path")
+                raw_audio_rel = (
+                    raw_audio_rel_raw.strip()
+                    if isinstance(raw_audio_rel_raw, str)
+                    else ""
+                )
+                if raw_audio_rel and _is_safe_relative_path(raw_audio_rel):
+                    raw_destination = recordings_root / raw_audio_rel
+                else:
                     try:
-                        raw_destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(raw_source), str(raw_destination))
-                    except Exception as exc:
-                        sidecar_errors.append(f"raw audio: {exc}")
+                        target_rel_parts = target_path.relative_to(recordings_root).parts
+                    except ValueError:
+                        target_rel_parts = ()
+                    day_component = ""
+                    if target_rel_parts:
+                        if (
+                            target_rel_parts[0] == SAVED_RECORDINGS_DIRNAME
+                            and len(target_rel_parts) > 1
+                        ):
+                            candidate_day = target_rel_parts[1]
+                        else:
+                            candidate_day = target_rel_parts[0]
+                        if len(candidate_day) == 8 and candidate_day.isdigit():
+                            day_component = candidate_day
+                    if day_component:
+                        raw_destination = (
+                            recordings_root
+                            / RAW_AUDIO_DIRNAME
+                            / day_component
+                            / raw_audio_name
+                        )
+
+                if raw_source_exists:
+                    if raw_destination is None:
+                        sidecar_errors.append("raw audio: missing destination path")
+                        restore_failed = True
+                    else:
+                        try:
+                            raw_destination.parent.mkdir(parents=True, exist_ok=True)
+                        except OSError as exc:
+                            sidecar_errors.append(
+                                f"raw audio: unable to prepare destination: {exc}"
+                            )
+                            restore_failed = True
+                        else:
+                            try:
+                                shutil.move(str(raw_source), str(raw_destination))
+                            except Exception as exc:
+                                sidecar_errors.append(f"raw audio: {exc}")
+                                restore_failed = True
+                            else:
+                                completed_moves.append((raw_destination, raw_source))
+                else:
+                    sidecar_errors.append("raw audio: source file missing")
+
+            if restore_failed:
+                for message in sidecar_errors:
+                    errors.append({"item": entry_id, "error": message})
+                for destination, source in reversed(completed_moves):
+                    try:
+                        if destination.exists():
+                            source.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(destination), str(source))
+                    except Exception:
+                        pass
+                continue
 
             try:
                 metadata_path = data.get("metadata_path")
