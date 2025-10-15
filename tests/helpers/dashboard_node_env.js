@@ -283,7 +283,15 @@ function createSandbox() {
 function loadDashboard() {
   const { sandbox } = createSandbox();
   const dashboardPath = path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard.js");
-  const code = fs.readFileSync(dashboardPath, "utf8");
+  let code = fs.readFileSync(dashboardPath, "utf8");
+  code = code.replace(
+    /export\s+\{\s*bootstrapDashboard\s*\};?/g,
+    "window.bootstrapDashboard = bootstrapDashboard;",
+  );
+  code = code.replace(
+    /export\s+default\s+bootstrapDashboard;?/g,
+    "",
+  );
   vm.runInContext(code, sandbox, { filename: "dashboard.js" });
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
     delete globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
