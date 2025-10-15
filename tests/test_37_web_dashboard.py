@@ -103,28 +103,34 @@ def _run_dashboard_selection_script(
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
         const overrides = {overrides};
-        if (overrides && Object.keys(overrides).length > 0) {{
-          global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
-        }}
-        const sandbox = loadDashboard();
-        delete global.__DASHBOARD_ELEMENT_OVERRIDES;
-        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
-        if (!state) {{
-          throw new Error("Dashboard state is unavailable for tests");
-        }}
-        state.records = [];
-        state.partialRecord = null;
-        state.recordsFingerprint = "";
-        state.selectionAnchor = "";
-        state.selectionFocus = "";
-        state.selections = new Set();
-        state.sort = {{ key: "name", direction: "asc" }};
-        state.total = 0;
-        state.filteredSize = 0;
-        const result = (() => {{
+        (async () => {{
+          if (overrides && Object.keys(overrides).length > 0) {{
+            global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
+          }}
+          const sandbox = await loadDashboard();
+          delete global.__DASHBOARD_ELEMENT_OVERRIDES;
+          const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+          if (!state) {{
+            throw new Error("Dashboard state is unavailable for tests");
+          }}
+          state.records = [];
+          state.partialRecord = null;
+          state.recordsFingerprint = "";
+          state.selectionAnchor = "";
+          state.selectionFocus = "";
+          state.selections = new Set();
+          state.sort = {{ key: "name", direction: "asc" }};
+          state.total = 0;
+          state.filteredSize = 0;
+          const result = (() => {{
 {script}
-        }})();
-        console.log(JSON.stringify(result));
+          }})();
+          console.log(JSON.stringify(result));
+        }})().catch((error) => {{
+          const message = error && error.stack ? error.stack : String(error);
+          console.error(message);
+          process.exit(1);
+        }});
     """
     node_code = textwrap.dedent(template).format(
         script=indented_script, overrides=overrides
@@ -138,6 +144,60 @@ def _run_dashboard_selection_script(
     )
     output = completed.stdout.strip()
     return json.loads(output or "null")
+
+
+def test_dashboard_happy_path_serves_recording(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240111"
+        day_dir.mkdir()
+
+        file_path = day_dir / "happy.opus"
+        file_bytes = b"happy-path"
+        file_path.write_bytes(file_bytes)
+        _write_waveform_stub(
+            file_path.with_suffix(file_path.suffix + ".waveform.json"),
+            duration=1.0,
+            start_epoch=1_700_100_000.0,
+        )
+
+        os.utime(file_path, (1_700_100_100, 1_700_100_100))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            response = await client.get("/")
+            assert response.status == 200
+            html = await response.text()
+            assert "Tricorder Dashboard" in html
+            assert "/static/js/dashboard.js" in html
+
+            recordings = await client.get("/api/recordings?limit=5")
+            assert recordings.status == 200
+            payload = await recordings.json()
+            assert payload["total"] == 1
+            assert len(payload["items"]) == 1
+
+            item = payload["items"][0]
+            expected_path = file_path.relative_to(dashboard_env).as_posix()
+            assert item["path"] == expected_path
+            assert item["name"] == "happy"
+            assert item["waveform_path"].endswith("happy.opus.waveform.json")
+
+            waveform_resp = await client.get(f"/recordings/{item['waveform_path']}")
+            assert waveform_resp.status == 200
+            waveform_payload = await waveform_resp.json()
+            assert waveform_payload["duration_seconds"] == pytest.approx(1.0)
+
+            download_resp = await client.get(f"/recordings/{item['path']}")
+            assert download_resp.status == 200
+            blob = await download_resp.read()
+            assert blob == file_bytes
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
 
 
 def test_recordings_listing_filters(dashboard_env, monkeypatch):
