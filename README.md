@@ -202,6 +202,10 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Server-Sent Events (`/api/events`) streaming capture status, motion, and encoding updates to the dashboard for low-latency UI refreshes.
 - Legacy HLS status page at `/hls` retained for compatibility with earlier deployments.
 
+### Dashboard architecture
+
+The browser bundle keeps each feature scoped to a self-contained section so Raspberry&nbsp;Pi class hardware only executes the logic it needs. `lib/webui/static/js/dashboard.js` starts with reusable helpers (formatting, DOM lookup, persisted preferences) and then groups feature controllers by responsibility: recordings list + selection, waveform and transport controls, modal editors, archival/web server configuration forms, and services management. Each group manages its own state object which is published via `window.TRICORDER_DASHBOARD_STATE`; the Node sandbox in `tests/helpers/dashboard_node_env.js` relies on those exports to exercise behavior without a browser. The high-level flow is now covered by `tests/test_37_web_dashboard.py::test_dashboard_happy_path_serves_recording`, giving us an end-to-end smoke test for listing, waveform retrieval, and downloads.
+
 ### Audio filter chain tuning
 
 Open the ☰ menu → **Recorder configuration** → **Filters** to adjust the capture-time filter chain. The controls map directly to `audio.filter_chain` in `config.yaml`; the UI saves changes back to the YAML file while preserving inline comments. Suggested workflow:

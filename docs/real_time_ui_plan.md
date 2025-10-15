@@ -86,6 +86,12 @@ Adopt an SSE-based push channel that streams granular state updates to the dashb
    - Manual tests: simulate backend updates, verify UI components update instantly without blocking inputs.
    - Automated tests: extend dashboard test suite with SSE mocks to ensure front-end handlers process events correctly.
 
+## Current implementation snapshot
+
+- `lib.dashboard_events.DashboardEventBus` and the `/api/events` SSE endpoint in `lib/web_streamer.py` now supply the live update channel described above.
+- `lib/webui/static/js/dashboard.js` is segmented into helper utilities, state containers, and feature controllers (recordings list, waveform/transport, configuration modals, services panel) so each module stays testable in isolation.
+- The Node sandbox (`tests/helpers/dashboard_node_env.js`) plus integration coverage in `tests/test_37_web_dashboard.py::test_dashboard_happy_path_serves_recording` exercise the “load dashboard → fetch recordings → download assets” happy path without launching a browser.
+
 ## Risks and Mitigations
 - **Slow Clients:** Use per-client queues with size caps; log and drop oldest events when necessary.
 - **Connection Limits:** SSE uses a single HTTP connection per client; ensure server thread pool can handle expected concurrency (likely small).
