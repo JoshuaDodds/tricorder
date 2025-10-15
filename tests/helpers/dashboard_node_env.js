@@ -493,6 +493,26 @@ async function loadDashboard() {
   loadDependency(sandbox, path.join(baseDir, "events.js"), "events.js");
   loadDependency(sandbox, path.join(baseDir, "formatters.js"), "formatters.js");
   loadDependency(sandbox, path.join(baseDir, "state.js"), "state.js");
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "configuration.js"),
+    "dashboard/configuration.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "normalizers.js"),
+    "dashboard/normalizers.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "dom.js"),
+    "dashboard/dom.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "theme.js"),
+    "dashboard/theme.js",
+  );
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
   loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
@@ -513,6 +533,24 @@ async function loadDashboard() {
   const header = [
     `const { createApiClient } = globalThis.__dashboardModules[${JSON.stringify("api.js")}] || {};`,
     `const { createEventStreamFactory } = globalThis.__dashboardModules[${JSON.stringify("events.js")}] || {};`,
+    `const configHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/configuration.js")}] || {};`,
+    `const { createDashboardServices: importedCreateDashboardServices } = configHelpers;`,
+    `const createDashboardServices = importedCreateDashboardServices;`,
+    `const normalizerHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/normalizers.js")}] || {};`,
+    `const {`,
+    `  normalizeIceServerEntry = undefined,`,
+    `  normalizeMotionSegments = undefined,`,
+    `  normalizeStartTimestamps = undefined,`,
+    `  normalizeTriggerSources = undefined,`,
+    `  toFiniteOrNull = undefined,`,
+    `} = normalizerHelpers;`,
+    `const domHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/dom.js")}] || {};`,
+    `const {`,
+    `  dataAttributeFromDatasetKey = undefined,`,
+    `  findChildByDataset = undefined,`,
+    `} = domHelpers;`,
+    `const themeHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/theme.js")}] || {};`,
+    `const { createThemeManager = undefined } = themeHelpers;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
     `const { DEFAULT_LIMIT, WAVEFORM_ZOOM_DEFAULT, WAVEFORM_ZOOM_MIN, WAVEFORM_ZOOM_MAX, clampPlaybackRateValue } = configModule || {};`,
     `const formattersModule = globalThis.__dashboardModules[${JSON.stringify("formatters.js")}];`,
