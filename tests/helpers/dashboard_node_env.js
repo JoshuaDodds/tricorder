@@ -482,6 +482,9 @@ function loadScript(context, filePath) {
 
 async function loadDashboard() {
   const { sandbox } = createSandbox();
+  if (sandbox.document && typeof sandbox.document === "object") {
+    sandbox.document.readyState = "complete";
+  }
   sandbox.__dashboardModules = {};
 
   const baseDir = path.join(__dirname, "..", "..", "lib", "webui", "static", "js");
@@ -515,6 +518,10 @@ async function loadDashboard() {
   dashboardSource = dashboardSource.replace(
     /import[\s\S]+?from\s+["'][^"']+["'];?\s*/g,
     "",
+  );
+  dashboardSource = dashboardSource.replace(
+    /(^|\n)import\s+["'][^"']+["'];?\s*/g,
+    "$1",
   );
   dashboardSource = dashboardSource.replace(/(^|\n)export\s+\{[\s\S]*?\}\s*;?\s*/g, "$1");
   dashboardSource = dashboardSource.replace(/(^|\n)export\s+default\s+/g, "$1");
