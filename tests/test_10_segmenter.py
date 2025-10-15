@@ -154,6 +154,73 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
         segmenter.TimelineRecorder.event_counters = original_counters
 
 
+def test_autosplit_limit_rotates_event(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+
+    limit_frames = 3
+    limit_seconds = (limit_frames * segmenter.FRAME_MS) / 1000.0
+    monkeypatch.setattr(segmenter, "_AUTOSPLIT_LIMIT_FRAMES", limit_frames)
+    monkeypatch.setattr(segmenter, "_AUTOSPLIT_LIMIT_SECONDS", limit_seconds)
+
+    original_counters = segmenter.TimelineRecorder.event_counters
+    segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
+
+    captured_jobs: list[tuple[str, str, str, str | None, bool, str | None]] = []
+
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str,
+        existing_opus_path: str | None,
+        manual_recording: bool = False,
+        target_day: str | None = None,
+    ) -> int:
+        captured_jobs.append(
+            (
+                tmp_wav_path,
+                base_name,
+                source,
+                existing_opus_path,
+                manual_recording,
+                target_day,
+            )
+        )
+        return len(captured_jobs)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+
+    try:
+        for idx in range(8):
+            rec.ingest(make_frame(4000), idx)
+
+        assert captured_jobs, "expected autosplit to finalize an event"
+    finally:
+        rec.flush(8)
+        segmenter.TimelineRecorder.event_counters = original_counters
+
+    assert len(captured_jobs) >= 2
+    base_names = {entry[1] for entry in captured_jobs}
+    assert len(base_names) >= 2
+
+
 def test_manual_split_no_active_event(tmp_path, monkeypatch):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"
