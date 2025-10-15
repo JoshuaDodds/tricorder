@@ -100,6 +100,22 @@ function createWindowStub() {
     return element;
   };
 
+  const defaultElementIds = [
+    "toggle-all",
+    "selected-count",
+    "delete-selected",
+    "download-selected",
+    "rename-selected",
+    "results-summary",
+    "pagination-controls",
+    "pagination-status",
+    "page-prev",
+    "page-next",
+  ];
+  for (const id of defaultElementIds) {
+    ensureElement(id);
+  }
+
   const overrides = globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
   if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
     for (const [id, props] of Object.entries(overrides)) {
@@ -121,7 +137,12 @@ function createWindowStub() {
     readyState: "loading",
     addEventListener: () => {},
     removeEventListener: () => {},
-    getElementById: (id) => (elementStore.has(id) ? elementStore.get(id) : null),
+    getElementById: (id) => {
+      if (elementStore.has(id)) {
+        return elementStore.get(id);
+      }
+      return ensureElement(id);
+    },
     querySelector: (selector) => {
       if (typeof selector !== "string") {
         return null;
@@ -280,7 +301,7 @@ function createSandbox() {
   return { sandbox, windowStub };
 }
 
-function loadDashboard() {
+async function loadDashboard() {
   const { sandbox } = createSandbox();
   const componentRoots = [
     path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "clipList.js"),
