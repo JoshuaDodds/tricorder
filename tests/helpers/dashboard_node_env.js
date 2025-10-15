@@ -515,6 +515,11 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "health.js"),
+    "dashboard/health.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "layout", "filters.js"),
     "dashboard/layout/filters.js",
   );
@@ -556,6 +561,8 @@ async function loadDashboard() {
     `} = domHelpers;`,
     `const themeHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/theme.js")}] || {};`,
     `const { createThemeManager = undefined } = themeHelpers;`,
+    `const healthHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/health.js")}] || {};`,
+    `const { createHealthManager = undefined } = healthHelpers;`,
     `const layoutHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/filters.js")}] || {};`,
     `const { createFiltersLayoutManager = undefined } = layoutHelpers;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
