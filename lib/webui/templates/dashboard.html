@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}" />
     <script>
       window.TRICORDER_API_BASE = {{ api_base | default('', true) | tojson }};
+      window.TRICORDER_API_RETRY = {{ api_retry | default(None, true) | tojson }};
     </script>
     <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
   </head>

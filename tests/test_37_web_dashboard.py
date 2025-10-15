@@ -103,28 +103,34 @@ def _run_dashboard_selection_script(
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
         const overrides = {overrides};
-        if (overrides && Object.keys(overrides).length > 0) {{
-          global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
-        }}
-        const sandbox = loadDashboard();
-        delete global.__DASHBOARD_ELEMENT_OVERRIDES;
-        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
-        if (!state) {{
-          throw new Error("Dashboard state is unavailable for tests");
-        }}
-        state.records = [];
-        state.partialRecord = null;
-        state.recordsFingerprint = "";
-        state.selectionAnchor = "";
-        state.selectionFocus = "";
-        state.selections = new Set();
-        state.sort = {{ key: "name", direction: "asc" }};
-        state.total = 0;
-        state.filteredSize = 0;
-        const result = (() => {{
+        (async () => {{
+          if (overrides && Object.keys(overrides).length > 0) {{
+            global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
+          }}
+          const sandbox = await loadDashboard();
+          delete global.__DASHBOARD_ELEMENT_OVERRIDES;
+          const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+          if (!state) {{
+            throw new Error("Dashboard state is unavailable for tests");
+          }}
+          state.records = [];
+          state.partialRecord = null;
+          state.recordsFingerprint = "";
+          state.selectionAnchor = "";
+          state.selectionFocus = "";
+          state.selections = new Set();
+          state.sort = {{ key: "name", direction: "asc" }};
+          state.total = 0;
+          state.filteredSize = 0;
+          const result = (() => {{
 {script}
-        }})();
-        console.log(JSON.stringify(result));
+          }})();
+          console.log(JSON.stringify(result));
+        }})().catch((error) => {{
+          const message = error && error.stack ? error.stack : String(error);
+          console.error(message);
+          process.exit(1);
+        }});
     """
     node_code = textwrap.dedent(template).format(
         script=indented_script, overrides=overrides
