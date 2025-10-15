@@ -330,21 +330,21 @@ def test_render_records_adds_trigger_badges_and_pills():
     auto = next(entry for entry in result if entry and entry["path"] == "20250102/auto.opus")
 
     manual_badges = {badge["role"]: badge for badge in manual["badges"]}
-    assert set(manual_badges) == {"manual", "split", "rmsbad"}
+    assert set(manual_badges) == {"manual", "split", "rmsvad"}
     assert manual_badges["manual"]["text"] == "Manual"
     assert manual_badges["split"]["text"] == "Split"
-    assert manual_badges["rmsbad"]["text"] == "RMS + BAD"
+    assert manual_badges["rmsvad"]["text"] == "RMS + VAD"
     assert all(badge["hidden"] is False for badge in manual_badges.values())
 
     manual_pills = {pill["role"]: pill for pill in manual["pills"]}
-    for expected in ("manual-trigger", "split-trigger", "rmsbad-trigger"):
+    for expected in ("manual-trigger", "split-trigger", "rmsvad-trigger"):
         assert expected in manual_pills
         assert manual_pills[expected]["hidden"] is False
 
     assert all(pill["text"] for pill in manual_pills.values())
 
     assert auto["badges"] == []
-    assert all(pill["role"] not in {"manual-trigger", "split-trigger", "rmsbad-trigger"} for pill in auto["pills"])
+    assert all(pill["role"] not in {"manual-trigger", "split-trigger", "rmsvad-trigger"} for pill in auto["pills"])
 
 
 def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):

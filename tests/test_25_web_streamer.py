@@ -619,7 +619,7 @@ async def test_recordings_api_includes_trigger_metadata(
         "manual_event": True,
         "detected_rms": 1,
         "detected_bad": "yes",
-        "trigger_sources": ["Manual", "Split", "split", "RMS", "BAD", ""],
+        "trigger_sources": ["Manual", "Split", "split", "RMS", "VAD", ""],
         "end_reason": " Split event  ",
     }
     manual_waveform.write_text(json.dumps(waveform_payload), encoding="utf-8")
@@ -649,13 +649,13 @@ async def test_recordings_api_includes_trigger_metadata(
 
     assert manual_entry["manual_event"] is True
     assert manual_entry["detected_rms"] is True
-    assert manual_entry["detected_bad"] is True
-    assert manual_entry["trigger_sources"] == ["manual", "split", "rms", "bad"]
+    assert manual_entry["detected_vad"] is True
+    assert manual_entry["trigger_sources"] == ["manual", "split", "rms", "vad"]
     assert manual_entry["end_reason"] == "Split event"
 
     assert auto_entry["manual_event"] is False
     assert auto_entry["detected_rms"] is False
-    assert auto_entry["detected_bad"] is False
+    assert auto_entry["detected_vad"] is False
     assert auto_entry["trigger_sources"] == []
     assert auto_entry["end_reason"] == ""
 
