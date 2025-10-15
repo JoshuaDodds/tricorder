@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import logging
 import time
 import uuid
@@ -590,6 +591,73 @@ async def test_recordings_listing_falls_back_to_raw_when_metadata_missing(
     expected_raw = f"{web_streamer.RAW_AUDIO_DIRNAME}/{day_dir.name}/{raw_path.name}"
     assert entry.get("raw_audio_path") == expected_raw
     assert entry.get("path") == f"{day_dir.name}/{audio_path.name}"
+
+
+@pytest.mark.asyncio
+async def test_recordings_api_includes_trigger_metadata(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    day_dir = recordings_dir / "20250102"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    manual_audio = day_dir / "manual.opus"
+    manual_audio.write_bytes(b"manual")
+    manual_waveform = manual_audio.with_suffix(manual_audio.suffix + ".waveform.json")
+    waveform_payload = {
+        "duration_seconds": 3.5,
+        "manual_event": True,
+        "detected_rms": 1,
+        "detected_bad": "yes",
+        "trigger_sources": ["Manual", "Split", "split", "RMS", "BAD", ""],
+        "end_reason": " Split event  ",
+    }
+    manual_waveform.write_text(json.dumps(waveform_payload), encoding="utf-8")
+    os.utime(manual_audio, (1_700_100_000, 1_700_100_000))
+    os.utime(manual_waveform, (1_700_100_000, 1_700_100_000))
+
+    auto_audio = day_dir / "auto.opus"
+    auto_audio.write_bytes(b"auto")
+    auto_waveform = auto_audio.with_suffix(auto_audio.suffix + ".waveform.json")
+    auto_waveform.write_text(json.dumps({"duration_seconds": 2.0}), encoding="utf-8")
+    os.utime(auto_audio, (1_700_000_000, 1_700_000_000))
+    os.utime(auto_waveform, (1_700_000_000, 1_700_000_000))
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/recordings?limit=5")
+    assert response.status == 200
+    payload = await response.json()
+    items = payload.get("items", [])
+    assert len(items) == 2
+
+    manual_path = f"{day_dir.name}/{manual_audio.name}"
+    auto_path = f"{day_dir.name}/{auto_audio.name}"
+
+    manual_entry = next(item for item in items if item.get("path") == manual_path)
+    auto_entry = next(item for item in items if item.get("path") == auto_path)
+
+    assert manual_entry["manual_event"] is True
+    assert manual_entry["detected_rms"] is True
+    assert manual_entry["detected_bad"] is True
+    assert manual_entry["trigger_sources"] == ["manual", "split", "rms", "bad"]
+    assert manual_entry["end_reason"] == "Split event"
+
+    assert auto_entry["manual_event"] is False
+    assert auto_entry["detected_rms"] is False
+    assert auto_entry["detected_bad"] is False
+    assert auto_entry["trigger_sources"] == []
+    assert auto_entry["end_reason"] == ""
 
 
 def test_saved_recordings_fallback_raw_path_ignores_prefix(tmp_path):

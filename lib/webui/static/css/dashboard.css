@@ -3158,6 +3158,21 @@ body[data-scroll-locked="true"] {
   color: var(--warning);
 }
 
+.meta-pill.manual-pill {
+  background: rgba(59, 130, 246, 0.16);
+  color: #1d4ed8;
+}
+
+.meta-pill.split-pill {
+  background: rgba(234, 179, 8, 0.16);
+  color: #92400e;
+}
+
+.meta-pill.rmsbad-pill {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+}
+
 .record-mobile-subtext {
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -3189,6 +3204,25 @@ body[data-scroll-locked="true"] {
 .badge.badge-motion {
   background: rgba(251, 146, 60, 0.18);
   color: var(--warning);
+}
+
+.badge.badge-trigger {
+  margin-left: 0.4rem;
+}
+
+.badge-trigger-manual {
+  background: rgba(59, 130, 246, 0.16);
+  color: #1d4ed8;
+}
+
+.badge-trigger-split {
+  background: rgba(234, 179, 8, 0.16);
+  color: #92400e;
+}
+
+.badge-trigger-rmsbad {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
 }
 
 .record-in-progress {
