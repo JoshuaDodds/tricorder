@@ -489,22 +489,7 @@ async function loadDashboard() {
   loadDependency(sandbox, path.join(baseDir, "api.js"), "api.js");
   loadDependency(sandbox, path.join(baseDir, "events.js"), "events.js");
   loadDependency(sandbox, path.join(baseDir, "formatters.js"), "formatters.js");
-  loadScript(sandbox, path.join(baseDir, "state.js"));
-  const stateApi = sandbox.TRICORDER_STATE || {};
-  const noop = () => {};
-  sandbox.splitEventState = stateApi.splitEventState || { pending: false };
-  sandbox.healthState = stateApi.healthState || { sdCard: null, lastUpdated: null, resources: {} };
-  sandbox.updateSplitEventState =
-    stateApi.updateSplitEventState || ((fn) => (typeof fn === "function" ? fn(sandbox.splitEventState) : sandbox.splitEventState));
-  sandbox.updateDashboardState =
-    stateApi.updateDashboardState || ((fn) => (typeof fn === "function" ? fn(stateApi.dashboardState || {}) : stateApi.dashboardState));
-  sandbox.updateHealthState =
-    stateApi.updateHealthState || ((fn) => (typeof fn === "function" ? fn(stateApi.healthState || {}) : stateApi.healthState));
-  sandbox.getPendingSelectionRange =
-    stateApi.getPendingSelectionRange || (() => (stateApi.pendingSelectionRange || null));
-  sandbox.setPendingSelectionRange = stateApi.setPendingSelectionRange || noop;
-  sandbox.clearPendingSelectionRange = stateApi.clearPendingSelectionRange || (() => null);
-  sandbox.getStateEvents = stateApi.getStateEvents || (() => []);
+  loadDependency(sandbox, path.join(baseDir, "state.js"), "state.js");
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
   loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
@@ -551,12 +536,28 @@ async function loadDashboard() {
     `  timeFormatter = undefined,`,
     `  userLocales = undefined,`,
     `} = formattersModule || {};`,
+    `const stateModule = globalThis.__dashboardModules[${JSON.stringify("state.js")}] || {};`,
+    `const {`,
+    `  dashboardState: state = stateModule.dashboardState || {},`,
+    `  healthState = stateModule.healthState || {},`,
+    `  splitEventState = stateModule.splitEventState || {},`,
+    `  updateDashboardState = stateModule.updateDashboardState || ((fn) => { if (typeof fn === "function") { fn(state); } return state; }),`,
+    `  updateHealthState = stateModule.updateHealthState || ((fn) => { if (typeof fn === "function") { fn(healthState); } return healthState; }),`,
+    `  updateSplitEventState = stateModule.updateSplitEventState || ((fn) => { if (typeof fn === "function") { fn(splitEventState); } return splitEventState; }),`,
+    `  getPendingSelectionRange = stateModule.getPendingSelectionRange || (() => null),`,
+    `  setPendingSelectionRange = stateModule.setPendingSelectionRange || (() => {}),`,
+    `  clearPendingSelectionRange = stateModule.clearPendingSelectionRange || (() => null),`,
+    `  getStateEvents = stateModule.getStateEvents || (() => []),`,
+    `} = stateModule;`,
     `if (formattersModule) { Object.assign(globalThis, formattersModule); }`,
   ].join("\n");
   const wrapped = `${header}\n${dashboardSource}`;
   vm.runInContext(wrapped, sandbox, { filename: "dashboard.js" });
 
-  const dashboardState = sandbox.window.TRICORDER_DASHBOARD_STATE || {};
+  const stateExports = sandbox.TRICORDER_STATE || {};
+  sandbox.splitEventState = stateExports.splitEventState || { pending: false };
+  sandbox.healthState = stateExports.healthState || { sdCard: null, lastUpdated: null, resources: {} };
+  const dashboardState = sandbox.window.TRICORDER_DASHBOARD_STATE || stateExports.dashboardState || {};
   sandbox.updateDashboardState = (mutator) => {
     if (typeof mutator === "function") {
       mutator(dashboardState);
