@@ -3626,7 +3626,7 @@ class TimelineRecorder:
         if self.saw_loud:
             trigger_sources.add("rms")
         if self.saw_voiced:
-            trigger_sources.add("bad")
+            trigger_sources.add("vad")
         if trigger_sources:
             last_event_status["trigger_sources"] = sorted(trigger_sources)
 
@@ -3643,7 +3643,7 @@ class TimelineRecorder:
             "manual_event": manual_event,
             "trigger_sources": sorted(trigger_sources),
             "detected_rms": bool(self.saw_loud),
-            "detected_bad": bool(self.saw_voiced),
+            "detected_vad": bool(self.saw_voiced),
             "end_reason": reason,
         }
         if waveform_path:

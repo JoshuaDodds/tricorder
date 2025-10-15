@@ -2875,13 +2875,16 @@ def _scan_recordings_worker(
 
         manual_event_flag = False
         detected_rms_flag = False
-        detected_bad_flag = False
+        detected_vad_flag = False
         trigger_source_list: list[str] = []
         end_reason_value = ""
         if waveform_meta is not None:
             manual_event_flag = bool(waveform_meta.get("manual_event"))
             detected_rms_flag = bool(waveform_meta.get("detected_rms"))
-            detected_bad_flag = bool(waveform_meta.get("detected_bad"))
+            detected_vad_flag = bool(
+                waveform_meta.get("detected_vad")
+                or waveform_meta.get("detected_bad")
+            )
             raw_end_reason = waveform_meta.get("end_reason")
             if isinstance(raw_end_reason, str):
                 end_reason_value = raw_end_reason.strip()
@@ -2891,6 +2894,8 @@ def _scan_recordings_worker(
                 for entry in raw_triggers:
                     if isinstance(entry, str):
                         normalized = entry.strip().lower()
+                        if normalized == "bad":
+                            normalized = "vad"
                         if normalized and normalized not in seen_triggers:
                             seen_triggers.add(normalized)
                             trigger_source_list.append(normalized)
@@ -2942,7 +2947,7 @@ def _scan_recordings_worker(
                 "manual_event": manual_event_flag,
                 "trigger_sources": trigger_source_list,
                 "detected_rms": detected_rms_flag,
-                "detected_bad": detected_bad_flag,
+                "detected_vad": detected_vad_flag,
                 "end_reason": end_reason_value,
                 "collection": collection_label,
             }
@@ -2996,6 +3001,8 @@ def _normalize_trigger_sources(value: object) -> list[str]:
         if not isinstance(entry, str):
             continue
         token = entry.strip().lower()
+        if token == "bad":
+            token = "vad"
         if not token or token in seen:
             continue
         seen.add(token)
@@ -5487,7 +5494,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 ),
                 "manual_event": bool(entry.get("manual_event")),
                 "detected_rms": bool(entry.get("detected_rms")),
-                "detected_bad": bool(entry.get("detected_bad")),
+                "detected_vad": bool(
+                    entry.get("detected_vad")
+                    or entry.get("detected_bad")
+                ),
                 "end_reason": (
                     str(entry.get("end_reason")).strip()
                     if isinstance(entry.get("end_reason"), str)

@@ -3168,7 +3168,7 @@ body[data-scroll-locked="true"] {
   color: #92400e;
 }
 
-.meta-pill.rmsbad-pill {
+.meta-pill.rmsvad-pill {
   background: rgba(16, 185, 129, 0.16);
   color: #047857;
 }
@@ -3220,7 +3220,7 @@ body[data-scroll-locked="true"] {
   color: #92400e;
 }
 
-.badge-trigger-rmsbad {
+.badge-trigger-rmsvad {
   background: rgba(16, 185, 129, 0.16);
   color: #047857;
 }
