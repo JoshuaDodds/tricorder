@@ -301,20 +301,56 @@ function createSandbox() {
   return { sandbox, windowStub };
 }
 
+function loadDependency(context, filePath, key) {
+  const absolutePath = path.resolve(filePath);
+  const source = fs.readFileSync(absolutePath, "utf8");
+  const exportNames = [];
+  let transformed = source.replace(/export\s+function\s+([A-Za-z0-9_]+)/g, (match, name) => {
+    exportNames.push(name);
+    return `function ${name}`;
+  });
+  transformed = transformed.replace(/export\s+const\s+([A-Za-z0-9_]+)/g, (match, name) => {
+    exportNames.push(name);
+    return `const ${name}`;
+  });
+  const lines = [];
+  lines.push("(function(){");
+  lines.push("  const exports = {};");
+  const indented = transformed
+    .split(/\n/)
+    .map((line) => (line ? `  ${line}` : line))
+    .join("\n");
+  lines.push(indented);
+  for (const name of exportNames) {
+    lines.push(`  exports.${name} = ${name};`);
+  }
+  lines.push(
+    `  globalThis.__dashboardModules[${JSON.stringify(key)}] = exports;`,
+  );
+  lines.push("})();");
+  const wrapped = lines.join("\n");
+  vm.runInContext(wrapped, context, { filename: path.basename(absolutePath) });
+}
+
 async function loadDashboard() {
   const { sandbox } = createSandbox();
-  const componentRoots = [
-    path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "clipList.js"),
-    path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "filtersPanel.js"),
-    path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard", "components", "playbackPane.js"),
-  ];
-  for (const componentPath of componentRoots) {
-    const componentCode = fs.readFileSync(componentPath, "utf8");
-    vm.runInContext(componentCode, sandbox, { filename: path.basename(componentPath) });
-  }
-  const dashboardPath = path.join(__dirname, "..", "..", "lib", "webui", "static", "js", "dashboard.js");
-  const code = fs.readFileSync(dashboardPath, "utf8");
-  vm.runInContext(code, sandbox, { filename: "dashboard.js" });
+  sandbox.__dashboardModules = {};
+
+  const baseDir = path.join(__dirname, "..", "..", "lib", "webui", "static", "js");
+  loadDependency(sandbox, path.join(baseDir, "api.js"), "api.js");
+  loadDependency(sandbox, path.join(baseDir, "events.js"), "events.js");
+
+  const dashboardPath = path.join(baseDir, "dashboard.js");
+  let dashboardSource = fs.readFileSync(dashboardPath, "utf8");
+  dashboardSource = dashboardSource.replace(/^import[^\n]*\n/gm, "");
+  const header = [
+    `const { createApiClient } = globalThis.__dashboardModules[${JSON.stringify("api.js")}] || {};`,
+    `const { createEventStreamFactory } = globalThis.__dashboardModules[${JSON.stringify("events.js")}] || {};`,
+  ].join("\n");
+  const wrapped = `${header}\n${dashboardSource}`;
+  vm.runInContext(wrapped, sandbox, { filename: "dashboard.js" });
+
+  delete sandbox.__dashboardModules;
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
     delete globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
   }

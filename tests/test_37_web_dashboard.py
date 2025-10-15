@@ -102,8 +102,8 @@ def _run_dashboard_selection_script(
     template = """
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
+        const overrides = {overrides};
         (async () => {{
-          const overrides = {overrides};
           if (overrides && Object.keys(overrides).length > 0) {{
             global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
           }}
@@ -127,7 +127,8 @@ def _run_dashboard_selection_script(
           }})();
           console.log(JSON.stringify(result));
         }})().catch((error) => {{
-          console.error(error);
+          const message = error && error.stack ? error.stack : String(error);
+          console.error(message);
           process.exit(1);
         }});
     """
