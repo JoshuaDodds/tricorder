@@ -51,6 +51,7 @@ import time
 import types
 import wave
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
@@ -58,6 +59,11 @@ from zoneinfo import ZoneInfo
 
 
 DEFAULT_RECORDINGS_LIMIT = 200
+# aiohttp falls back to asyncio's default executor for blocking work. Cap it to a
+# small fixed size so the dashboard thread footprint stays tiny on single-user
+# systems (default would otherwise scale with CPU count and spawn up to 32
+# threads).
+WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
@@ -8195,11 +8201,20 @@ def start_web_streamer_in_thread(
     log = logging.getLogger("web_streamer")
 
     loop = asyncio.new_event_loop()
+    executor = ThreadPoolExecutor(
+        max_workers=WEB_STREAMER_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="web_streamer_io",
+    )
     runner_box = {}
     app_box = {}
 
     def _run():
         asyncio.set_event_loop(loop)
+        loop.set_default_executor(executor)
+        log.debug(
+            "Configured web_streamer default executor with %s workers",
+            WEB_STREAMER_EXECUTOR_MAX_WORKERS,
+        )
         _install_loop_callback_guard(loop, log)
         app = build_app(lets_encrypt_manager=lets_encrypt_manager)
         if ssl_context is not None:
@@ -8219,6 +8234,7 @@ def start_web_streamer_in_thread(
                 loop.run_until_complete(runner.cleanup())
             except Exception:
                 pass
+            executor.shutdown(wait=True, cancel_futures=True)
 
     t = threading.Thread(target=_run, name="web_streamer", daemon=True)
     t.start()
