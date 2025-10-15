@@ -63,7 +63,8 @@ DEFAULT_RECORDINGS_LIMIT = 200
 # small fixed size so the dashboard thread footprint stays tiny on single-user
 # systems (default would otherwise scale with CPU count and spawn up to 32
 # threads).
-WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
+# WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
+WEB_STREAMER_EXECUTOR_MAX_WORKERS = 1  # hardcoded to 1 for this project to save RAM
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
