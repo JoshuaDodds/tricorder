@@ -9,6 +9,9 @@
     <script>
       window.TRICORDER_API_BASE = {{ api_base | default('', true) | tojson }};
     </script>
+    <script type="module" src="{{ static_url('js/dashboard/components/clipList.js') }}" defer></script>
+    <script type="module" src="{{ static_url('js/dashboard/components/filtersPanel.js') }}" defer></script>
+    <script type="module" src="{{ static_url('js/dashboard/components/playbackPane.js') }}" defer></script>
     <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
   </head>
   <body
