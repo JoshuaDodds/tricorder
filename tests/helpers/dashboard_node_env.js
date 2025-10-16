@@ -337,10 +337,15 @@ function loadDependency(context, filePath, key) {
     return request;
   }
 
-  let transformed = source.replace(/export\s+function\s+([A-Za-z0-9_]+)/g, (match, name) => {
-    registerExport(name);
-    return `function ${name}`;
-  });
+  let transformed = source.replace(
+    /export\s+(async\s+)?function(\s*\*)?\s+([A-Za-z0-9_]+)/g,
+    (match, asyncKeyword, generatorToken, name) => {
+      registerExport(name);
+      const asyncPrefix = asyncKeyword || "";
+      const generatorSuffix = generatorToken || "";
+      return `${asyncPrefix}function${generatorSuffix} ${name}`;
+    },
+  );
   transformed = transformed.replace(/export\s+const\s+([A-Za-z0-9_]+)/g, (match, name) => {
     registerExport(name);
     return `const ${name}`;
@@ -493,10 +498,196 @@ async function loadDashboard() {
   loadDependency(sandbox, path.join(baseDir, "events.js"), "events.js");
   loadDependency(sandbox, path.join(baseDir, "formatters.js"), "formatters.js");
   loadDependency(sandbox, path.join(baseDir, "state.js"), "state.js");
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "configuration.js"),
+    "dashboard/configuration.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "normalizers.js"),
+    "dashboard/normalizers.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "dom.js"),
+    "dashboard/dom.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "domRefs.js"),
+    "dashboard/domRefs.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "theme.js"),
+    "dashboard/theme.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "health.js"),
+    "dashboard/health.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "layout", "filters.js"),
+    "dashboard/layout/filters.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "recordingMetaController.js"),
+    "dashboard/modules/recordingMetaController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "encodingStatusController.js"),
+    "dashboard/modules/encodingStatusController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "tabRecordingIndicator.js"),
+    "dashboard/modules/tabRecordingIndicator.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "webServerSettingsController.js"),
+    "dashboard/modules/webServerSettingsController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "archivalSettingsController.js"),
+    "dashboard/modules/archivalSettingsController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "clipperController.js"),
+    "dashboard/modules/clipperController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "scrollLockManager.js"),
+    "dashboard/modules/scrollLockManager.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "appMenuController.js"),
+    "dashboard/modules/appMenuController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "confirmDialogController.js"),
+    "dashboard/modules/confirmDialogController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "recordingPaths.js"),
+    "dashboard/modules/recordingPaths.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "focusUtils.js"),
+    "dashboard/modules/focusUtils.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "commonUtils.js"),
+    "dashboard/modules/commonUtils.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "preferencesStorage.js"),
+    "dashboard/modules/preferencesStorage.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "pointerManager.js"),
+    "dashboard/modules/pointerManager.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "recycleBinHelpers.js"),
+    "dashboard/modules/recycleBinHelpers.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "servicesController.js"),
+    "dashboard/modules/servicesController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "downloads.js"),
+    "dashboard/modules/downloads.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "renameDialogController.js"),
+    "dashboard/modules/renameDialogController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "recorderDom.js"),
+    "dashboard/recorderDom.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "dashboardRuntime.js"),
+    "src/utils/dashboardRuntime.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "recordingProgress.js"),
+    "src/utils/recordingProgress.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "recordMetadata.js"),
+    "src/utils/recordMetadata.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "recorderSettings.js"),
+    "src/utils/recorderSettings.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "recordRowDom.js"),
+    "src/layout/recordRowDom.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "waveformControls.js"),
+    "src/layout/waveformControls.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "recorderConfigUi.js"),
+    "src/layout/recorderConfigUi.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "filterControls.js"),
+    "src/layout/filterControls.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "liveStreamControls.js"),
+    "src/layout/liveStreamControls.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "dashboardInitializer.js"),
+    "src/layout/dashboardInitializer.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "services", "recycleBinService.js"),
+    "src/services/recycleBinService.js",
+  );
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
   loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
   loadScript(sandbox, path.join(componentsDir, "playbackPane.js"));
+  loadScript(sandbox, path.join(componentsDir, "transportControls.js"));
 
   const dashboardPath = path.join(baseDir, "dashboard.js");
   let dashboardSource = fs.readFileSync(dashboardPath, "utf8");
@@ -513,8 +704,154 @@ async function loadDashboard() {
   const header = [
     `const { createApiClient } = globalThis.__dashboardModules[${JSON.stringify("api.js")}] || {};`,
     `const { createEventStreamFactory } = globalThis.__dashboardModules[${JSON.stringify("events.js")}] || {};`,
+    `const configHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/configuration.js")}] || {};`,
+    `const { createDashboardServices: importedCreateDashboardServices } = configHelpers;`,
+    `const createDashboardServices = importedCreateDashboardServices;`,
+    `const normalizerHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/normalizers.js")}] || {};`,
+    `const {`,
+    `  normalizeIceServerEntry = undefined,`,
+    `  normalizeMotionSegments = undefined,`,
+    `  normalizeStartTimestamps = undefined,`,
+    `  normalizeTriggerSources = undefined,`,
+    `  toFiniteOrNull = undefined,`,
+    `} = normalizerHelpers;`,
+    `const domHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/dom.js")}] || {};`,
+    `const {`,
+    `  dataAttributeFromDatasetKey = undefined,`,
+    `  findChildByDataset = undefined,`,
+    `} = domHelpers;`,
+    `const domRefsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/domRefs.js")}] || {};`,
+    `const { createDashboardDom = undefined } = domRefsModule;`,
+    `const themeHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/theme.js")}] || {};`,
+    `const { createThemeManager = undefined } = themeHelpers;`,
+    `const healthHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/health.js")}] || {};`,
+    `const { createHealthManager = undefined } = healthHelpers;`,
+    `const layoutHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/filters.js")}] || {};`,
+    `const { createFiltersLayoutManager = undefined } = layoutHelpers;`,
+    `const recordingMetaModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/recordingMetaController.js")}] || {};`,
+    `const { createRecordingMetaController = undefined } = recordingMetaModule;`,
+    `const encodingStatusModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/encodingStatusController.js")}] || {};`,
+    `const { createEncodingStatusController = undefined } = encodingStatusModule;`,
+    `const tabRecordingIndicatorModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/tabRecordingIndicator.js")}] || {};`,
+    `const { createTabRecordingIndicator = undefined } = tabRecordingIndicatorModule;`,
+    `const webServerSettingsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/webServerSettingsController.js")}] || {};`,
+    `const { createWebServerSettingsController = undefined } = webServerSettingsModule;`,
+    `const archivalSettingsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/archivalSettingsController.js")}] || {};`,
+    `const { createArchivalSettingsController = undefined } = archivalSettingsModule;`,
+    `const preferencesModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/preferencesStorage.js")}] || {};`,
+    `const {`,
+    `  clampLimitValue = undefined,`,
+    `  clampOffsetValue = undefined,`,
+    `  loadStoredCollection = undefined,`,
+    `  persistCollection = undefined,`,
+    `  persistFilters = undefined,`,
+    `  clearStoredFilters = undefined,`,
+    `  restoreFiltersFromStorage = undefined,`,
+    `  persistSortPreference = undefined,`,
+    `  restoreSortFromStorage = undefined,`,
+    `  readStoredClipperPreference = undefined,`,
+    `  persistClipperPreference = undefined,`,
+    `  persistWaveformPreferences = undefined,`,
+    `  getStoredWaveformAmplitude = undefined,`,
+    `} = preferencesModule;`,
+    `const pointerManagerModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/pointerManager.js")}] || {};`,
+    `const { createPointerInteractionManager = undefined } = pointerManagerModule;`,
+    `const recycleBinHelpersModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/recycleBinHelpers.js")}] || {};`,
+    `const { createRecycleBinHelpers = undefined } = recycleBinHelpersModule;`,
+    `const servicesControllerModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/servicesController.js")}] || {};`,
+    `const { createServicesController = undefined } = servicesControllerModule;`,
+    `const downloadsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/downloads.js")}] || {};`,
+    `const { createDownloadHelpers = undefined } = downloadsModule;`,
+    `const scrollLockModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/scrollLockManager.js")}] || {};`,
+    `const { createScrollLockManager = undefined } = scrollLockModule;`,
+    `const appMenuModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/appMenuController.js")}] || {};`,
+    `const { createAppMenuController = undefined } = appMenuModule;`,
+    `const confirmDialogModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/confirmDialogController.js")}] || {};`,
+    `const { createConfirmDialogController = undefined } = confirmDialogModule;`,
+    `const recordingPathsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/recordingPaths.js")}] || {};`,
+    `const { createRecordingPathHelpers = undefined } = recordingPathsModule;`,
+    `const focusUtilsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/focusUtils.js")}] || {};`,
+    `const { focusElementSilently = undefined } = focusUtilsModule;`,
+    `const commonUtilsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/commonUtils.js")}] || {};`,
+    `const {`,
+    `  ensureOfflineStateOnError = undefined,`,
+    `  normalizeErrorMessage = undefined,`,
+    `  clamp = undefined,`,
+    `  numericValue = undefined,`,
+    `  getRecordStartSeconds = undefined,`,
+    `} = commonUtilsModule;`,
+    `const renameDialogModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/renameDialogController.js")}] || {};`,
+    `const { createRenameDialogController = undefined } = renameDialogModule;`,
+    `const clipperModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/clipperController.js")}] || {};`,
+    `const { createClipperController = undefined } = clipperModule;`,
+    `const recorderDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/recorderDom.js")}] || {};`,
+    `const { createRecorderDom = undefined } = recorderDomModule;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
-    `const { DEFAULT_LIMIT, WAVEFORM_ZOOM_DEFAULT, WAVEFORM_ZOOM_MIN, WAVEFORM_ZOOM_MAX, clampPlaybackRateValue } = configModule || {};`,
+    `const {`,
+    `  ARCHIVAL_BACKENDS = new Set(),`,
+    `  ARCHIVAL_ENDPOINT = undefined,`,
+    `  AUTO_RECORD_ENDPOINT = undefined,`,
+    `  AUTO_REFRESH_INTERVAL_MS = 1000,`,
+    `  CLIPPER_STORAGE_KEY = undefined,`,
+    `  COLLECTION_STORAGE_KEY = undefined,`,
+    `  CONFIG_REFRESH_INTERVAL_MS = 5000,`,
+    `  DEFAULT_LIMIT = 200,`,
+    `  EVENTS_ENDPOINT = undefined,`,
+    `  EVENT_STREAM_REQUIRES_CREDENTIALS = false,`,
+    `  EVENT_STREAM_SAME_ORIGIN = true,`,
+    `  EVENT_STREAM_HEARTBEAT_TIMEOUT_MS = 30000,`,
+    `  EVENT_STREAM_RETRY_MAX_MS = 15000,`,
+    `  EVENT_STREAM_RETRY_MIN_MS = 1000,`,
+    `  EVENT_TRIGGER_DEBOUNCE_MS = 250,`,
+    `  FILTER_PANEL_STORAGE_KEY = undefined,`,
+    `  FILTER_STORAGE_KEY = undefined,`,
+    `  HEALTH_ENDPOINT = undefined,`,
+    `  HEALTH_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_INTERVAL_MS,`,
+    `  HLS_URL = undefined,`,
+    `  KEYBOARD_JOG_RATE_SECONDS_PER_SECOND = 4,`,
+    `  MANUAL_RECORD_ENDPOINT = undefined,`,
+    `  MARKER_COLLAPSE_EPSILON_SECONDS = 0.002,`,
+    `  MARKER_LABEL_BASE_OFFSET_REM = 0.95,`,
+    `  MARKER_LABEL_EDGE_THRESHOLD = 0.08,`,
+    `  MARKER_LABEL_SPACING_THRESHOLD = 0.04,`,
+    `  MARKER_LABEL_STACK_SPACING_REM = 1.5,`,
+    `  MAX_LIMIT = 1000,`,
+    `  MAX_PLAYBACK_RATE = 2,`,
+    `  MIN_CLIP_DURATION_SECONDS = 0.05,`,
+    `  MIN_PLAYBACK_RATE = 0.25,`,
+    `  OFFLINE_REFRESH_INTERVAL_MS = 5000,`,
+    `  OFFER_ENDPOINT = undefined,`,
+    `  POINTER_IDLE_CLEAR_DELAY_MS = 10000,`,
+    `  RECYCLE_BIN_STATE_STORAGE_KEY = undefined,`,
+    `  SERVICE_REFRESH_INTERVAL_MS = 5000,`,
+    `  SERVICE_RESULT_TTL_MS = 15000,`,
+    `  SERVICES_ENDPOINT = undefined,`,
+    `  SESSION_STORAGE_KEY = undefined,`,
+    `  SORT_STORAGE_KEY = undefined,`,
+    `  SPLIT_ENDPOINT = undefined,`,
+    `  START_ENDPOINT = undefined,`,
+    `  STATS_ENDPOINT = undefined,`,
+    `  STOP_ENDPOINT = undefined,`,
+    `  STREAM_BASE = undefined,`,
+    `  STREAM_MODE = "hls",`,
+    `  THEME_STORAGE_KEY = undefined,`,
+    `  TRANSPORT_SCRUB_MAX = 1000,`,
+    `  TRANSPORT_SKIP_BACK_SECONDS = 10,`,
+    `  TRANSPORT_SKIP_FORWARD_SECONDS = 30,`,
+    `  TRANSPORT_STORAGE_KEY = undefined,`,
+    `  VALID_TIME_RANGES = new Set(["", "1h", "2h", "4h", "8h", "12h", "1d"]),`,
+    `  VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service",`,
+    `  WAVEFORM_REFRESH_INTERVAL_MS = 3000,`,
+    `  WAVEFORM_STORAGE_KEY = undefined,`,
+    `  WAVEFORM_ZOOM_DEFAULT = 1,`,
+    `  WAVEFORM_ZOOM_MAX = 10,`,
+    `  WAVEFORM_ZOOM_MIN = 1,`,
+    `  WEBRTC_ICE_SERVERS = [],`,
+    `  WEB_SERVER_ENDPOINT = undefined,`,
+    `  WEB_SERVER_TLS_PROVIDERS = new Set(["letsencrypt", "manual"]),`,
+    `  WINDOW_NAME_PREFIX = "tricorder.session:",`,
+    `  clampPlaybackRateValue = (value) => value,`,
+    `} = configModule || {};`,
     `const formattersModule = globalThis.__dashboardModules[${JSON.stringify("formatters.js")}];`,
     `const {`,
     `  dateFormatter = undefined,`,
@@ -557,6 +894,104 @@ async function loadDashboard() {
     `  clearPendingSelectionRange = stateModule.clearPendingSelectionRange || (() => null),`,
     `  getStateEvents = stateModule.getStateEvents || (() => []),`,
     `} = stateModule;`,
+    `const dashboardRuntimeModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/dashboardRuntime.js")}] || {};`,
+    `const {`,
+    `  COMPONENTS_REGISTRY = {},`,
+    `  nowMilliseconds = () => Date.now(),`,
+    `  requireDashboardComponent = (component) => component,`,
+    `} = dashboardRuntimeModule;`,
+    `const recordingProgressModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recordingProgress.js")}] || {};`,
+    `const {`,
+    `  toFinalizedRecordingPath = undefined,`,
+    `  findFinalizedRecordForPartial = undefined,`,
+    `  normalizeRecordingProgressRecord = undefined,`,
+    `  deriveInProgressRecord = undefined,`,
+    `  computeRecordsFingerprint = undefined,`,
+    `  computePartialFingerprint = undefined,`,
+    `} = recordingProgressModule;`,
+    `const recordMetadataModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recordMetadata.js")}] || {};`,
+    `const {`,
+    `  recordMetadataChanged = undefined,`,
+    `  resolveTriggerFlags = undefined,`,
+    `} = recordMetadataModule;`,
+    `const recordRowDomModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/recordRowDom.js")}] || {};`,
+    `const {`,
+    `  ensureTriggerBadge = undefined,`,
+    `  updateMetaPill = undefined,`,
+    `  updateSubtextSpan = undefined,`,
+    `} = recordRowDomModule;`,
+    `const waveformControlsModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/waveformControls.js")}] || {};`,
+    `const {`,
+    `  initializeWaveformControls = undefined,`,
+    `  setCursorFraction = undefined,`,
+    `  updateWaveformClock = undefined,`,
+    `  setWaveformMarker = undefined,`,
+    `  layoutWaveformMarkerLabels = undefined,`,
+    `  renderMotionSegments = undefined,`,
+    `  updateWaveformMarkers = undefined,`,
+    `  updateCursorFromPlayer = undefined,`,
+    `  handlePlayerLoadedMetadata = undefined,`,
+    `  stopCursorAnimation = undefined,`,
+    `  startCursorAnimation = undefined,`,
+    `  clearWaveformRefresh = undefined,`,
+    `  scheduleWaveformRefresh = undefined,`,
+    `  resetWaveform = undefined,`,
+    `  getWaveformZoomLimits = undefined,`,
+    `  normalizeWaveformZoom = undefined,`,
+    `  restoreWaveformPreferences = undefined,`,
+    `  updateWaveformZoomDisplay = undefined,`,
+    `  getWaveformAmplitudeScale = undefined,`,
+    `  drawWaveformFromPeaks = undefined,`,
+    `  redrawWaveform = undefined,`,
+    `  loadWaveform = undefined,`,
+    `  seekFromPointer = undefined,`,
+    `  handleWaveformPointerDown = undefined,`,
+    `  handleWaveformPointerMove = undefined,`,
+    `  handleWaveformPointerUp = undefined,`,
+    `} = waveformControlsModule;`,
+    `const recorderConfigModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/recorderConfigUi.js")}] || {};`,
+    `const { createRecorderConfigUi = undefined } = recorderConfigModule;`,
+    `const filterControlsModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/filterControls.js")}] || {};`,
+    `const { createFilterControls = undefined } = filterControlsModule;`,
+    `const liveStreamModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/liveStreamControls.js")}] || {};`,
+    `const { createLiveStreamControls = undefined } = liveStreamModule;`,
+    `const dashboardInitializerModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/dashboardInitializer.js")}] || {};`,
+    `const { createDashboardInitializer = undefined } = dashboardInitializerModule;`,
+    `const recycleBinServiceModule = globalThis.__dashboardModules[${JSON.stringify("src/services/recycleBinService.js")}] || {};`,
+    `const { createRecycleBinService = undefined } = recycleBinServiceModule;`,
+    `const recorderSettingsModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recorderSettings.js")}] || {};`,
+    `const {`,
+    `  parseBoolean = undefined,`,
+    `  parseMotionFlag = undefined,`,
+    `  isMotionTriggeredEvent = undefined,`,
+    `  resolveNextMotionState = undefined,`,
+    `  parseListInput = undefined,`,
+    `  extractErrorMessage = undefined,`,
+    `  audioDefaults = undefined,`,
+    `  canonicalAudioSettings = undefined,`,
+    `  canonicalAudioFromConfig = undefined,`,
+    `  segmenterDefaults = undefined,`,
+    `  canonicalSegmenterSettings = undefined,`,
+    `  canonicalSegmenterFromConfig = undefined,`,
+    `  adaptiveDefaults = undefined,`,
+    `  canonicalAdaptiveSettings = undefined,`,
+    `  canonicalAdaptiveFromConfig = undefined,`,
+    `  ingestDefaults = undefined,`,
+    `  canonicalIngestSettings = undefined,`,
+    `  canonicalIngestFromConfig = undefined,`,
+    `  loggingDefaults = undefined,`,
+    `  canonicalLoggingSettings = undefined,`,
+    `  canonicalLoggingFromConfig = undefined,`,
+    `  streamingDefaults = undefined,`,
+    `  canonicalStreamingSettings = undefined,`,
+    `  canonicalStreamingFromConfig = undefined,`,
+    `  dashboardDefaults = undefined,`,
+    `  canonicalDashboardSettings = undefined,`,
+    `  canonicalDashboardFromConfig = undefined,`,
+    `  transcriptionDefaults = undefined,`,
+    `  canonicalTranscriptionSettings = undefined,`,
+    `  canonicalTranscriptionFromConfig = undefined,`,
+    `} = recorderSettingsModule;`,
     `if (formattersModule) { Object.assign(globalThis, formattersModule); }`,
   ].join("\n");
   const wrapped = `${header}\n${dashboardSource}`;
@@ -584,6 +1019,15 @@ async function loadDashboard() {
     }
     return sandbox.splitEventState;
   };
+
+  const recorderSettingsHelpers =
+    sandbox.__dashboardModules?.["src/utils/recorderSettings.js"] || {};
+  if (typeof recorderSettingsHelpers.resolveNextMotionState === "function") {
+    sandbox.resolveNextMotionState = recorderSettingsHelpers.resolveNextMotionState;
+  }
+  if (typeof recorderSettingsHelpers.isMotionTriggeredEvent === "function") {
+    sandbox.isMotionTriggeredEvent = recorderSettingsHelpers.isMotionTriggeredEvent;
+  }
 
   delete sandbox.__dashboardModules;
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {

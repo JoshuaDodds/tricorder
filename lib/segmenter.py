@@ -32,27 +32,21 @@ warnings.filterwarnings(
 import webrtcvad    # noqa
 from lib.config import get_cfg, resolve_event_tags
 from lib.notifications import build_dispatcher
+from lib.segmenter_helpers.display import color_tf
+from lib.segmenter_helpers.system import (
+    normalized_load as _normalized_load,
+    set_single_core_affinity as _set_single_core_affinity,
+)
+from lib.segmenter_helpers.tags import sanitize_event_tag as _sanitize_event_tag
 
 cfg = get_cfg()
 EVENT_TAGS = resolve_event_tags(cfg)
 NOTIFIER = build_dispatcher(cfg.get("notifications"))
 
-# ANSI colors for booleans (can be disabled via NO_COLOR env)
-ANSI_GREEN = "\033[32m"
-ANSI_RED = "\033[31m"
-ANSI_RESET = "\033[0m"
-USE_COLOR = os.getenv("NO_COLOR") is None
-
 # Debug output formatting defaults (prevents NameError when DEV mode is enabled)
 BAR_SCALE = int(cfg["segmenter"].get("rms_bar_scale", 4000))  # scale for RMS bar visualization
 BAR_WIDTH = int(cfg["segmenter"].get("rms_bar_width", 30))    # character width of the bar
 RIGHT_TEXT_WIDTH = int(cfg["segmenter"].get("right_text_width", 54))  # fixed-width right block
-
-def color_tf(val: bool) -> str:
-    # Single-character stable width 'T'/'F' with color
-    if not USE_COLOR:
-        return "T" if val else "F"
-    return f"{ANSI_GREEN}T{ANSI_RESET}" if val else f"{ANSI_RED}F{ANSI_RESET}"
 
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
@@ -62,56 +56,6 @@ FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
-
-SAFE_EVENT_TAG_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
-
-
-def _sanitize_event_tag(tag: str) -> str:
-    sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
-    sanitized = sanitized.strip("_-")
-    return sanitized or "event"
-
-
-def _set_single_core_affinity() -> None:
-    """Pin the current process to the lowest-numbered available CPU."""
-
-    try:
-        if hasattr(os, "sched_getaffinity"):
-            try:
-                available = os.sched_getaffinity(0)
-            except OSError:
-                available = None
-        else:
-            available = None
-
-        target_cpu = 0
-        if available:
-            try:
-                target_cpu = min(int(cpu) for cpu in available)
-            except (TypeError, ValueError):
-                target_cpu = 0
-
-        if hasattr(os, "sched_setaffinity"):
-            os.sched_setaffinity(0, {int(target_cpu)})
-        if hasattr(os, "nice"):
-            try:
-                os.nice(5)
-            except OSError:
-                pass
-    except (AttributeError, OSError, ValueError):
-        pass
-
-
-def _normalized_load() -> float | None:
-    try:
-        load1, _, _ = os.getloadavg()
-    except (AttributeError, OSError):
-        return None
-    cpus = os.cpu_count() or 1
-    if cpus <= 0:
-        cpus = 1
-    return load1 / float(cpus)
-
 
 @dataclass(frozen=True)
 class RecorderIngestHint:
