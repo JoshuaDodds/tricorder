@@ -527,6 +527,7 @@ async function loadDashboard() {
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
   loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
   loadScript(sandbox, path.join(componentsDir, "playbackPane.js"));
+  loadScript(sandbox, path.join(componentsDir, "transportControls.js"));
 
   const dashboardPath = path.join(baseDir, "dashboard.js");
   let dashboardSource = fs.readFileSync(dashboardPath, "utf8");
