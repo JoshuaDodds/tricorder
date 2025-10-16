@@ -565,6 +565,11 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "modules", "renameDialogController.js"),
+    "dashboard/modules/renameDialogController.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "recorderDom.js"),
     "dashboard/recorderDom.js",
   );
@@ -639,6 +644,8 @@ async function loadDashboard() {
     `  persistWaveformPreferences = undefined,`,
     `  getStoredWaveformAmplitude = undefined,`,
     `} = preferencesModule;`,
+    `const renameDialogModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/renameDialogController.js")}] || {};`,
+    `const { createRenameDialogController = undefined } = renameDialogModule;`,
     `const clipperModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/clipperController.js")}] || {};`,
     `const { createClipperController = undefined } = clipperModule;`,
     `const recorderDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/recorderDom.js")}] || {};`,
