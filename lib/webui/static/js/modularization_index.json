@@ -1,0 +1,1495 @@
+{
+  "source_file": "lib/webui/static/js/dashboard.js",
+  "chunk_size": 1500,
+  "overlap": 10,
+  "chunks": [
+    {
+      "id": 1,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part01.js",
+      "start_line": 1,
+      "end_line": 1500,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "COMPONENTS_REGISTRY",
+          "category": "utils",
+          "destination": "src/utils/dashboardRuntime.js",
+          "type": "constant"
+        },
+        {
+          "name": "requireDashboardComponent",
+          "category": "utils",
+          "destination": "src/utils/dashboardRuntime.js",
+          "type": "function"
+        },
+        {
+          "name": "nowMilliseconds",
+          "category": "utils",
+          "destination": "src/utils/dashboardRuntime.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part02.js",
+      "start_line": 1491,
+      "end_line": 2990,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "toFinalizedRecordingPath",
+          "category": "utils",
+          "destination": "src/utils/recordingProgress.js",
+          "type": "function"
+        },
+        {
+          "name": "findFinalizedRecordForPartial",
+          "category": "utils",
+          "destination": "src/utils/recordingProgress.js",
+          "type": "function"
+        },
+        {
+          "name": "normalizeRecordingProgressRecord",
+          "category": "utils",
+          "destination": "src/utils/recordingProgress.js",
+          "type": "function"
+        },
+        {
+          "name": "deriveInProgressRecord",
+          "category": "utils",
+          "destination": "src/utils/recordingProgress.js",
+          "type": "function"
+        },
+        {
+          "name": "computeRecordsFingerprint",
+          "category": "utils",
+          "destination": "src/utils/recordingProgress.js",
+          "type": "function"
+        },
+        {
+          "name": "computePartialFingerprint",
+          "category": "utils",
+          "destination": "src/utils/recordingProgress.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part03.js",
+      "start_line": 2981,
+      "end_line": 4480,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "recordMetadataChanged",
+          "category": "utils",
+          "destination": "src/utils/recordMetadata.js",
+          "type": "function"
+        },
+        {
+          "name": "resolveTriggerFlags",
+          "category": "utils",
+          "destination": "src/utils/recordMetadata.js",
+          "type": "function"
+        },
+        {
+          "name": "ensureTriggerBadge",
+          "category": "layout",
+          "destination": "src/layout/recordRowDom.js",
+          "type": "function"
+        },
+        {
+          "name": "updateMetaPill",
+          "category": "layout",
+          "destination": "src/layout/recordRowDom.js",
+          "type": "function"
+        },
+        {
+          "name": "updateSubtextSpan",
+          "category": "layout",
+          "destination": "src/layout/recordRowDom.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part04.js",
+      "start_line": 4471,
+      "end_line": 5970,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "setCursorFraction",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "updateWaveformClock",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "setWaveformMarker",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "layoutWaveformMarkerLabels",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "renderMotionSegments",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "updateWaveformMarkers",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "updateCursorFromPlayer",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "handlePlayerLoadedMetadata",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "stopCursorAnimation",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "startCursorAnimation",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "clearWaveformRefresh",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "scheduleWaveformRefresh",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "resetWaveform",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "getWaveformZoomLimits",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "normalizeWaveformZoom",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "restoreWaveformPreferences",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "updateWaveformZoomDisplay",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "getWaveformAmplitudeScale",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "drawWaveformFromPeaks",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "redrawWaveform",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "loadWaveform",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "seekFromPointer",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "handleWaveformPointerDown",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "handleWaveformPointerMove",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        },
+        {
+          "name": "handleWaveformPointerUp",
+          "category": "layout",
+          "destination": "src/layout/waveformControls.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part05.js",
+      "start_line": 5961,
+      "end_line": 7460,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "parseBoolean",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "parseMotionFlag",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "isMotionTriggeredEvent",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "resolveNextMotionState",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "parseListInput",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "extractErrorMessage",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "audioDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalAudioSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalAudioFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "segmenterDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalSegmenterSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalSegmenterFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "adaptiveDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalAdaptiveSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalAdaptiveFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "ingestDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "normalizeExtensionList",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "normalizeSuffixList",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalIngestSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalIngestFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "loggingDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalLoggingSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalLoggingFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "streamingDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalStreamingSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalStreamingFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "dashboardDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalDashboardSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalDashboardFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "transcriptionDefaults",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalTranscriptionSettings",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        },
+        {
+          "name": "canonicalTranscriptionFromConfig",
+          "category": "utils",
+          "destination": "src/utils/recorderSettings.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part06.js",
+      "start_line": 7451,
+      "end_line": 7963,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "handleRecorderConfigSnapshot",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "updateRecorderConfigPath",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "ensureRecorderSectionsLoaded",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "registerRecorderSection",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "registerRecorderSections",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyAudioForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readAudioForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applySegmenterForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readSegmenterForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyAdaptiveForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readAdaptiveForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyIngestForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readIngestForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyTranscriptionForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readTranscriptionForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "setTranscriptionModelStatus",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "setTranscriptionModelLoading",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "hideTranscriptionModelDiscovery",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "showTranscriptionModelDiscovery",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applySelectedTranscriptionModel",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "refreshTranscriptionModels",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyLoggingForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readLoggingForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyStreamingForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readStreamingForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "applyDashboardForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "readDashboardForm",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "configModalFocusableElements",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "setConfigModalVisible",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "attachConfigDialogKeydown",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "detachConfigDialogKeydown",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "focusConfigDialog",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "openConfigModal",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "closeConfigModal",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "servicesModalFocusableElements",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "setServicesModalVisible",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "attachServicesDialogKeydown",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "detachServicesDialogKeydown",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "focusServicesDialog",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "openServicesModal",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "closeServicesModal",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "recycleBinModalFocusableElements",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "setRecycleBinModalVisible",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "attachRecycleBinDialogKeydown",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "detachRecycleBinDialogKeydown",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "focusRecycleBinDialog",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "openRecycleBinModal",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "closeRecycleBinModal",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "restoreRecycleBinPreview",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "updateRecycleBinControls",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "updateRecycleBinPreview",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        },
+        {
+          "name": "renderRecycleBinItems",
+          "category": "layout",
+          "destination": "src/layout/recorderConfigUi.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part07.js",
+      "start_line": 8941,
+      "end_line": 10440,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "fetchRecycleBin",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "restoreRecycleBinSelection",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "purgeRecycleBinSelection",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "requestRecordDeletion",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "findNextSelectionPath",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "deleteRecordings",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "renameRecording",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "applyFiltersFromInputs",
+          "category": "layout",
+          "destination": "src/layout/filterControls.js",
+          "type": "function"
+        },
+        {
+          "name": "clearFilters",
+          "category": "layout",
+          "destination": "src/layout/filterControls.js",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "file": "lib/webui/static/js/dashboard_chunks/dashboard_part08.js",
+      "start_line": 10431,
+      "end_line": 11534,
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "stopLiveStream",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "openLiveStreamPanel",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "closeLiveStreamPanel",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "focusLiveStreamPanel",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "focusPreviewSurface",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "releaseLiveAudioFocus",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "initialize",
+          "category": "layout",
+          "destination": "src/layout/dashboardInitializer.js",
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "modules": {
+    "components": [],
+    "hooks": [],
+    "utils": [
+      "src/utils/dashboardRuntime.js",
+      "src/utils/recordingProgress.js",
+      "src/utils/recordMetadata.js",
+      "src/utils/recorderSettings.js"
+    ],
+    "services": [],
+    "layout": [
+      "src/layout/dashboardInitializer.js",
+      "src/layout/liveStreamControls.js",
+      "src/layout/recordRowDom.js",
+      "src/layout/recorderConfigUi.js",
+      "src/layout/waveformControls.js"
+    ],
+    "unclassified": []
+  },
+  "extractions": {
+    "COMPONENTS_REGISTRY": {
+      "source_chunk": 1,
+      "category": "utils",
+      "destination": "src/utils/dashboardRuntime.js",
+      "type": "constant"
+    },
+    "requireDashboardComponent": {
+      "source_chunk": 1,
+      "category": "utils",
+      "destination": "src/utils/dashboardRuntime.js",
+      "type": "function"
+    },
+    "nowMilliseconds": {
+      "source_chunk": 1,
+      "category": "utils",
+      "destination": "src/utils/dashboardRuntime.js",
+      "type": "function"
+    },
+    "toFinalizedRecordingPath": {
+      "source_chunk": 2,
+      "category": "utils",
+      "destination": "src/utils/recordingProgress.js",
+      "type": "function"
+    },
+    "findFinalizedRecordForPartial": {
+      "source_chunk": 2,
+      "category": "utils",
+      "destination": "src/utils/recordingProgress.js",
+      "type": "function"
+    },
+    "normalizeRecordingProgressRecord": {
+      "source_chunk": 2,
+      "category": "utils",
+      "destination": "src/utils/recordingProgress.js",
+      "type": "function"
+    },
+    "deriveInProgressRecord": {
+      "source_chunk": 2,
+      "category": "utils",
+      "destination": "src/utils/recordingProgress.js",
+      "type": "function"
+    },
+    "computeRecordsFingerprint": {
+      "source_chunk": 2,
+      "category": "utils",
+      "destination": "src/utils/recordingProgress.js",
+      "type": "function"
+    },
+    "computePartialFingerprint": {
+      "source_chunk": 2,
+      "category": "utils",
+      "destination": "src/utils/recordingProgress.js",
+      "type": "function"
+    },
+    "recordMetadataChanged": {
+      "source_chunk": 3,
+      "category": "utils",
+      "destination": "src/utils/recordMetadata.js",
+      "type": "function"
+    },
+    "resolveTriggerFlags": {
+      "source_chunk": 3,
+      "category": "utils",
+      "destination": "src/utils/recordMetadata.js",
+      "type": "function"
+    },
+    "ensureTriggerBadge": {
+      "source_chunk": 3,
+      "category": "layout",
+      "destination": "src/layout/recordRowDom.js",
+      "type": "function"
+    },
+    "updateMetaPill": {
+      "source_chunk": 3,
+      "category": "layout",
+      "destination": "src/layout/recordRowDom.js",
+      "type": "function"
+    },
+    "updateSubtextSpan": {
+      "source_chunk": 3,
+      "category": "layout",
+      "destination": "src/layout/recordRowDom.js",
+      "type": "function"
+    },
+    "setCursorFraction": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "updateWaveformClock": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "setWaveformMarker": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "layoutWaveformMarkerLabels": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "renderMotionSegments": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "updateWaveformMarkers": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "updateCursorFromPlayer": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "handlePlayerLoadedMetadata": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "stopCursorAnimation": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "startCursorAnimation": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "clearWaveformRefresh": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "scheduleWaveformRefresh": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "resetWaveform": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "getWaveformZoomLimits": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "normalizeWaveformZoom": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "restoreWaveformPreferences": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "updateWaveformZoomDisplay": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "getWaveformAmplitudeScale": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "drawWaveformFromPeaks": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "redrawWaveform": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "loadWaveform": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "seekFromPointer": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "handleWaveformPointerDown": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "handleWaveformPointerMove": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "handleWaveformPointerUp": {
+      "source_chunk": 4,
+      "category": "layout",
+      "destination": "src/layout/waveformControls.js",
+      "type": "function"
+    },
+    "handleRecorderConfigSnapshot": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "updateRecorderConfigPath": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "ensureRecorderSectionsLoaded": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "registerRecorderSection": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "registerRecorderSections": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyAudioForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readAudioForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applySegmenterForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readSegmenterForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyAdaptiveForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readAdaptiveForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyIngestForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readIngestForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyTranscriptionForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readTranscriptionForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "setTranscriptionModelStatus": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "setTranscriptionModelLoading": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "hideTranscriptionModelDiscovery": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "showTranscriptionModelDiscovery": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applySelectedTranscriptionModel": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "refreshTranscriptionModels": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyLoggingForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readLoggingForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyStreamingForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readStreamingForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "applyDashboardForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "readDashboardForm": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "configModalFocusableElements": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "setConfigModalVisible": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "attachConfigDialogKeydown": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "detachConfigDialogKeydown": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "focusConfigDialog": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "openConfigModal": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "closeConfigModal": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "servicesModalFocusableElements": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "setServicesModalVisible": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "attachServicesDialogKeydown": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "detachServicesDialogKeydown": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "focusServicesDialog": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "openServicesModal": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "closeServicesModal": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "recycleBinModalFocusableElements": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "setRecycleBinModalVisible": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "attachRecycleBinDialogKeydown": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "detachRecycleBinDialogKeydown": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "focusRecycleBinDialog": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "openRecycleBinModal": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "closeRecycleBinModal": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "restoreRecycleBinPreview": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "updateRecycleBinControls": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "updateRecycleBinPreview": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    },
+    "renderRecycleBinItems": {
+      "source_chunk": 6,
+      "category": "layout",
+      "destination": "src/layout/recorderConfigUi.js",
+      "type": "function"
+    }
+  },
+  "last_processed_chunk": 8,
+  "modules_created": [
+    "src/layout/dashboardInitializer.js",
+    "src/layout/filterControls.js",
+    "src/layout/liveStreamControls.js",
+    "src/layout/recordRowDom.js",
+    "src/layout/recorderConfigUi.js",
+    "src/layout/waveformControls.js",
+    "src/services/recycleBinService.js",
+    "src/utils/dashboardRuntime.js",
+    "src/utils/recordMetadata.js",
+    "src/utils/recorderSettings.js",
+    "src/utils/recordingProgress.js"
+  ],
+  "status": "complete"
+}
