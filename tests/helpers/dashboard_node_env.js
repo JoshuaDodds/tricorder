@@ -545,6 +545,16 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "modules", "webServerSettingsController.js"),
+    "dashboard/modules/webServerSettingsController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "archivalSettingsController.js"),
+    "dashboard/modules/archivalSettingsController.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "recorderDom.js"),
     "dashboard/recorderDom.js",
   );
@@ -599,6 +609,10 @@ async function loadDashboard() {
     `const { createEncodingStatusController = undefined } = encodingStatusModule;`,
     `const tabRecordingIndicatorModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/tabRecordingIndicator.js")}] || {};`,
     `const { createTabRecordingIndicator = undefined } = tabRecordingIndicatorModule;`,
+    `const webServerSettingsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/webServerSettingsController.js")}] || {};`,
+    `const { createWebServerSettingsController = undefined } = webServerSettingsModule;`,
+    `const archivalSettingsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/archivalSettingsController.js")}] || {};`,
+    `const { createArchivalSettingsController = undefined } = archivalSettingsModule;`,
     `const recorderDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/recorderDom.js")}] || {};`,
     `const { createRecorderDom = undefined } = recorderDomModule;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
