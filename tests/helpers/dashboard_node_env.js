@@ -555,6 +555,11 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "modules", "clipperController.js"),
+    "dashboard/modules/clipperController.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "modules", "preferencesStorage.js"),
     "dashboard/modules/preferencesStorage.js",
   );
@@ -634,6 +639,8 @@ async function loadDashboard() {
     `  persistWaveformPreferences = undefined,`,
     `  getStoredWaveformAmplitude = undefined,`,
     `} = preferencesModule;`,
+    `const clipperModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/clipperController.js")}] || {};`,
+    `const { createClipperController = undefined } = clipperModule;`,
     `const recorderDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/recorderDom.js")}] || {};`,
     `const { createRecorderDom = undefined } = recorderDomModule;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
