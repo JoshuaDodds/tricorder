@@ -1198,7 +1198,7 @@ button.small {
 }
 
 .player-row > td {
-  padding: 0 0 1rem;
+  padding: 1rem 0;
   border: 0;
 }
 
