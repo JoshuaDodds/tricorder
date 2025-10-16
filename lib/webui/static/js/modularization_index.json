@@ -800,8 +800,63 @@
       "file": "lib/webui/static/js/dashboard_chunks/dashboard_part07.js",
       "start_line": 8941,
       "end_line": 10440,
-      "status": "pending",
-      "extracted_items": []
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "fetchRecycleBin",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "restoreRecycleBinSelection",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "purgeRecycleBinSelection",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "requestRecordDeletion",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "findNextSelectionPath",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "deleteRecordings",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "renameRecording",
+          "category": "services",
+          "destination": "src/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "applyFiltersFromInputs",
+          "category": "layout",
+          "destination": "src/layout/filterControls.js",
+          "type": "function"
+        },
+        {
+          "name": "clearFilters",
+          "category": "layout",
+          "destination": "src/layout/filterControls.js",
+          "type": "function"
+        }
+      ]
     },
     {
       "id": 8,
@@ -1377,7 +1432,7 @@
       "type": "function"
     }
   },
-  "last_processed_chunk": 6,
+  "last_processed_chunk": 7,
   "modules_created": [
     "src/utils/dashboardRuntime.js",
     "src/utils/recordingProgress.js",
@@ -1385,7 +1440,9 @@
     "src/layout/recordRowDom.js",
     "src/layout/waveformControls.js",
     "src/utils/recorderSettings.js",
-    "src/layout/recorderConfigUi.js"
+    "src/layout/recorderConfigUi.js",
+    "src/services/recycleBinService.js",
+    "src/layout/filterControls.js"
   ],
   "status": "in_progress"
 }
