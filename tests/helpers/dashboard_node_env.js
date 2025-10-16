@@ -555,6 +555,11 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "modules", "preferencesStorage.js"),
+    "dashboard/modules/preferencesStorage.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "recorderDom.js"),
     "dashboard/recorderDom.js",
   );
@@ -613,6 +618,22 @@ async function loadDashboard() {
     `const { createWebServerSettingsController = undefined } = webServerSettingsModule;`,
     `const archivalSettingsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/archivalSettingsController.js")}] || {};`,
     `const { createArchivalSettingsController = undefined } = archivalSettingsModule;`,
+    `const preferencesModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/preferencesStorage.js")}] || {};`,
+    `const {`,
+    `  clampLimitValue = undefined,`,
+    `  clampOffsetValue = undefined,`,
+    `  loadStoredCollection = undefined,`,
+    `  persistCollection = undefined,`,
+    `  persistFilters = undefined,`,
+    `  clearStoredFilters = undefined,`,
+    `  restoreFiltersFromStorage = undefined,`,
+    `  persistSortPreference = undefined,`,
+    `  restoreSortFromStorage = undefined,`,
+    `  readStoredClipperPreference = undefined,`,
+    `  persistClipperPreference = undefined,`,
+    `  persistWaveformPreferences = undefined,`,
+    `  getStoredWaveformAmplitude = undefined,`,
+    `} = preferencesModule;`,
     `const recorderDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/recorderDom.js")}] || {};`,
     `const { createRecorderDom = undefined } = recorderDomModule;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
