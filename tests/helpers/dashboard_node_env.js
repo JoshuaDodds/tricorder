@@ -560,6 +560,36 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "modules", "scrollLockManager.js"),
+    "dashboard/modules/scrollLockManager.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "appMenuController.js"),
+    "dashboard/modules/appMenuController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "confirmDialogController.js"),
+    "dashboard/modules/confirmDialogController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "recordingPaths.js"),
+    "dashboard/modules/recordingPaths.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "focusUtils.js"),
+    "dashboard/modules/focusUtils.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "commonUtils.js"),
+    "dashboard/modules/commonUtils.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "modules", "preferencesStorage.js"),
     "dashboard/modules/preferencesStorage.js",
   );
@@ -644,6 +674,24 @@ async function loadDashboard() {
     `  persistWaveformPreferences = undefined,`,
     `  getStoredWaveformAmplitude = undefined,`,
     `} = preferencesModule;`,
+    `const scrollLockModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/scrollLockManager.js")}] || {};`,
+    `const { createScrollLockManager = undefined } = scrollLockModule;`,
+    `const appMenuModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/appMenuController.js")}] || {};`,
+    `const { createAppMenuController = undefined } = appMenuModule;`,
+    `const confirmDialogModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/confirmDialogController.js")}] || {};`,
+    `const { createConfirmDialogController = undefined } = confirmDialogModule;`,
+    `const recordingPathsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/recordingPaths.js")}] || {};`,
+    `const { createRecordingPathHelpers = undefined } = recordingPathsModule;`,
+    `const focusUtilsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/focusUtils.js")}] || {};`,
+    `const { focusElementSilently = undefined } = focusUtilsModule;`,
+    `const commonUtilsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/commonUtils.js")}] || {};`,
+    `const {`,
+    `  ensureOfflineStateOnError = undefined,`,
+    `  normalizeErrorMessage = undefined,`,
+    `  clamp = undefined,`,
+    `  numericValue = undefined,`,
+    `  getRecordStartSeconds = undefined,`,
+    `} = commonUtilsModule;`,
     `const renameDialogModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/renameDialogController.js")}] || {};`,
     `const { createRenameDialogController = undefined } = renameDialogModule;`,
     `const clipperModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/clipperController.js")}] || {};`,
