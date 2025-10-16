@@ -337,10 +337,15 @@ function loadDependency(context, filePath, key) {
     return request;
   }
 
-  let transformed = source.replace(/export\s+function\s+([A-Za-z0-9_]+)/g, (match, name) => {
-    registerExport(name);
-    return `function ${name}`;
-  });
+  let transformed = source.replace(
+    /export\s+(async\s+)?function(\s*\*)?\s+([A-Za-z0-9_]+)/g,
+    (match, asyncKeyword, generatorToken, name) => {
+      registerExport(name);
+      const asyncPrefix = asyncKeyword || "";
+      const generatorSuffix = generatorToken || "";
+      return `${asyncPrefix}function${generatorSuffix} ${name}`;
+    },
+  );
   transformed = transformed.replace(/export\s+const\s+([A-Za-z0-9_]+)/g, (match, name) => {
     registerExport(name);
     return `const ${name}`;
@@ -623,6 +628,61 @@ async function loadDashboard() {
     path.join(baseDir, "dashboard", "recorderDom.js"),
     "dashboard/recorderDom.js",
   );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "dashboardRuntime.js"),
+    "src/utils/dashboardRuntime.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "recordingProgress.js"),
+    "src/utils/recordingProgress.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "recordMetadata.js"),
+    "src/utils/recordMetadata.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "utils", "recorderSettings.js"),
+    "src/utils/recorderSettings.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "recordRowDom.js"),
+    "src/layout/recordRowDom.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "waveformControls.js"),
+    "src/layout/waveformControls.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "recorderConfigUi.js"),
+    "src/layout/recorderConfigUi.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "filterControls.js"),
+    "src/layout/filterControls.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "liveStreamControls.js"),
+    "src/layout/liveStreamControls.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "layout", "dashboardInitializer.js"),
+    "src/layout/dashboardInitializer.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "src", "services", "recycleBinService.js"),
+    "src/services/recycleBinService.js",
+  );
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
   loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
@@ -834,6 +894,104 @@ async function loadDashboard() {
     `  clearPendingSelectionRange = stateModule.clearPendingSelectionRange || (() => null),`,
     `  getStateEvents = stateModule.getStateEvents || (() => []),`,
     `} = stateModule;`,
+    `const dashboardRuntimeModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/dashboardRuntime.js")}] || {};`,
+    `const {`,
+    `  COMPONENTS_REGISTRY = {},`,
+    `  nowMilliseconds = () => Date.now(),`,
+    `  requireDashboardComponent = (component) => component,`,
+    `} = dashboardRuntimeModule;`,
+    `const recordingProgressModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recordingProgress.js")}] || {};`,
+    `const {`,
+    `  toFinalizedRecordingPath = undefined,`,
+    `  findFinalizedRecordForPartial = undefined,`,
+    `  normalizeRecordingProgressRecord = undefined,`,
+    `  deriveInProgressRecord = undefined,`,
+    `  computeRecordsFingerprint = undefined,`,
+    `  computePartialFingerprint = undefined,`,
+    `} = recordingProgressModule;`,
+    `const recordMetadataModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recordMetadata.js")}] || {};`,
+    `const {`,
+    `  recordMetadataChanged = undefined,`,
+    `  resolveTriggerFlags = undefined,`,
+    `} = recordMetadataModule;`,
+    `const recordRowDomModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/recordRowDom.js")}] || {};`,
+    `const {`,
+    `  ensureTriggerBadge = undefined,`,
+    `  updateMetaPill = undefined,`,
+    `  updateSubtextSpan = undefined,`,
+    `} = recordRowDomModule;`,
+    `const waveformControlsModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/waveformControls.js")}] || {};`,
+    `const {`,
+    `  initializeWaveformControls = undefined,`,
+    `  setCursorFraction = undefined,`,
+    `  updateWaveformClock = undefined,`,
+    `  setWaveformMarker = undefined,`,
+    `  layoutWaveformMarkerLabels = undefined,`,
+    `  renderMotionSegments = undefined,`,
+    `  updateWaveformMarkers = undefined,`,
+    `  updateCursorFromPlayer = undefined,`,
+    `  handlePlayerLoadedMetadata = undefined,`,
+    `  stopCursorAnimation = undefined,`,
+    `  startCursorAnimation = undefined,`,
+    `  clearWaveformRefresh = undefined,`,
+    `  scheduleWaveformRefresh = undefined,`,
+    `  resetWaveform = undefined,`,
+    `  getWaveformZoomLimits = undefined,`,
+    `  normalizeWaveformZoom = undefined,`,
+    `  restoreWaveformPreferences = undefined,`,
+    `  updateWaveformZoomDisplay = undefined,`,
+    `  getWaveformAmplitudeScale = undefined,`,
+    `  drawWaveformFromPeaks = undefined,`,
+    `  redrawWaveform = undefined,`,
+    `  loadWaveform = undefined,`,
+    `  seekFromPointer = undefined,`,
+    `  handleWaveformPointerDown = undefined,`,
+    `  handleWaveformPointerMove = undefined,`,
+    `  handleWaveformPointerUp = undefined,`,
+    `} = waveformControlsModule;`,
+    `const recorderConfigModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/recorderConfigUi.js")}] || {};`,
+    `const { createRecorderConfigUi = undefined } = recorderConfigModule;`,
+    `const filterControlsModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/filterControls.js")}] || {};`,
+    `const { createFilterControls = undefined } = filterControlsModule;`,
+    `const liveStreamModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/liveStreamControls.js")}] || {};`,
+    `const { createLiveStreamControls = undefined } = liveStreamModule;`,
+    `const dashboardInitializerModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/dashboardInitializer.js")}] || {};`,
+    `const { createDashboardInitializer = undefined } = dashboardInitializerModule;`,
+    `const recycleBinServiceModule = globalThis.__dashboardModules[${JSON.stringify("src/services/recycleBinService.js")}] || {};`,
+    `const { createRecycleBinService = undefined } = recycleBinServiceModule;`,
+    `const recorderSettingsModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recorderSettings.js")}] || {};`,
+    `const {`,
+    `  parseBoolean = undefined,`,
+    `  parseMotionFlag = undefined,`,
+    `  isMotionTriggeredEvent = undefined,`,
+    `  resolveNextMotionState = undefined,`,
+    `  parseListInput = undefined,`,
+    `  extractErrorMessage = undefined,`,
+    `  audioDefaults = undefined,`,
+    `  canonicalAudioSettings = undefined,`,
+    `  canonicalAudioFromConfig = undefined,`,
+    `  segmenterDefaults = undefined,`,
+    `  canonicalSegmenterSettings = undefined,`,
+    `  canonicalSegmenterFromConfig = undefined,`,
+    `  adaptiveDefaults = undefined,`,
+    `  canonicalAdaptiveSettings = undefined,`,
+    `  canonicalAdaptiveFromConfig = undefined,`,
+    `  ingestDefaults = undefined,`,
+    `  canonicalIngestSettings = undefined,`,
+    `  canonicalIngestFromConfig = undefined,`,
+    `  loggingDefaults = undefined,`,
+    `  canonicalLoggingSettings = undefined,`,
+    `  canonicalLoggingFromConfig = undefined,`,
+    `  streamingDefaults = undefined,`,
+    `  canonicalStreamingSettings = undefined,`,
+    `  canonicalStreamingFromConfig = undefined,`,
+    `  dashboardDefaults = undefined,`,
+    `  canonicalDashboardSettings = undefined,`,
+    `  canonicalDashboardFromConfig = undefined,`,
+    `  transcriptionDefaults = undefined,`,
+    `  canonicalTranscriptionSettings = undefined,`,
+    `  canonicalTranscriptionFromConfig = undefined,`,
+    `} = recorderSettingsModule;`,
     `if (formattersModule) { Object.assign(globalThis, formattersModule); }`,
   ].join("\n");
   const wrapped = `${header}\n${dashboardSource}`;
@@ -861,6 +1019,15 @@ async function loadDashboard() {
     }
     return sandbox.splitEventState;
   };
+
+  const recorderSettingsHelpers =
+    sandbox.__dashboardModules?.["src/utils/recorderSettings.js"] || {};
+  if (typeof recorderSettingsHelpers.resolveNextMotionState === "function") {
+    sandbox.resolveNextMotionState = recorderSettingsHelpers.resolveNextMotionState;
+  }
+  if (typeof recorderSettingsHelpers.isMotionTriggeredEvent === "function") {
+    sandbox.isMotionTriggeredEvent = recorderSettingsHelpers.isMotionTriggeredEvent;
+  }
 
   delete sandbox.__dashboardModules;
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
