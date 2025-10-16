@@ -4,13 +4,13 @@ Source file: `lib/webui/static/js/dashboard.js`
 Chunk size: 1500 lines with ±10 overlap
 
 ## Chunk 1 (1–1500) — processed
-- `src/utils/dashboardRuntime.js`
+- `dashboard/utils/dashboardRuntime.js`
   - **COMPONENTS_REGISTRY** — utils (constant)
   - **nowMilliseconds** — utils (function)
   - **requireDashboardComponent** — utils (function)
 
 ## Chunk 2 (1491–2990) — processed
-- `src/utils/recordingProgress.js`
+- `dashboard/utils/recordingProgress.js`
   - **computePartialFingerprint** — utils (function)
   - **computeRecordsFingerprint** — utils (function)
   - **deriveInProgressRecord** — utils (function)
@@ -19,16 +19,16 @@ Chunk size: 1500 lines with ±10 overlap
   - **toFinalizedRecordingPath** — utils (function)
 
 ## Chunk 3 (2981–4480) — processed
-- `src/layout/recordRowDom.js`
+- `dashboard/layout/recordRowDom.js`
   - **ensureTriggerBadge** — layout (function)
   - **updateMetaPill** — layout (function)
   - **updateSubtextSpan** — layout (function)
-- `src/utils/recordMetadata.js`
+- `dashboard/utils/recordMetadata.js`
   - **recordMetadataChanged** — utils (function)
   - **resolveTriggerFlags** — utils (function)
 
 ## Chunk 4 (4471–5970) — processed
-- `src/layout/waveformControls.js`
+- `dashboard/layout/waveformControls.js`
   - **clearWaveformRefresh** — layout (function)
   - **drawWaveformFromPeaks** — layout (function)
   - **getWaveformAmplitudeScale** — layout (function)
@@ -56,7 +56,7 @@ Chunk size: 1500 lines with ±10 overlap
   - **updateWaveformZoomDisplay** — layout (function)
 
 ## Chunk 5 (5961–7460) — processed
-- `src/utils/recorderSettings.js`
+- `dashboard/utils/recorderSettings.js`
   - **adaptiveDefaults** — utils (function)
   - **audioDefaults** — utils (function)
   - **canonicalAdaptiveFromConfig** — utils (function)
@@ -91,7 +91,7 @@ Chunk size: 1500 lines with ±10 overlap
   - **transcriptionDefaults** — utils (function)
 
 ## Chunk 6 (7451–7963) — processed
-- `src/layout/recorderConfigUi.js`
+- `dashboard/layout/recorderConfigUi.js`
   - **applyAdaptiveForm** — layout (function)
   - **applyAudioForm** — layout (function)
   - **applyDashboardForm** — layout (function)
@@ -146,10 +146,10 @@ Chunk size: 1500 lines with ±10 overlap
   - **updateRecycleBinPreview** — layout (function)
 
 ## Chunk 7 (8941–10440) — processed
-- `src/layout/filterControls.js`
+- `dashboard/layout/filterControls.js`
   - **applyFiltersFromInputs** — layout (function)
   - **clearFilters** — layout (function)
-- `src/services/recycleBinService.js`
+- `dashboard/services/recycleBinService.js`
   - **deleteRecordings** — services (function)
   - **fetchRecycleBin** — services (function)
   - **findNextSelectionPath** — services (function)
@@ -159,9 +159,9 @@ Chunk size: 1500 lines with ±10 overlap
   - **restoreRecycleBinSelection** — services (function)
 
 ## Chunk 8 (10431–11534) — processed
-- `src/layout/dashboardInitializer.js`
+- `dashboard/layout/dashboardInitializer.js`
   - **initialize** — layout (function)
-- `src/layout/liveStreamControls.js`
+- `dashboard/layout/liveStreamControls.js`
   - **closeLiveStreamPanel** — layout (function)
   - **focusLiveStreamPanel** — layout (function)
   - **focusPreviewSurface** — layout (function)
