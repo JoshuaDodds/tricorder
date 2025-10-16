@@ -630,58 +630,58 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "utils", "dashboardRuntime.js"),
-    "src/utils/dashboardRuntime.js",
+    path.join(baseDir, "dashboard", "utils", "dashboardRuntime.js"),
+    "dashboard/utils/dashboardRuntime.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "utils", "recordingProgress.js"),
-    "src/utils/recordingProgress.js",
+    path.join(baseDir, "dashboard", "utils", "recordingProgress.js"),
+    "dashboard/utils/recordingProgress.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "utils", "recordMetadata.js"),
-    "src/utils/recordMetadata.js",
+    path.join(baseDir, "dashboard", "utils", "recordMetadata.js"),
+    "dashboard/utils/recordMetadata.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "utils", "recorderSettings.js"),
-    "src/utils/recorderSettings.js",
+    path.join(baseDir, "dashboard", "utils", "recorderSettings.js"),
+    "dashboard/utils/recorderSettings.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "layout", "recordRowDom.js"),
-    "src/layout/recordRowDom.js",
+    path.join(baseDir, "dashboard", "layout", "recordRowDom.js"),
+    "dashboard/layout/recordRowDom.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "layout", "waveformControls.js"),
-    "src/layout/waveformControls.js",
+    path.join(baseDir, "dashboard", "layout", "waveformControls.js"),
+    "dashboard/layout/waveformControls.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "layout", "recorderConfigUi.js"),
-    "src/layout/recorderConfigUi.js",
+    path.join(baseDir, "dashboard", "layout", "recorderConfigUi.js"),
+    "dashboard/layout/recorderConfigUi.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "layout", "filterControls.js"),
-    "src/layout/filterControls.js",
+    path.join(baseDir, "dashboard", "layout", "filterControls.js"),
+    "dashboard/layout/filterControls.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "layout", "liveStreamControls.js"),
-    "src/layout/liveStreamControls.js",
+    path.join(baseDir, "dashboard", "layout", "liveStreamControls.js"),
+    "dashboard/layout/liveStreamControls.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "layout", "dashboardInitializer.js"),
-    "src/layout/dashboardInitializer.js",
+    path.join(baseDir, "dashboard", "layout", "dashboardInitializer.js"),
+    "dashboard/layout/dashboardInitializer.js",
   );
   loadDependency(
     sandbox,
-    path.join(baseDir, "src", "services", "recycleBinService.js"),
-    "src/services/recycleBinService.js",
+    path.join(baseDir, "dashboard", "services", "recycleBinService.js"),
+    "dashboard/services/recycleBinService.js",
   );
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
@@ -894,13 +894,13 @@ async function loadDashboard() {
     `  clearPendingSelectionRange = stateModule.clearPendingSelectionRange || (() => null),`,
     `  getStateEvents = stateModule.getStateEvents || (() => []),`,
     `} = stateModule;`,
-    `const dashboardRuntimeModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/dashboardRuntime.js")}] || {};`,
+    `const dashboardRuntimeModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/utils/dashboardRuntime.js")}] || {};`,
     `const {`,
     `  COMPONENTS_REGISTRY = {},`,
     `  nowMilliseconds = () => Date.now(),`,
     `  requireDashboardComponent = (component) => component,`,
     `} = dashboardRuntimeModule;`,
-    `const recordingProgressModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recordingProgress.js")}] || {};`,
+    `const recordingProgressModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/utils/recordingProgress.js")}] || {};`,
     `const {`,
     `  toFinalizedRecordingPath = undefined,`,
     `  findFinalizedRecordForPartial = undefined,`,
@@ -909,18 +909,18 @@ async function loadDashboard() {
     `  computeRecordsFingerprint = undefined,`,
     `  computePartialFingerprint = undefined,`,
     `} = recordingProgressModule;`,
-    `const recordMetadataModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recordMetadata.js")}] || {};`,
+    `const recordMetadataModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/utils/recordMetadata.js")}] || {};`,
     `const {`,
     `  recordMetadataChanged = undefined,`,
     `  resolveTriggerFlags = undefined,`,
     `} = recordMetadataModule;`,
-    `const recordRowDomModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/recordRowDom.js")}] || {};`,
+    `const recordRowDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/recordRowDom.js")}] || {};`,
     `const {`,
     `  ensureTriggerBadge = undefined,`,
     `  updateMetaPill = undefined,`,
     `  updateSubtextSpan = undefined,`,
     `} = recordRowDomModule;`,
-    `const waveformControlsModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/waveformControls.js")}] || {};`,
+    `const waveformControlsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/waveformControls.js")}] || {};`,
     `const {`,
     `  initializeWaveformControls = undefined,`,
     `  setCursorFraction = undefined,`,
@@ -949,17 +949,17 @@ async function loadDashboard() {
     `  handleWaveformPointerMove = undefined,`,
     `  handleWaveformPointerUp = undefined,`,
     `} = waveformControlsModule;`,
-    `const recorderConfigModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/recorderConfigUi.js")}] || {};`,
+    `const recorderConfigModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/recorderConfigUi.js")}] || {};`,
     `const { createRecorderConfigUi = undefined } = recorderConfigModule;`,
-    `const filterControlsModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/filterControls.js")}] || {};`,
+    `const filterControlsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/filterControls.js")}] || {};`,
     `const { createFilterControls = undefined } = filterControlsModule;`,
-    `const liveStreamModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/liveStreamControls.js")}] || {};`,
+    `const liveStreamModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/liveStreamControls.js")}] || {};`,
     `const { createLiveStreamControls = undefined } = liveStreamModule;`,
-    `const dashboardInitializerModule = globalThis.__dashboardModules[${JSON.stringify("src/layout/dashboardInitializer.js")}] || {};`,
+    `const dashboardInitializerModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/dashboardInitializer.js")}] || {};`,
     `const { createDashboardInitializer = undefined } = dashboardInitializerModule;`,
-    `const recycleBinServiceModule = globalThis.__dashboardModules[${JSON.stringify("src/services/recycleBinService.js")}] || {};`,
+    `const recycleBinServiceModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/services/recycleBinService.js")}] || {};`,
     `const { createRecycleBinService = undefined } = recycleBinServiceModule;`,
-    `const recorderSettingsModule = globalThis.__dashboardModules[${JSON.stringify("src/utils/recorderSettings.js")}] || {};`,
+    `const recorderSettingsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/utils/recorderSettings.js")}] || {};`,
     `const {`,
     `  parseBoolean = undefined,`,
     `  parseMotionFlag = undefined,`,
@@ -1021,7 +1021,7 @@ async function loadDashboard() {
   };
 
   const recorderSettingsHelpers =
-    sandbox.__dashboardModules?.["src/utils/recorderSettings.js"] || {};
+    sandbox.__dashboardModules?.["dashboard/utils/recorderSettings.js"] || {};
   if (typeof recorderSettingsHelpers.resolveNextMotionState === "function") {
     sandbox.resolveNextMotionState = recorderSettingsHelpers.resolveNextMotionState;
   }
