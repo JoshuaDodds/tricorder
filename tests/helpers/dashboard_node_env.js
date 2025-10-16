@@ -595,6 +595,26 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "modules", "pointerManager.js"),
+    "dashboard/modules/pointerManager.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "recycleBinHelpers.js"),
+    "dashboard/modules/recycleBinHelpers.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "servicesController.js"),
+    "dashboard/modules/servicesController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "downloads.js"),
+    "dashboard/modules/downloads.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "modules", "renameDialogController.js"),
     "dashboard/modules/renameDialogController.js",
   );
@@ -674,6 +694,14 @@ async function loadDashboard() {
     `  persistWaveformPreferences = undefined,`,
     `  getStoredWaveformAmplitude = undefined,`,
     `} = preferencesModule;`,
+    `const pointerManagerModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/pointerManager.js")}] || {};`,
+    `const { createPointerInteractionManager = undefined } = pointerManagerModule;`,
+    `const recycleBinHelpersModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/recycleBinHelpers.js")}] || {};`,
+    `const { createRecycleBinHelpers = undefined } = recycleBinHelpersModule;`,
+    `const servicesControllerModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/servicesController.js")}] || {};`,
+    `const { createServicesController = undefined } = servicesControllerModule;`,
+    `const downloadsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/downloads.js")}] || {};`,
+    `const { createDownloadHelpers = undefined } = downloadsModule;`,
     `const scrollLockModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/scrollLockManager.js")}] || {};`,
     `const { createScrollLockManager = undefined } = scrollLockModule;`,
     `const appMenuModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/appMenuController.js")}] || {};`,
