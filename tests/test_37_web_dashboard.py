@@ -103,28 +103,34 @@ def _run_dashboard_selection_script(
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
         const overrides = {overrides};
-        if (overrides && Object.keys(overrides).length > 0) {{
-          global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
-        }}
-        const sandbox = loadDashboard();
-        delete global.__DASHBOARD_ELEMENT_OVERRIDES;
-        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
-        if (!state) {{
-          throw new Error("Dashboard state is unavailable for tests");
-        }}
-        state.records = [];
-        state.partialRecord = null;
-        state.recordsFingerprint = "";
-        state.selectionAnchor = "";
-        state.selectionFocus = "";
-        state.selections = new Set();
-        state.sort = {{ key: "name", direction: "asc" }};
-        state.total = 0;
-        state.filteredSize = 0;
-        const result = (() => {{
+        (async () => {{
+          if (overrides && Object.keys(overrides).length > 0) {{
+            global.__DASHBOARD_ELEMENT_OVERRIDES = overrides;
+          }}
+          const sandbox = await loadDashboard();
+          delete global.__DASHBOARD_ELEMENT_OVERRIDES;
+          const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+          if (!state) {{
+            throw new Error("Dashboard state is unavailable for tests");
+          }}
+          state.records = [];
+          state.partialRecord = null;
+          state.recordsFingerprint = "";
+          state.selectionAnchor = "";
+          state.selectionFocus = "";
+          state.selections = new Set();
+          state.sort = {{ key: "name", direction: "asc" }};
+          state.total = 0;
+          state.filteredSize = 0;
+          const result = (() => {{
 {script}
-        }})();
-        console.log(JSON.stringify(result));
+          }})();
+          console.log(JSON.stringify(result));
+        }})().catch((error) => {{
+          const message = error && error.stack ? error.stack : String(error);
+          console.error(message);
+          process.exit(1);
+        }});
     """
     node_code = textwrap.dedent(template).format(
         script=indented_script, overrides=overrides
@@ -138,6 +144,60 @@ def _run_dashboard_selection_script(
     )
     output = completed.stdout.strip()
     return json.loads(output or "null")
+
+
+def test_dashboard_happy_path_serves_recording(dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240111"
+        day_dir.mkdir()
+
+        file_path = day_dir / "happy.opus"
+        file_bytes = b"happy-path"
+        file_path.write_bytes(file_bytes)
+        _write_waveform_stub(
+            file_path.with_suffix(file_path.suffix + ".waveform.json"),
+            duration=1.0,
+            start_epoch=1_700_100_000.0,
+        )
+
+        os.utime(file_path, (1_700_100_100, 1_700_100_100))
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            response = await client.get("/")
+            assert response.status == 200
+            html = await response.text()
+            assert "Tricorder Dashboard" in html
+            assert "/static/js/dashboard.js" in html
+
+            recordings = await client.get("/api/recordings?limit=5")
+            assert recordings.status == 200
+            payload = await recordings.json()
+            assert payload["total"] == 1
+            assert len(payload["items"]) == 1
+
+            item = payload["items"][0]
+            expected_path = file_path.relative_to(dashboard_env).as_posix()
+            assert item["path"] == expected_path
+            assert item["name"] == "happy"
+            assert item["waveform_path"].endswith("happy.opus.waveform.json")
+
+            waveform_resp = await client.get(f"/recordings/{item['waveform_path']}")
+            assert waveform_resp.status == 200
+            waveform_payload = await waveform_resp.json()
+            assert waveform_payload["duration_seconds"] == pytest.approx(1.0)
+
+            download_resp = await client.get(f"/recordings/{item['path']}")
+            assert download_resp.status == 200
+            blob = await download_resp.read()
+            assert blob == file_bytes
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
 
 
 def test_recordings_listing_filters(dashboard_env, monkeypatch):
@@ -196,6 +256,155 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
             await server.close()
 
     asyncio.run(runner())
+
+
+def test_render_records_adds_trigger_badges_and_pills():
+    script = textwrap.dedent(
+        """
+        const table = sandbox.window.document.querySelector('#recordings-table tbody');
+        sandbox.window.document.__setMockElement('toggle-all', {
+          checked: false,
+          indeterminate: false,
+          disabled: false,
+        });
+        sandbox.window.document.__setMockElement('selected-count', { textContent: '' });
+        sandbox.window.document.__setMockElement('delete-selected', { disabled: false });
+        sandbox.window.document.__setMockElement('download-selected', { disabled: false });
+        sandbox.window.document.__setMockElement('rename-selected', { disabled: false });
+        sandbox.window.document.__setMockElement('results-summary', {});
+        sandbox.window.document.__setMockElement('pagination-controls', {});
+        sandbox.window.document.__setMockElement('pagination-status', {});
+        sandbox.window.document.__setMockElement('page-prev', { disabled: false });
+        sandbox.window.document.__setMockElement('page-next', { disabled: false });
+
+        const state = sandbox.window.TRICORDER_DASHBOARD_STATE;
+        state.records = [
+          {
+            path: '20250102/manual.opus',
+            name: 'Manual clip',
+            day: '20250102',
+            modified: 1700100000,
+            modified_iso: new Date(1700100000 * 1000).toISOString(),
+            duration_seconds: 30,
+            size_bytes: 12345,
+            extension: 'opus',
+            trigger_sources: ['manual', 'split', 'rms', 'bad'],
+          },
+          {
+            path: '20250102/auto.opus',
+            name: 'Auto clip',
+            day: '20250102',
+            modified: 1700000000,
+            modified_iso: new Date(1700000000 * 1000).toISOString(),
+            duration_seconds: 20,
+            size_bytes: 54321,
+            extension: 'opus',
+            trigger_sources: [],
+          },
+        ];
+        state.total = state.records.length;
+        state.filteredSize = 0;
+        state.offset = 0;
+        state.selections = new Set();
+
+        sandbox.renderRecords({ force: true });
+
+        const toArray = (value) => {
+          if (!value) {
+            return [];
+          }
+          if (Array.isArray(value)) {
+            return value;
+          }
+          return Array.from(value);
+        };
+
+        const rows = toArray(table.children);
+        return rows.map((row) => {
+          if (!row) {
+            return null;
+          }
+          const summary = {
+            path: row.dataset ? row.dataset.path || '' : '',
+            badges: [],
+            pills: [],
+          };
+          const cells = toArray(row.children);
+          const nameCell = cells.find((cell) => cell && cell.className === 'cell-name');
+          if (nameCell) {
+            const title = toArray(nameCell.children).find(
+              (child) => child && child.className === 'record-title',
+            );
+            if (title) {
+              for (const child of toArray(title.children)) {
+                if (child && child.dataset && child.dataset.triggerRole) {
+                  summary.badges.push({
+                    role: child.dataset.triggerRole,
+                    text: child.textContent,
+                    className: child.className,
+                    hidden: Boolean(child.hidden),
+                  });
+                }
+              }
+            }
+            const mobileMeta = toArray(nameCell.children).find(
+              (child) => child && child.className === 'record-mobile-meta',
+            );
+            if (mobileMeta) {
+              for (const pill of toArray(mobileMeta.children)) {
+                if (pill && pill.dataset && pill.dataset.metaRole) {
+                  summary.pills.push({
+                    role: pill.dataset.metaRole,
+                    text: pill.textContent,
+                    className: pill.className,
+                    hidden: Boolean(pill.hidden),
+                  });
+                }
+              }
+            }
+          }
+          return summary;
+        });
+        """
+    )
+
+    result = _run_dashboard_selection_script(
+        script,
+        elements={
+            "toggle-all": {"checked": False, "indeterminate": False, "disabled": False},
+            "selected-count": {"textContent": ""},
+            "delete-selected": {"disabled": False},
+            "download-selected": {"disabled": False},
+            "rename-selected": {"disabled": False},
+            "results-summary": True,
+            "pagination-controls": True,
+            "pagination-status": True,
+            "page-prev": {"disabled": False},
+            "page-next": {"disabled": False},
+        },
+    )
+    assert isinstance(result, list)
+    assert len(result) == 2
+
+    manual = next(entry for entry in result if entry and entry["path"] == "20250102/manual.opus")
+    auto = next(entry for entry in result if entry and entry["path"] == "20250102/auto.opus")
+
+    manual_badges = {badge["role"]: badge for badge in manual["badges"]}
+    assert set(manual_badges) == {"manual", "split", "rmsvad"}
+    assert manual_badges["manual"]["text"] == "Manual"
+    assert manual_badges["split"]["text"] == "Split"
+    assert manual_badges["rmsvad"]["text"] == "RMS + VAD"
+    assert all(badge["hidden"] is False for badge in manual_badges.values())
+
+    manual_pills = {pill["role"]: pill for pill in manual["pills"]}
+    for expected in ("manual-trigger", "split-trigger", "rmsvad-trigger"):
+        assert expected in manual_pills
+        assert manual_pills[expected]["hidden"] is False
+
+    assert all(pill["text"] for pill in manual_pills.values())
+
+    assert auto["badges"] == []
+    assert all(pill["role"] not in {"manual-trigger", "split-trigger", "rmsvad-trigger"} for pill in auto["pills"])
 
 
 def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
@@ -332,6 +541,8 @@ def test_recordings_capture_status_stale_clears_activity(dashboard_env, monkeypa
             assert "recording_progress" not in capture_status
             assert capture_status.get("last_stop_reason") == "status stale"
             assert capture_status.get("manual_recording") is False
+            assert capture_status.get("auto_recording_enabled") is True
+            assert capture_status.get("auto_record_motion_override") is True
         finally:
             await client.close()
             await server.close()
@@ -369,6 +580,8 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert "recording_progress" not in first_status
             assert first_status.get("last_stop_reason") == "service offline"
             assert first_status.get("manual_recording") is False
+            assert first_status.get("auto_recording_enabled") is True
+            assert first_status.get("auto_record_motion_override") is True
 
             offline_payload["last_stop_reason"] = "shutdown"
             status_path.write_text(json.dumps(offline_payload), encoding="utf-8")
@@ -384,6 +597,8 @@ def test_recordings_capture_status_offline_defaults_reason(dashboard_env, monkey
             assert "recording_progress" not in second_status
             assert second_status.get("last_stop_reason") == "shutdown"
             assert second_status.get("manual_recording") is False
+            assert second_status.get("auto_recording_enabled") is True
+            assert second_status.get("auto_record_motion_override") is True
         finally:
             await client.close()
             await server.close()
@@ -2656,6 +2871,58 @@ def test_capture_manual_record_invalid_payload(dashboard_env):
     asyncio.run(runner())
 
 
+def test_capture_auto_record_endpoint(dashboard_env):
+    async def runner():
+        auto_state_path = Path(os.environ["TMP_DIR"]) / "auto_record_state.json"
+        if auto_state_path.exists():
+            auto_state_path.unlink()
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/auto-record", json={"enabled": False})
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("ok") is True
+            assert payload.get("enabled") is False
+            data = json.loads(auto_state_path.read_text(encoding="utf-8"))
+            assert data.get("enabled") is False
+
+            resp = await client.post("/api/capture/auto-record", json={"enabled": True})
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("enabled") is True
+            data = json.loads(auto_state_path.read_text(encoding="utf-8"))
+            assert data.get("enabled") is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_capture_auto_record_invalid_payload(dashboard_env):
+    async def runner():
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/auto-record", json={"enabled": "sometimes"})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload.get("ok") is False
+            resp_invalid = await client.post(
+                "/api/capture/auto-record", data=b"not-json", headers={"Content-Type": "application/json"}
+            )
+            assert resp_invalid.status == 400
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_recordings_bulk_download_includes_sidecars(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240105"
@@ -2872,6 +3139,7 @@ def test_capture_status_merges_motion_padding_updates_without_sequence_bump():
         sandbox.updateRecordingMeta = () => {};
         sandbox.updateEncodingStatus = () => {};
         sandbox.updateSplitEventButton = () => {};
+        sandbox.updateAutoRecordButton = () => {};
         sandbox.updateManualRecordButton = () => {};
         state.motionState = {
           sequence: 27,
@@ -3074,7 +3342,7 @@ def test_shift_click_uses_existing_anchor_when_available():
     assert "20240101/alpha.opus" not in result["selections"]
 
 
-def test_playback_source_defaults_to_processed_when_raw_available():
+def test_playback_source_defaults_to_raw_when_available():
     script = textwrap.dedent(
         """
         const group = sandbox.window.document.__getMockElement("playback-source-group");
@@ -3141,14 +3409,14 @@ def test_playback_source_defaults_to_processed_when_raw_available():
         },
     )
 
-    assert result["state"]["mode"] == "processed"
+    assert result["state"]["mode"] == "raw"
     assert result["state"]["hasRaw"] is True
     assert result["groupHidden"] is False
-    assert result["groupSource"] == "processed"
+    assert result["groupSource"] == "raw"
     assert result["rawAvailableFlag"] == "true"
     assert result["rawDisabled"] is False
     assert result["hintHidden"] is True
-    assert result["activeLabel"] == "Processed (Opus)"
+    assert result["activeLabel"] == "Raw capture (PCM)"
 
 
 def test_playback_source_reverts_when_raw_unavailable():

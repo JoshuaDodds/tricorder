@@ -8,6 +8,7 @@ import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 import wave
 from datetime import datetime, timezone
@@ -151,6 +152,73 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
     finally:
         rec.flush(10)
         segmenter.TimelineRecorder.event_counters = original_counters
+
+
+def test_autosplit_limit_rotates_event(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+
+    limit_frames = 3
+    limit_seconds = (limit_frames * segmenter.FRAME_MS) / 1000.0
+    monkeypatch.setattr(segmenter, "_AUTOSPLIT_LIMIT_FRAMES", limit_frames)
+    monkeypatch.setattr(segmenter, "_AUTOSPLIT_LIMIT_SECONDS", limit_seconds)
+
+    original_counters = segmenter.TimelineRecorder.event_counters
+    segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
+
+    captured_jobs: list[tuple[str, str, str, str | None, bool, str | None]] = []
+
+    def fake_enqueue(
+        tmp_wav_path: str,
+        base_name: str,
+        *,
+        source: str,
+        existing_opus_path: str | None,
+        manual_recording: bool = False,
+        target_day: str | None = None,
+    ) -> int:
+        captured_jobs.append(
+            (
+                tmp_wav_path,
+                base_name,
+                source,
+                existing_opus_path,
+                manual_recording,
+                target_day,
+            )
+        )
+        return len(captured_jobs)
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+
+    try:
+        for idx in range(8):
+            rec.ingest(make_frame(4000), idx)
+
+        assert captured_jobs, "expected autosplit to finalize an event"
+    finally:
+        rec.flush(8)
+        segmenter.TimelineRecorder.event_counters = original_counters
+
+    assert len(captured_jobs) >= 2
+    base_names = {entry[1] for entry in captured_jobs}
+    assert len(base_names) >= 2
 
 
 def test_manual_split_no_active_event(tmp_path, monkeypatch):
@@ -470,6 +538,158 @@ def test_motion_payload_includes_offsets(monkeypatch, tmp_path):
         assert payload["motion_segments"] == [
             {"start": pytest.approx(1.25), "end": pytest.approx(1.75)}
         ]
+    finally:
+        rec.flush(0)
+
+
+def test_auto_record_toggle_blocks_rms(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", True)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.set_auto_recording_enabled(False)
+        cache = rec._status_cache or {}
+        assert cache.get("auto_recording_enabled") is False
+
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is False
+
+        rec.set_auto_recording_enabled(True)
+        cache = rec._status_cache or {}
+        assert cache.get("auto_recording_enabled") is True
+
+        rec.ingest(make_frame(4000), 1)
+        assert rec.active is True
+    finally:
+        rec.flush(0)
+
+
+def test_auto_record_motion_override_allows_capture(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", True)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=25.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        assert rec._motion_forced_active is True
+        rec.set_auto_recording_enabled(False)
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is True
+    finally:
+        rec.flush(0)
+
+
+def test_auto_record_motion_override_disabled_blocks_motion(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", False)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=40.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        assert rec._motion_forced_active is True
+        rec.set_auto_recording_enabled(False)
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is False
+    finally:
+        rec.flush(0)
+
+def test_motion_override_event_uses_rms_after_motion_release(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "is_voice", lambda buf: any(buf))
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", True)
+    monkeypatch.setattr(segmenter, "MOTION_RELEASE_PADDING_SECONDS", 0.0)
+
+    motion_state_path = tmp_dir / MOTION_STATE_FILENAME
+    store_motion_state(motion_state_path, motion_active=True, timestamp=50.0)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.set_auto_recording_enabled(False)
+        rec.ingest(make_frame(4000), 0)
+        assert rec.active is True
+        assert rec._motion_override_event_active is True
+
+        store_motion_state(motion_state_path, motion_active=False, timestamp=55.0)
+        rec._motion_watcher.force_refresh()
+        rec._refresh_motion_state()
+        assert rec._motion_forced_active is False
+        rec.ingest(make_frame(4000), 1)
+        assert rec.active is True
+        assert rec._motion_override_event_active is True
+
+        rec.ingest(make_frame(0), 2)
+        rec.ingest(make_frame(0), 3)
+        assert rec.active is False
+        assert rec._motion_override_event_active is False
+
+        rec.ingest(make_frame(4000), 4)
+        assert rec.active is False
     finally:
         rec.flush(0)
 
@@ -1101,6 +1321,32 @@ def test_encode_completion_emits_recordings_changed(monkeypatch, tmp_path):
         and payload.get("paths") == ["20240102/20240102_Both_RMS-321_1.opus"]
         for event_type, payload in events
     )
+
+
+def test_enqueue_encode_job_defers_when_queue_full(monkeypatch):
+    queue_obj = queue.Queue(maxsize=1)
+    queue_obj.put(("occupied",))
+    monkeypatch.setattr(segmenter, "ENCODE_QUEUE", queue_obj, raising=False)
+    monkeypatch.setattr(segmenter, "_ensure_encoder_worker", lambda: None)
+    monkeypatch.setattr(segmenter, "_ENCODE_WORKERS", [], raising=False)
+    monkeypatch.setattr(segmenter, "_ENCODE_DISPATCHER", None, raising=False)
+    monkeypatch.setattr(segmenter, "_DEFERRED_LOCK", threading.Lock(), raising=False)
+    deferred = collections.deque()
+    event = threading.Event()
+    monkeypatch.setattr(segmenter, "_DEFERRED_ENCODE_JOBS", deferred, raising=False)
+    monkeypatch.setattr(segmenter, "_DEFERRED_EVENT", event, raising=False)
+
+    statuses = segmenter.EncodingStatus()
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", statuses, raising=False)
+
+    job_id = segmenter._enqueue_encode_job("/tmp/path.wav", "20240102_Both_RMS-321_1")
+
+    assert job_id is not None
+    assert len(deferred) == 1
+    snapshot = statuses.snapshot()
+    assert snapshot is not None
+    pending = snapshot.get("pending", [])
+    assert pending and pending[0]["queue_state"] == "deferred"
 
 
 def test_event_base_name_uses_prepad(monkeypatch, tmp_path):

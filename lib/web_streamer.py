@@ -51,13 +51,26 @@ import time
 import types
 import wave
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
+from .web_streamer_helpers.event_bridges import (
+    CaptureStatusEventBridge,
+    RecordingsEventBridge,
+)
+
+
 DEFAULT_RECORDINGS_LIMIT = 200
+# aiohttp falls back to asyncio's default executor for blocking work. Cap it to a
+# small fixed size so the dashboard thread footprint stays tiny on single-user
+# systems (default would otherwise scale with CPU count and spawn up to 32
+# threads).
+# WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
+WEB_STREAMER_EXECUTOR_MAX_WORKERS = 1  # hardcoded to 1 for this project to save RAM
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
@@ -99,191 +112,6 @@ STREAMING_OPEN_TIMEOUT_SECONDS = 5.0
 STREAMING_POLL_INTERVAL_SECONDS = 0.25
 
 DEFAULT_VOSK_MODEL_ROOT = Path("/apps/tricorder/models")
-
-
-class _CaptureStatusEventBridge:
-    """Bridge capture status file updates into dashboard SSE events."""
-
-    def __init__(
-        self,
-        *,
-        read_status: Callable[[], dict[str, object]],
-        bus: "dashboard_events.DashboardEventBus",
-        poll_interval: float,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        if poll_interval <= 0:
-            raise ValueError("poll_interval must be positive")
-        self._read_status = read_status
-        self._bus = bus
-        self._poll_interval = float(poll_interval)
-        self._logger = logger or logging.getLogger("web_streamer")
-        self._task: asyncio.Task | None = None
-        self._last_signature: str | None = None
-
-    async def start(self) -> None:
-        self._prime_from_history()
-        await self._poll_once()
-        if self._task is not None:
-            return
-        loop = asyncio.get_running_loop()
-        self._task = loop.create_task(self._run())
-
-    async def stop(self) -> None:
-        task = self._task
-        self._task = None
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    async def _run(self) -> None:
-        assert self._task is not None
-        try:
-            while True:
-                try:
-                    await asyncio.sleep(self._poll_interval)
-                    await self._poll_once()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    self._logger.debug(
-                        "capture status bridge poll failed: %s", exc, exc_info=False
-                    )
-        except asyncio.CancelledError:
-            raise
-        finally:
-            self._task = None
-
-    async def _poll_once(self) -> None:
-        payload = await asyncio.to_thread(self._read_status)
-        signature = self._signature(payload)
-        if signature is None or signature == self._last_signature:
-            return
-        self._last_signature = signature
-        try:
-            self._bus.publish("capture_status", payload)
-        except Exception as exc:  # pragma: no cover - publish errors are unexpected
-            self._logger.warning("failed to publish capture status event: %s", exc)
-
-    def _prime_from_history(self) -> None:
-        history = self._bus.history_snapshot()
-        for event in reversed(history):
-            if event.get("type") != "capture_status":
-                continue
-            signature = self._signature(event.get("payload"))
-            if signature is not None:
-                self._last_signature = signature
-            break
-
-    @staticmethod
-    def _signature(payload: Any) -> str | None:
-        if payload is None:
-            return None
-        try:
-            return json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        except (TypeError, ValueError):
-            return None
-
-
-class _RecordingsEventBridge:
-    """Replay recordings_changed events spooled by external processes."""
-
-    def __init__(
-        self,
-        *,
-        spool_dir: Path,
-        bus: "dashboard_events.DashboardEventBus",
-        poll_interval: float,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        if poll_interval <= 0:
-            raise ValueError("poll_interval must be positive")
-        self._spool_dir = spool_dir
-        self._bus = bus
-        self._poll_interval = float(poll_interval)
-        self._logger = logger or logging.getLogger("web_streamer")
-        self._task: asyncio.Task | None = None
-
-    async def start(self) -> None:
-        await self._drain_once()
-        if self._task is not None:
-            return
-        loop = asyncio.get_running_loop()
-        self._task = loop.create_task(self._run())
-
-    async def stop(self) -> None:
-        task = self._task
-        self._task = None
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    async def _run(self) -> None:
-        assert self._task is not None
-        try:
-            while True:
-                try:
-                    await asyncio.sleep(self._poll_interval)
-                    await self._drain_once()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    self._logger.debug(
-                        "recordings event bridge poll failed: %s", exc, exc_info=False
-                    )
-        except asyncio.CancelledError:
-            raise
-        finally:
-            self._task = None
-
-    async def _drain_once(self) -> None:
-        events = await asyncio.to_thread(self._collect_events)
-        if not events:
-            return
-        for event_type, payload in events:
-            if event_type != "recordings_changed" or not isinstance(payload, dict):
-                continue
-            try:
-                self._bus.publish(event_type, payload)
-            except Exception as exc:  # pragma: no cover - unexpected publish failure
-                self._logger.debug(
-                    "recordings event bridge publish failed: %s", exc, exc_info=False
-                )
-
-    def _collect_events(self) -> list[tuple[str, dict[str, object]]]:
-        try:
-            self._spool_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return []
-
-        events: list[tuple[str, dict[str, object]]] = []
-        candidates = sorted(self._spool_dir.glob("*.json"))
-        for candidate in candidates:
-            try:
-                with open(candidate, "r", encoding="utf-8") as handle:
-                    record = json.load(handle)
-            except (OSError, json.JSONDecodeError):
-                try:
-                    candidate.unlink()
-                except OSError:
-                    pass
-                continue
-
-            event_type = record.get("type") if isinstance(record, dict) else None
-            payload = record.get("payload") if isinstance(record, dict) else None
-            if isinstance(event_type, str) and isinstance(payload, dict):
-                events.append((event_type, payload))
-
-            try:
-                candidate.unlink()
-            except OSError:
-                pass
-
-        return events
 
 
 def _transcription_model_search_roots() -> list[Path]:
@@ -2866,6 +2694,33 @@ def _scan_recordings_worker(
             waveform_meta.get("motion_released_epoch") if waveform_meta else None
         )
 
+        manual_event_flag = False
+        detected_rms_flag = False
+        detected_vad_flag = False
+        trigger_source_list: list[str] = []
+        end_reason_value = ""
+        if waveform_meta is not None:
+            manual_event_flag = bool(waveform_meta.get("manual_event"))
+            detected_rms_flag = bool(waveform_meta.get("detected_rms"))
+            detected_vad_flag = bool(
+                waveform_meta.get("detected_vad")
+                or waveform_meta.get("detected_bad")
+            )
+            raw_end_reason = waveform_meta.get("end_reason")
+            if isinstance(raw_end_reason, str):
+                end_reason_value = raw_end_reason.strip()
+            raw_triggers = waveform_meta.get("trigger_sources")
+            if isinstance(raw_triggers, list):
+                seen_triggers: set[str] = set()
+                for entry in raw_triggers:
+                    if isinstance(entry, str):
+                        normalized = entry.strip().lower()
+                        if normalized == "bad":
+                            normalized = "vad"
+                        if normalized and normalized not in seen_triggers:
+                            seen_triggers.add(normalized)
+                            trigger_source_list.append(normalized)
+
         rel_posix = rel_with_prefix.as_posix()
         day = rel.parts[0] if len(rel.parts) > 1 else ""
 
@@ -2910,6 +2765,11 @@ def _scan_recordings_worker(
                 "motion_segments": _normalize_motion_segments(
                     waveform_meta.get("motion_segments") if waveform_meta else None
                 ),
+                "manual_event": manual_event_flag,
+                "trigger_sources": trigger_source_list,
+                "detected_rms": detected_rms_flag,
+                "detected_vad": detected_vad_flag,
+                "end_reason": end_reason_value,
                 "collection": collection_label,
             }
         )
@@ -2951,6 +2811,24 @@ def _normalize_motion_segments(
             end_value = max(start_value, float(end_raw))
         segments.append({"start": start_value, "end": end_value})
     return segments
+
+
+def _normalize_trigger_sources(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        token = entry.strip().lower()
+        if token == "bad":
+            token = "vad"
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
 
 
 def _generate_recycle_entry_id(now: datetime | None = None) -> str:
@@ -3299,11 +3177,11 @@ LETS_ENCRYPT_MANAGER_KEY: AppKey[Any] = web.AppKey("lets_encrypt_manager", objec
 EVENT_BUS_KEY: AppKey[dashboard_events.DashboardEventBus] = web.AppKey(
     "dashboard_event_bus", dashboard_events.DashboardEventBus
 )
-CAPTURE_STATUS_BRIDGE_KEY: AppKey[_CaptureStatusEventBridge] = web.AppKey(
-    "capture_status_event_bridge", _CaptureStatusEventBridge
+CAPTURE_STATUS_BRIDGE_KEY: AppKey[CaptureStatusEventBridge] = web.AppKey(
+    "capture_status_event_bridge", CaptureStatusEventBridge
 )
-RECORDINGS_EVENT_BRIDGE_KEY: AppKey[_RecordingsEventBridge] = web.AppKey(
-    "recordings_event_bridge", _RecordingsEventBridge
+RECORDINGS_EVENT_BRIDGE_KEY: AppKey[RecordingsEventBridge] = web.AppKey(
+    "recordings_event_bridge", RecordingsEventBridge
 )
 SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
@@ -4637,8 +4515,14 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     manual_record_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), "manual_record_state.json"
     )
+    auto_record_state_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), "auto_record_state.json"
+    )
     motion_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
+    )
+    auto_motion_override_default = bool(
+        cfg.get("segmenter", {}).get("auto_record_motion_override", True)
     )
 
     def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
@@ -4691,6 +4575,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if isinstance(payload, bool):
             return bool(payload)
         return False
+
+    def _read_auto_record_flag() -> bool:
+        try:
+            with open(auto_record_state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return True
+        except (json.JSONDecodeError, OSError):
+            return True
+        if isinstance(payload, dict):
+            return bool(payload.get("enabled", True))
+        if isinstance(payload, bool):
+            return bool(payload)
+        return True
 
     def _float_or_none(value: object) -> float | None:
         if isinstance(value, (int, float)) and math.isfinite(value):
@@ -4855,6 +4753,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "capturing": False,
                 "updated_at": None,
                 "manual_recording": _read_manual_record_flag(),
+                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_record_motion_override": auto_motion_override_default,
             }
         except json.JSONDecodeError:
             return {
@@ -4862,12 +4762,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "updated_at": None,
                 "error": "invalid",
                 "manual_recording": _read_manual_record_flag(),
+                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_record_motion_override": auto_motion_override_default,
             }
         except OSError:
             return {
                 "capturing": False,
                 "updated_at": None,
                 "manual_recording": _read_manual_record_flag(),
+                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_record_motion_override": auto_motion_override_default,
             }
 
         status: dict[str, object] = {
@@ -4879,6 +4783,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status["manual_recording"] = manual_flag
         else:
             status["manual_recording"] = _read_manual_record_flag()
+        auto_flag = raw.get("auto_recording_enabled")
+        if isinstance(auto_flag, bool):
+            status["auto_recording_enabled"] = auto_flag
+        else:
+            status["auto_recording_enabled"] = _read_auto_record_flag()
+        motion_override_flag = raw.get("auto_record_motion_override")
+        if isinstance(motion_override_flag, bool):
+            status["auto_record_motion_override"] = motion_override_flag
+        else:
+            status["auto_record_motion_override"] = auto_motion_override_default
         updated_at = raw.get("updated_at")
         if isinstance(updated_at, (int, float)):
             status["updated_at"] = float(updated_at)
@@ -5168,7 +5082,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         return status
 
-    capture_status_bridge = _CaptureStatusEventBridge(
+    capture_status_bridge = CaptureStatusEventBridge(
         read_status=_read_capture_status,
         bus=event_bus,
         poll_interval=CAPTURE_STATUS_EVENT_POLL_SECONDS,
@@ -5183,7 +5097,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         await capture_status_bridge.stop()
 
     recordings_event_spool = Path(cfg["paths"].get("tmp_dir", tmp_root)) / RECORDINGS_EVENT_SPOOL_DIRNAME
-    recordings_event_bridge = _RecordingsEventBridge(
+    recordings_event_bridge = RecordingsEventBridge(
         spool_dir=recordings_event_spool,
         bus=event_bus,
         poll_interval=RECORDINGS_EVENT_POLL_SECONDS,
@@ -5398,6 +5312,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     str(entry.get("raw_audio_path"))
                     if entry.get("raw_audio_path")
                     else ""
+                ),
+                "manual_event": bool(entry.get("manual_event")),
+                "detected_rms": bool(entry.get("detected_rms")),
+                "detected_vad": bool(
+                    entry.get("detected_vad")
+                    or entry.get("detected_bad")
+                ),
+                "end_reason": (
+                    str(entry.get("end_reason")).strip()
+                    if isinstance(entry.get("end_reason"), str)
+                    else ""
+                ),
+                "trigger_sources": (
+                    _normalize_trigger_sources(entry.get("trigger_sources"))
                 ),
             }
             for entry in window
@@ -6241,13 +6169,18 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 errors.append({"item": entry_id, "error": f"unable to prepare destination: {exc}"})
                 continue
 
+            completed_moves: list[tuple[Path, Path]] = []
             try:
                 shutil.move(str(audio_path), str(target_path))
             except Exception as exc:
                 errors.append({"item": entry_id, "error": f"unable to restore audio: {exc}"})
                 continue
+            else:
+                completed_moves.append((target_path, audio_path))
 
             sidecar_errors: list[str] = []
+            restore_failed = False
+
             waveform_name = data.get("waveform_name")
             if isinstance(waveform_name, str) and waveform_name:
                 source = data["dir"] / waveform_name
@@ -6257,6 +6190,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         shutil.move(str(source), str(destination))
                     except Exception as exc:
                         sidecar_errors.append(f"waveform: {exc}")
+                    else:
+                        completed_moves.append((destination, source))
 
             transcript_name = data.get("transcript_name")
             if isinstance(transcript_name, str) and transcript_name:
@@ -6267,24 +6202,88 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         shutil.move(str(source), str(destination))
                     except Exception as exc:
                         sidecar_errors.append(f"transcript: {exc}")
+                    else:
+                        completed_moves.append((destination, source))
 
-            raw_audio_name = data.get("raw_audio_name")
-            raw_audio_rel = data.get("raw_audio_path")
-            if (
-                isinstance(raw_audio_name, str)
-                and raw_audio_name
-                and isinstance(raw_audio_rel, str)
-                and raw_audio_rel
-                and _is_safe_relative_path(raw_audio_rel)
-            ):
+            raw_audio_name_raw = data.get("raw_audio_name")
+            raw_audio_name = raw_audio_name_raw.strip() if isinstance(raw_audio_name_raw, str) else ""
+            if raw_audio_name and Path(raw_audio_name).name != raw_audio_name:
+                sidecar_errors.append("raw audio: invalid filename")
+                restore_failed = True
+
+            raw_source: Path | None = None
+            raw_destination: Path | None = None
+            raw_source_exists = False
+            if raw_audio_name:
                 raw_source = data["dir"] / raw_audio_name
-                raw_destination = recordings_root / raw_audio_rel
-                if raw_source.exists():
+                raw_source_exists = raw_source.exists()
+
+                raw_audio_rel_raw = data.get("raw_audio_path")
+                raw_audio_rel = (
+                    raw_audio_rel_raw.strip()
+                    if isinstance(raw_audio_rel_raw, str)
+                    else ""
+                )
+                if raw_audio_rel and _is_safe_relative_path(raw_audio_rel):
+                    raw_destination = recordings_root / raw_audio_rel
+                else:
                     try:
-                        raw_destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(raw_source), str(raw_destination))
-                    except Exception as exc:
-                        sidecar_errors.append(f"raw audio: {exc}")
+                        target_rel_parts = target_path.relative_to(recordings_root).parts
+                    except ValueError:
+                        target_rel_parts = ()
+                    day_component = ""
+                    if target_rel_parts:
+                        if (
+                            target_rel_parts[0] == SAVED_RECORDINGS_DIRNAME
+                            and len(target_rel_parts) > 1
+                        ):
+                            candidate_day = target_rel_parts[1]
+                        else:
+                            candidate_day = target_rel_parts[0]
+                        if len(candidate_day) == 8 and candidate_day.isdigit():
+                            day_component = candidate_day
+                    if day_component:
+                        raw_destination = (
+                            recordings_root
+                            / RAW_AUDIO_DIRNAME
+                            / day_component
+                            / raw_audio_name
+                        )
+
+                if raw_source_exists:
+                    if raw_destination is None:
+                        sidecar_errors.append("raw audio: missing destination path")
+                        restore_failed = True
+                    else:
+                        try:
+                            raw_destination.parent.mkdir(parents=True, exist_ok=True)
+                        except OSError as exc:
+                            sidecar_errors.append(
+                                f"raw audio: unable to prepare destination: {exc}"
+                            )
+                            restore_failed = True
+                        else:
+                            try:
+                                shutil.move(str(raw_source), str(raw_destination))
+                            except Exception as exc:
+                                sidecar_errors.append(f"raw audio: {exc}")
+                                restore_failed = True
+                            else:
+                                completed_moves.append((raw_destination, raw_source))
+                else:
+                    sidecar_errors.append("raw audio: source file missing")
+
+            if restore_failed:
+                for message in sidecar_errors:
+                    errors.append({"item": entry_id, "error": message})
+                for destination, source in reversed(completed_moves):
+                    try:
+                        if destination.exists():
+                            source.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(destination), str(source))
+                    except Exception:
+                        pass
+                continue
 
             try:
                 metadata_path = data.get("metadata_path")
@@ -7717,6 +7716,51 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return web.json_response({"ok": False, "error": message}, status=502)
         return web.json_response({"ok": True})
 
+    async def capture_auto_record(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
+
+        raw_enabled = payload.get("enabled") if isinstance(payload, dict) else None
+        enabled: bool | None
+        if isinstance(raw_enabled, bool):
+            enabled = raw_enabled
+        elif isinstance(raw_enabled, (int, float)):
+            enabled = bool(raw_enabled)
+        elif isinstance(raw_enabled, str):
+            normalized = raw_enabled.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                enabled = True
+            elif normalized in {"0", "false", "no", "off"}:
+                enabled = False
+            else:
+                enabled = None
+        else:
+            enabled = None
+
+        if enabled is None:
+            return web.json_response(
+                {"ok": False, "error": "Payload must include boolean 'enabled'"},
+                status=400,
+            )
+
+        try:
+            os.makedirs(os.path.dirname(auto_record_state_path), exist_ok=True)
+            with open(auto_record_state_path, "w", encoding="utf-8") as handle:
+                json.dump({"enabled": bool(enabled), "updated_at": time.time()}, handle)
+                handle.write("\n")
+        except OSError as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": f"Failed to update auto record state: {exc}",
+                },
+                status=500,
+            )
+
+        return web.json_response({"ok": True, "enabled": bool(enabled)})
+
     async def capture_manual_record(request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -7908,6 +7952,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/integrations", integrations_api)
     app.router.add_post("/api/services/{unit}/action", service_action)
     app.router.add_post("/api/capture/split", capture_split)
+    app.router.add_post("/api/capture/auto-record", capture_auto_record)
     app.router.add_post("/api/capture/manual-record", capture_manual_record)
 
     if stream_mode == "hls":
@@ -8113,11 +8158,20 @@ def start_web_streamer_in_thread(
     log = logging.getLogger("web_streamer")
 
     loop = asyncio.new_event_loop()
+    executor = ThreadPoolExecutor(
+        max_workers=WEB_STREAMER_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="web_streamer_io",
+    )
     runner_box = {}
     app_box = {}
 
     def _run():
         asyncio.set_event_loop(loop)
+        loop.set_default_executor(executor)
+        log.debug(
+            "Configured web_streamer default executor with %s workers",
+            WEB_STREAMER_EXECUTOR_MAX_WORKERS,
+        )
         _install_loop_callback_guard(loop, log)
         app = build_app(lets_encrypt_manager=lets_encrypt_manager)
         if ssl_context is not None:
@@ -8137,6 +8191,7 @@ def start_web_streamer_in_thread(
                 loop.run_until_complete(runner.cleanup())
             except Exception:
                 pass
+            executor.shutdown(wait=True, cancel_futures=True)
 
     t = threading.Thread(target=_run, name="web_streamer", daemon=True)
     t.start()

@@ -5,11 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ page_title }}</title>
     <link rel="icon" href="{{ static_url('img/tricorder-logo.svg') }}" type="image/svg+xml" />
+    <link rel="stylesheet" href="{{ static_url('css/dashboard/theme.css') }}" />
     <link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}" />
     <script>
       window.TRICORDER_API_BASE = {{ api_base | default('', true) | tojson }};
+      window.TRICORDER_API_RETRY = {{ api_retry | default(None, true) | tojson }};
     </script>
+    <script type="module" src="{{ static_url('js/dashboard/components/clipList.js') }}" defer></script>
+    <script type="module" src="{{ static_url('js/dashboard/components/filtersPanel.js') }}" defer></script>
+    <script type="module" src="{{ static_url('js/dashboard/components/playbackPane.js') }}" defer></script>
+    <script
+      type="module"
+      src="{{ static_url('js/dashboard/components/transportControls.js') }}"
+      defer
+    ></script>
     <script type="module" src="{{ static_url('js/dashboard.js') }}" defer></script>
+    <script type="module" src="{{ static_url('js/dashboard/bootstrap.js') }}" defer></script>
   </head>
   <body
     data-tricorder-api-base="{{ api_base | default('', true) }}"
@@ -245,6 +256,14 @@
             </button>
             <button id="split-event-trigger" class="ghost-button" type="button">
               Split Event
+            </button>
+            <button
+              id="auto-record-toggle"
+              class="ghost-button"
+              type="button"
+              aria-pressed="true"
+            >
+              Auto Capture
             </button>
             <button
               id="manual-record-toggle"

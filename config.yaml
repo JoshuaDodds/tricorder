@@ -132,9 +132,16 @@ segmenter:
   # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
   post_pad_ms: 3000
 
+  # Maximum continuous recording length before the segmenter forces a split (minutes).
+  # Set to 0 to disable automatic rotation. Default keeps encoder workloads bounded.
+  autosplit_interval_minutes: 15.0
+
   # Extra time to keep motion-forced recordings alive after the motion integration clears (minutes).
   # Use this to retain context around motion-triggered events before RMS/VAD regain control.
   motion_release_padding_minutes: 0.0
+
+  # Allow motion to override the dashboard auto-record toggle when true. Disable to require manual capture.
+  auto_record_motion_override: true
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
@@ -209,6 +216,10 @@ segmenter:
   # Max queued frames before backpressure/drop (safety). With 20ms @ 48k mono: 512 ≈ 10.24s of audio.
   # Keep modest to avoid memory spikes. Typical: 256–1024.
   max_queue_frames: 512
+
+  # Maximum number of pending encode jobs kept in memory before new work is deferred.
+  # Deferred jobs stay on disk and are retried as soon as worker capacity becomes available.
+  max_pending_encodes: 8
 
   # Minimum duration (seconds) required to keep a finalized recording. Clips shorter than this
   # threshold are discarded before filters, waveform generation, and archival. Set to 0 to disable.

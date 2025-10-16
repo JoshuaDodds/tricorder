@@ -141,9 +141,17 @@ segmenter:
   # Typical: 1000–5000 ms. Higher merges nearby sounds into one event.
   post_pad_ms: 3000
 
+  # Maximum continuous recording length before the segmenter forces a split (minutes).
+  # Set to 0 to disable automatic rotation. Default keeps encoder workloads bounded.
+  autosplit_interval_minutes: 15.0
+
   # Extra duration to keep motion-forced recordings alive after the motion integration clears (minutes).
   # Helpful when the external motion sensor tends to flicker but you still want RMS/VAD to wait.
   motion_release_padding_minutes: 0.0
+
+  # When the dashboard disables automatic recordings, motion can still force events when this is true.
+  # Set to false to require manual recording even if motion is detected.
+  auto_record_motion_override: true
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.

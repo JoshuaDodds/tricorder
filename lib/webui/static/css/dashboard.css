@@ -1,166 +1,3 @@
-:root {
-  color-scheme: light dark;
-  --bg-gradient: linear-gradient(135deg, #101215 0%, #16191d 45%, #0c0d10 100%);
-  --card-bg: rgba(24, 26, 32, 0.85);
-  --card-border: rgba(107, 114, 128, 0.22);
-  --card-shadow: 0 20px 40px -24px rgba(3, 4, 7, 0.7);
-  --primary: #60a5fa;
-  --primary-text: #0b0f16;
-  --danger: #f87171;
-  --text: #f3f4f6;
-  --text-muted: rgba(209, 213, 219, 0.65);
-  --table-border: rgba(107, 114, 128, 0.2);
-  --code-bg: rgba(24, 26, 32, 0.7);
-  --surface-muted: rgba(24, 26, 32, 0.7);
-  --surface-strong: rgba(28, 30, 36, 0.82);
-  --surface-soft: rgba(24, 26, 32, 0.55);
-  --surface-soft-alt: rgba(24, 26, 32, 0.45);
-  --surface-faint: rgba(24, 26, 32, 0.35);
-  --surface-table: rgba(28, 30, 36, 0.65);
-  --surface-overlay: rgba(17, 19, 23, 0.7);
-  --surface-overlay-strong: rgba(12, 14, 17, 0.82);
-  --surface-table-header: rgba(32, 34, 40, 0.85);
-  --overlay-backdrop: rgba(10, 11, 15, 0.75);
-  --overlay-panel: rgba(22, 24, 30, 0.78);
-  --dialog-surface: rgba(20, 22, 28, 0.9);
-  --overlay-solid: rgba(12, 13, 16, 0.92);
-  --divider: rgba(107, 114, 128, 0.18);
-  --storage-track: rgba(107, 114, 128, 0.3);
-  --ghost-border: rgba(107, 114, 128, 0.38);
-  --ghost-border-hover: rgba(156, 163, 175, 0.65);
-  --ghost-border-muted: rgba(107, 114, 128, 0.28);
-  --ghost-border-strong: rgba(156, 163, 175, 0.35);
-  --ghost-border-soft: rgba(156, 163, 175, 0.45);
-  --danger-bg: rgba(248, 113, 113, 0.18);
-  --danger-border: rgba(248, 113, 113, 0.38);
-  --danger-bg-hover: rgba(248, 113, 113, 0.28);
-  --danger-ring: rgba(248, 113, 113, 0.24);
-  --input-focus-border: rgba(96, 165, 250, 0.75);
-  --input-focus-ring: rgba(96, 165, 250, 0.28);
-  --waveform-bg: linear-gradient(180deg, rgba(24, 26, 32, 0.78), rgba(17, 19, 24, 0.6));
-  --waveform-chip-bg: rgba(17, 19, 24, 0.9);
-  --waveform-chip-shadow: 0 12px 28px rgba(12, 13, 16, 0.5);
-  --waveform-border: rgba(107, 114, 128, 0.22);
-  --marker-label-shadow: 0 6px 18px rgba(10, 12, 16, 0.5);
-  --table-footer-bg: rgba(24, 26, 32, 0.6);
-  --table-row-border: rgba(107, 114, 128, 0.25);
-  --table-row-hover-bg: rgba(96, 165, 250, 0.16);
-  --table-row-active-border: rgba(96, 165, 250, 0.48);
-  --table-row-active-ring: rgba(96, 165, 250, 0.38);
-  --action-chip-bg: rgba(24, 26, 32, 0.62);
-  --action-chip-border: rgba(107, 114, 128, 0.42);
-  --modal-shadow: 0 28px 60px -30px rgba(8, 9, 12, 0.88);
-  --mobile-row-shadow: 0 18px 42px -28px rgba(8, 9, 12, 0.92);
-  --service-status-inactive: rgba(156, 163, 175, 0.88);
-  --service-related-heading: rgba(209, 213, 219, 0.58);
-  --service-related-text: rgba(229, 231, 235, 0.82);
-  --service-related-status: rgba(209, 213, 219, 0.88);
-  --service-details-text: rgba(209, 213, 219, 0.55);
-  --service-message-text: rgba(243, 244, 246, 0.94);
-  --service-message-pending-text: rgba(229, 231, 235, 0.88);
-  --banner-bg: rgba(127, 29, 29, 0.48);
-  --banner-border: rgba(248, 113, 113, 0.4);
-  --banner-shadow: rgba(248, 113, 113, 0.58);
-  --banner-icon-bg: rgba(248, 113, 113, 0.18);
-  --banner-icon-border: rgba(248, 113, 113, 0.48);
-  --banner-text: #fee2e2;
-  --banner-detail: rgba(254, 226, 226, 0.88);
-  --banner-link: #bfdbfe;
-  --banner-link-hover: #f3f4f6;
-  --menu-active-bg: rgba(96, 165, 250, 0.22);
-  --menu-active-text: rgba(243, 244, 246, 0.95);
-  --menu-hover-bg: rgba(36, 38, 44, 0.85);
-  --menu-section-muted: rgba(156, 163, 175, 0.75);
-  --warning: #fb923c;
-  --warning-ring: rgba(251, 146, 60, 0.28);
-  --font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Roboto", "Ubuntu", sans-serif;
-  --logo-text-primary: #f8fafc;
-  --logo-text-secondary: rgba(248, 250, 252, 0.85);
-}
-
-body[data-theme="light"] {
-  color-scheme: light;
-  --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 45%, #dbeafe 100%);
-  --card-bg: rgba(255, 255, 255, 0.9);
-  --card-border: rgba(148, 163, 184, 0.3);
-  --card-shadow: 0 20px 40px -24px rgba(15, 23, 42, 0.25);
-  --primary: #0ea5e9;
-  --primary-text: #f8fafc;
-  --danger: #dc2626;
-  --text: #0f172a;
-  --text-muted: rgba(30, 41, 59, 0.65);
-  --table-border: rgba(148, 163, 184, 0.35);
-  --code-bg: rgba(15, 23, 42, 0.05);
-  --surface-muted: rgba(248, 250, 252, 0.9);
-  --surface-strong: rgba(226, 232, 240, 0.82);
-  --surface-soft: rgba(226, 232, 240, 0.7);
-  --surface-soft-alt: rgba(226, 232, 240, 0.6);
-  --surface-faint: rgba(226, 232, 240, 0.5);
-  --surface-table: rgba(226, 232, 240, 0.8);
-  --surface-overlay: rgba(203, 213, 225, 0.7);
-  --surface-overlay-strong: rgba(148, 163, 184, 0.65);
-  --surface-table-header: rgba(226, 232, 240, 0.9);
-  --overlay-backdrop: rgba(15, 23, 42, 0.25);
-  --overlay-panel: rgba(148, 163, 184, 0.3);
-  --dialog-surface: rgba(255, 255, 255, 0.95);
-  --overlay-solid: rgba(15, 23, 42, 0.35);
-  --divider: rgba(148, 163, 184, 0.25);
-  --storage-track: rgba(203, 213, 225, 0.65);
-  --ghost-border: rgba(148, 163, 184, 0.5);
-  --ghost-border-hover: rgba(100, 116, 139, 0.75);
-  --ghost-border-muted: rgba(148, 163, 184, 0.35);
-  --ghost-border-strong: rgba(148, 163, 184, 0.4);
-  --ghost-border-soft: rgba(148, 163, 184, 0.5);
-  --danger-bg: rgba(239, 68, 68, 0.1);
-  --danger-border: rgba(239, 68, 68, 0.3);
-  --danger-bg-hover: rgba(239, 68, 68, 0.16);
-  --danger-ring: rgba(239, 68, 68, 0.22);
-  --input-focus-border: rgba(14, 165, 233, 0.7);
-  --input-focus-ring: rgba(14, 165, 233, 0.25);
-  --waveform-bg: linear-gradient(180deg, rgba(226, 232, 240, 0.75), rgba(226, 232, 240, 0.55));
-  --waveform-chip-bg: rgba(255, 255, 255, 0.85);
-  --waveform-chip-shadow: 0 12px 28px rgba(148, 163, 184, 0.35);
-  --waveform-border: rgba(148, 163, 184, 0.25);
-  --marker-label-shadow: 0 6px 18px rgba(148, 163, 184, 0.25);
-  --table-footer-bg: rgba(226, 232, 240, 0.8);
-  --table-row-border: rgba(203, 213, 225, 0.9);
-  --table-row-hover-bg: rgba(14, 165, 233, 0.16);
-  --table-row-active-border: rgba(14, 165, 233, 0.45);
-  --table-row-active-ring: rgba(14, 165, 233, 0.35);
-  --action-chip-bg: rgba(255, 255, 255, 0.85);
-  --action-chip-border: rgba(148, 163, 184, 0.4);
-  --modal-shadow: 0 28px 60px -30px rgba(15, 23, 42, 0.2);
-  --mobile-row-shadow: 0 18px 42px -28px rgba(148, 163, 184, 0.35);
-  --service-status-inactive: rgba(100, 116, 139, 0.8);
-  --service-related-heading: rgba(71, 85, 105, 0.7);
-  --service-related-text: rgba(51, 65, 85, 0.85);
-  --service-related-status: rgba(71, 85, 105, 0.85);
-  --service-details-text: rgba(71, 85, 105, 0.6);
-  --service-message-text: #0f172a;
-  --service-message-pending-text: rgba(51, 65, 85, 0.9);
-  --banner-bg: rgba(248, 250, 252, 0.95);
-  --banner-border: rgba(248, 113, 113, 0.3);
-  --banner-shadow: rgba(248, 113, 113, 0.2);
-  --banner-icon-bg: rgba(248, 113, 113, 0.12);
-  --banner-icon-border: rgba(248, 113, 113, 0.3);
-  --banner-text: #7f1d1d;
-  --banner-detail: rgba(127, 29, 29, 0.75);
-  --banner-link: #0f172a;
-  --banner-link-hover: #020617;
-  --menu-active-bg: rgba(59, 130, 246, 0.16);
-  --menu-active-text: rgba(15, 23, 42, 0.85);
-  --menu-hover-bg: rgba(203, 213, 225, 0.9);
-  --menu-section-muted: rgba(71, 85, 105, 0.75);
-  --warning: #f97316;
-  --warning-ring: rgba(249, 115, 22, 0.22);
-  --logo-text-primary: #0f172a;
-  --logo-text-secondary: rgba(15, 23, 42, 0.72);
-}
-
-body[data-theme="dark"] {
-  color-scheme: dark;
-}
-
 *,
 *::before,
 *::after {
@@ -1361,7 +1198,7 @@ button.small {
 }
 
 .player-row > td {
-  padding: 0 0 1rem;
+  padding: 1rem 0;
   border: 0;
 }
 
@@ -3158,6 +2995,21 @@ body[data-scroll-locked="true"] {
   color: var(--warning);
 }
 
+.meta-pill.manual-pill {
+  background: rgba(59, 130, 246, 0.16);
+  color: #1d4ed8;
+}
+
+.meta-pill.split-pill {
+  background: rgba(234, 179, 8, 0.16);
+  color: #92400e;
+}
+
+.meta-pill.rmsvad-pill {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+}
+
 .record-mobile-subtext {
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -3189,6 +3041,25 @@ body[data-scroll-locked="true"] {
 .badge.badge-motion {
   background: rgba(251, 146, 60, 0.18);
   color: var(--warning);
+}
+
+.badge.badge-trigger {
+  margin-left: 0.4rem;
+}
+
+.badge-trigger-manual {
+  background: rgba(59, 130, 246, 0.16);
+  color: #1d4ed8;
+}
+
+.badge-trigger-split {
+  background: rgba(234, 179, 8, 0.16);
+  color: #92400e;
+}
+
+.badge-trigger-rmsvad {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
 }
 
 .record-in-progress {

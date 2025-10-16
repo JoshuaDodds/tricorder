@@ -32,27 +32,21 @@ warnings.filterwarnings(
 import webrtcvad    # noqa
 from lib.config import get_cfg, resolve_event_tags
 from lib.notifications import build_dispatcher
+from lib.segmenter_helpers.display import color_tf
+from lib.segmenter_helpers.system import (
+    normalized_load as _normalized_load,
+    set_single_core_affinity as _set_single_core_affinity,
+)
+from lib.segmenter_helpers.tags import sanitize_event_tag as _sanitize_event_tag
 
 cfg = get_cfg()
 EVENT_TAGS = resolve_event_tags(cfg)
 NOTIFIER = build_dispatcher(cfg.get("notifications"))
 
-# ANSI colors for booleans (can be disabled via NO_COLOR env)
-ANSI_GREEN = "\033[32m"
-ANSI_RED = "\033[31m"
-ANSI_RESET = "\033[0m"
-USE_COLOR = os.getenv("NO_COLOR") is None
-
 # Debug output formatting defaults (prevents NameError when DEV mode is enabled)
 BAR_SCALE = int(cfg["segmenter"].get("rms_bar_scale", 4000))  # scale for RMS bar visualization
 BAR_WIDTH = int(cfg["segmenter"].get("rms_bar_width", 30))    # character width of the bar
 RIGHT_TEXT_WIDTH = int(cfg["segmenter"].get("right_text_width", 54))  # fixed-width right block
-
-def color_tf(val: bool) -> str:
-    # Single-character stable width 'T'/'F' with color
-    if not USE_COLOR:
-        return "T" if val else "F"
-    return f"{ANSI_GREEN}T{ANSI_RESET}" if val else f"{ANSI_RED}F{ANSI_RESET}"
 
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
@@ -62,51 +56,6 @@ FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
-
-SAFE_EVENT_TAG_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
-
-
-def _sanitize_event_tag(tag: str) -> str:
-    sanitized = SAFE_EVENT_TAG_PATTERN.sub("_", tag.strip()) if tag else ""
-    sanitized = sanitized.strip("_-")
-    return sanitized or "event"
-
-
-def _set_single_core_affinity() -> None:
-    """Pin the current process to the lowest-numbered available CPU."""
-
-    try:
-        if hasattr(os, "sched_getaffinity"):
-            try:
-                available = os.sched_getaffinity(0)
-            except OSError:
-                available = None
-        else:
-            available = None
-
-        target_cpu = 0
-        if available:
-            try:
-                target_cpu = min(int(cpu) for cpu in available)
-            except (TypeError, ValueError):
-                target_cpu = 0
-
-        if hasattr(os, "sched_setaffinity"):
-            os.sched_setaffinity(0, {int(target_cpu)})
-    except (AttributeError, OSError, ValueError):
-        pass
-
-
-def _normalized_load() -> float | None:
-    try:
-        load1, _, _ = os.getloadavg()
-    except (AttributeError, OSError):
-        return None
-    cpus = os.cpu_count() or 1
-    if cpus <= 0:
-        cpus = 1
-    return load1 / float(cpus)
-
 
 @dataclass(frozen=True)
 class RecorderIngestHint:
@@ -331,6 +280,10 @@ try:
 except (TypeError, ValueError):
     MOTION_RELEASE_PADDING_SECONDS = 0.0
 
+AUTO_RECORD_MOTION_OVERRIDE = bool(
+    cfg["segmenter"].get("auto_record_motion_override", True)
+)
+
 STREAMING_ENCODE_ENABLED = bool(
     cfg["segmenter"].get("streaming_encode", False)
 )
@@ -427,9 +380,35 @@ FILTER_CHAIN_LOG_THROTTLE_SEC = float(
     cfg["segmenter"].get("filter_chain_log_throttle_sec", 30.0)
 )
 
+_AUTOSPLIT_RAW = cfg["segmenter"].get("autosplit_interval_minutes", 15.0)
+_AUTOSPLIT_LIMIT_SECONDS: float | None
+_AUTOSPLIT_LIMIT_FRAMES: int | None
+try:
+    if _AUTOSPLIT_RAW is None:
+        raise TypeError("autosplit disabled")
+    autosplit_minutes = float(_AUTOSPLIT_RAW)
+except (TypeError, ValueError):
+    autosplit_minutes = 15.0
+    print(
+        "[segmenter] WARN: invalid segmenter.autosplit_interval_minutes value; "
+        "defaulting to 15 minutes",
+        flush=True,
+    )
+if autosplit_minutes <= 0.0:
+    _AUTOSPLIT_LIMIT_SECONDS = None
+    _AUTOSPLIT_LIMIT_FRAMES = None
+else:
+    _AUTOSPLIT_LIMIT_SECONDS = autosplit_minutes * 60.0
+    _AUTOSPLIT_LIMIT_FRAMES = max(
+        1, int(round((_AUTOSPLIT_LIMIT_SECONDS * 1000.0) / FRAME_MS))
+    )
+
 # buffered writes
 FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
 MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
+MAX_PENDING_ENCODE_JOBS = max(
+    1, int(cfg["segmenter"].get("max_pending_encodes", 8))
+)
 
 
 @dataclass
@@ -1235,10 +1214,57 @@ class LiveWaveformWriter:
         return payload
 
 # ---------- Async encoder worker ----------
-ENCODE_QUEUE: queue.Queue = queue.Queue()
+ENCODE_QUEUE: queue.Queue = queue.Queue(maxsize=MAX_PENDING_ENCODE_JOBS)
+_DEFERRED_ENCODE_JOBS: collections.deque[tuple[object, ...]] = collections.deque()
+_DEFERRED_LOCK = threading.Lock()
+_DEFERRED_EVENT = threading.Event()
 _ENCODE_WORKERS: list['_EncoderWorker'] = []
+_ENCODE_DISPATCHER: threading.Thread | None = None
 _ENCODE_LOCK = threading.Lock()
 SHUTDOWN_ENCODE_START_TIMEOUT = 5.0
+
+
+def _encode_dispatcher_main() -> None:
+    while True:
+        _DEFERRED_EVENT.wait()
+        while True:
+            with _DEFERRED_LOCK:
+                if not _DEFERRED_ENCODE_JOBS:
+                    _DEFERRED_EVENT.clear()
+                    break
+                payload = _DEFERRED_ENCODE_JOBS.popleft()
+            job_id = None
+            if isinstance(payload, tuple) and payload:
+                candidate = payload[0]
+                if isinstance(candidate, int):
+                    job_id = candidate
+            while True:
+                try:
+                    ENCODE_QUEUE.put(payload, timeout=1.0)
+                except queue.Full:
+                    if not _DEFERRED_EVENT.wait(timeout=0.5):
+                        continue
+                else:
+                    if job_id is not None:
+                        ENCODING_STATUS.update_pending_state(job_id, "queued")
+                    break
+
+
+def _defer_encode_payload(payload: tuple[object, ...]) -> None:
+    with _DEFERRED_LOCK:
+        _DEFERRED_ENCODE_JOBS.append(payload)
+    _DEFERRED_EVENT.set()
+
+
+def _try_submit_encode_payload(payload: tuple[object, ...]) -> bool:
+    if MAX_PENDING_ENCODE_JOBS <= 0:
+        ENCODE_QUEUE.put(payload)
+        return True
+    try:
+        ENCODE_QUEUE.put_nowait(payload)
+        return True
+    except queue.Full:
+        return False
 
 
 def _append_recordings_event(event_type: str, payload: dict[str, object]) -> None:
@@ -1314,6 +1340,7 @@ class EncodingStatus:
                 "queued_at": entry.get("queued_at"),
                 "source": entry.get("source"),
                 "status": "pending",
+                "queue_state": entry.get("queue_state", "queued"),
             }
             for entry in pending
         ]
@@ -1325,6 +1352,7 @@ class EncodingStatus:
                 "started_at": entry.get("started_at"),
                 "source": entry.get("source"),
                 "status": "active",
+                "queue_state": "active",
             }
             for entry in sorted(
                 active_items,
@@ -1350,7 +1378,13 @@ class EncodingStatus:
             except Exception:
                 pass
 
-    def enqueue(self, base_name: str, *, source: str = "live") -> int:
+    def enqueue(
+        self,
+        base_name: str,
+        *,
+        source: str = "live",
+        queue_state: str = "queued",
+    ) -> int:
         with self._cond:
             job_id = self._next_id
             self._next_id += 1
@@ -1360,11 +1394,24 @@ class EncodingStatus:
                     "base_name": base_name,
                     "queued_at": time.time(),
                     "source": source,
+                    "queue_state": queue_state,
                 }
             )
             self._cond.notify_all()
         self._notify()
         return job_id
+
+    def update_pending_state(self, job_id: int, state: str) -> None:
+        updated = False
+        with self._cond:
+            for entry in self._pending:
+                if entry.get("id") == job_id:
+                    entry["queue_state"] = state
+                    updated = True
+                    self._cond.notify_all()
+                    break
+        if updated:
+            self._notify()
 
     def register_completion_callback(self, job_id: int, callback: Callable[[], None]) -> None:
         if not callable(callback):
@@ -1403,6 +1450,7 @@ class EncodingStatus:
                 job["base_name"] = base_name
                 if "source" not in job or not isinstance(job.get("source"), str):
                     job["source"] = "unknown"
+            job["queue_state"] = "active"
             job["started_at"] = time.time()
             self._active[job_id] = job
             self._cond.notify_all()
@@ -1590,7 +1638,7 @@ class _EncoderWorker(threading.Thread):
 
 
 def _ensure_encoder_worker() -> None:
-    global _ENCODE_WORKERS
+    global _ENCODE_WORKERS, _ENCODE_DISPATCHER
     with _ENCODE_LOCK:
         alive = []
         for worker in _ENCODE_WORKERS:
@@ -1602,6 +1650,14 @@ def _ensure_encoder_worker() -> None:
             worker = _EncoderWorker(ENCODE_QUEUE)
             worker.start()
             _ENCODE_WORKERS.append(worker)
+        if _ENCODE_DISPATCHER is None or not _ENCODE_DISPATCHER.is_alive():
+            dispatcher = threading.Thread(
+                target=_encode_dispatcher_main,
+                name="encode-dispatcher",
+                daemon=True,
+            )
+            dispatcher.start()
+            _ENCODE_DISPATCHER = dispatcher
 
 
 def _enqueue_encode_job(
@@ -1616,7 +1672,7 @@ def _enqueue_encode_job(
     if not tmp_wav_path or not base_name:
         return None
     _ensure_encoder_worker()
-    job_id = ENCODING_STATUS.enqueue(base_name, source=source)
+    job_id = ENCODING_STATUS.enqueue(base_name, source=source, queue_state="queued")
     day_component: str | None = None
     if target_day:
         candidate = target_day.strip()
@@ -1632,11 +1688,20 @@ def _enqueue_encode_job(
     )
     if day_component:
         payload += (day_component,)
-    try:
-        ENCODE_QUEUE.put_nowait(payload)
-    except queue.Full:
-        ENCODE_QUEUE.put(payload)
-    print(f"[segmenter] queued encode job for {base_name}", flush=True)
+    if _try_submit_encode_payload(payload):
+        print(f"[segmenter] queued encode job for {base_name}", flush=True)
+        return job_id
+
+    ENCODING_STATUS.update_pending_state(job_id, "deferred")
+    _defer_encode_payload(payload)
+    with _DEFERRED_LOCK:
+        deferred_count = len(_DEFERRED_ENCODE_JOBS)
+    pending_count = ENCODE_QUEUE.qsize()
+    print(
+        f"[segmenter] encode queue full; deferred job for {base_name} "
+        f"(pending={pending_count}, deferred={deferred_count})",
+        flush=True,
+    )
     return job_id
 
 
@@ -1964,6 +2029,9 @@ class TimelineRecorder:
         self._parallel_last_check: float = 0.0
         self._parallel_day_dir: str | None = None
 
+        self._autosplit_limit_seconds = _AUTOSPLIT_LIMIT_SECONDS
+        self._autosplit_limit_frames = _AUTOSPLIT_LIMIT_FRAMES
+
         self._live_waveform: LiveWaveformWriter | None = None
         self._live_waveform_path: str | None = None
         self._live_waveform_rel_path: str | None = None
@@ -1995,6 +2063,9 @@ class TimelineRecorder:
         self._manual_recording = False
         self._event_manual_recording = False
         self._manual_motion_released = False
+        self._auto_recording_enabled = True
+        self._motion_override_enabled = bool(AUTO_RECORD_MOTION_OVERRIDE)
+        self._motion_override_event_active = False
 
         self.status_path = os.path.join(TMP_DIR, "segmenter_status.json")
         self._status_cache: dict[str, object] | None = None
@@ -2066,6 +2137,8 @@ class TimelineRecorder:
                     "partial_recording_path": None,
                     "streaming_container_format": None,
                     "manual_recording": False,
+                    "auto_recording_enabled": bool(self._auto_recording_enabled),
+                    "auto_record_motion_override": bool(self._motion_override_enabled),
                     **self._motion_status_extra(),
                 },
             )
@@ -2109,6 +2182,17 @@ class TimelineRecorder:
                 payload["adaptive_rms_threshold"] = int(self._adaptive.threshold_linear)
             payload["adaptive_rms_enabled"] = bool(self._adaptive.enabled)
             payload["manual_recording"] = bool(getattr(self, "_manual_recording", False))
+            payload["auto_recording_enabled"] = bool(
+                getattr(self, "_auto_recording_enabled", True)
+            )
+            payload["auto_record_motion_override"] = bool(
+                getattr(self, "_motion_override_enabled", False)
+            )
+            autosplit_seconds = getattr(self, "_autosplit_limit_seconds", None)
+            if autosplit_seconds and autosplit_seconds > 0:
+                payload["autosplit_config_seconds"] = float(autosplit_seconds)
+            else:
+                payload.pop("autosplit_config_seconds", None)
 
             if self._status_mode == "live":
                 if effective_capturing and event:
@@ -2142,6 +2226,9 @@ class TimelineRecorder:
                 "partial_waveform_rel_path",
                 "encoding",
                 "manual_recording",
+                "auto_recording_enabled",
+                "auto_record_motion_override",
+                "autosplit_config_seconds",
             )
             if extra and self._status_mode == "live":
                 for key, value in extra.items():
@@ -2555,6 +2642,25 @@ class TimelineRecorder:
             if previously_active or previous_pending or had_start or had_end:
                 self._publish_motion_status()
 
+    def set_auto_recording_enabled(self, enabled: bool) -> None:
+        next_state = bool(enabled)
+        if next_state == getattr(self, "_auto_recording_enabled", True):
+            return
+        self._auto_recording_enabled = next_state
+        if not next_state:
+            if (
+                self.active
+                and not self._manual_recording
+                and not (
+                    self._motion_forced_active and self._motion_override_enabled
+                )
+            ):
+                self._finalize_event(reason="auto recording disabled")
+            else:
+                self._refresh_capture_status()
+            return
+        self._refresh_capture_status()
+
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
         with self._status_lock:
             capturing = self.active
@@ -2814,6 +2920,33 @@ class TimelineRecorder:
 
     def ingest(self, buf: bytes, idx: int) -> bytes:
         force_restart = False
+        if (
+            self._autosplit_limit_frames is not None
+            and self.active
+            and self.frames_written >= self._autosplit_limit_frames
+        ):
+            limit_seconds = float(self._autosplit_limit_seconds or 0.0)
+            if limit_seconds > 0.0:
+                minutes = limit_seconds / 60.0
+                if minutes >= 10.0:
+                    human = f"{minutes:.0f}m"
+                elif minutes >= 1.0:
+                    human = f"{minutes:.1f}m"
+                else:
+                    human = f"{limit_seconds:.0f}s"
+                reason = f"autosplit after {human}"
+            else:
+                human = "limit reached"
+                reason = "autosplit limit reached"
+            current_name = self.base_name or "<pending>"
+            print(
+                f"[segmenter] Autosplitting {current_name} ({reason})",
+                flush=True,
+            )
+            self._finalize_event(reason=reason)
+            self.prebuf.clear()
+            force_restart = True
+
         if self._manual_split_requested:
             if self.active:
                 print("[segmenter] Manual split requested; finalizing current event", flush=True)
@@ -2844,8 +2977,17 @@ class TimelineRecorder:
             frame_active = True
             loud = True
             voiced = True
-        if self._motion_forced_active:
-            frame_active = True
+        else:
+            if self._motion_forced_active:
+                if self._auto_recording_enabled or self._motion_override_enabled:
+                    frame_active = True
+                else:
+                    frame_active = False
+            elif not self._auto_recording_enabled:
+                if self._motion_override_event_active:
+                    frame_active = bool(loud or voiced)
+                else:
+                    frame_active = False
         if force_restart:
             frame_active = True
             self.consec_active = max(0, START_CONSECUTIVE - 1)
@@ -3023,6 +3165,14 @@ class TimelineRecorder:
 
                 self.active = True
                 self._event_manual_recording = self._manual_recording
+                self._motion_override_event_active = bool(
+                    self._motion_override_enabled
+                    and not self._auto_recording_enabled
+                    and (
+                        self._motion_forced_active
+                        or getattr(self, "_motion_pending_start", False)
+                    )
+                )
                 self._motion_pending_start = False
                 self._current_motion_event_end = None
                 if self._motion_forced_active and self._current_motion_event_start is None:
@@ -3384,6 +3534,7 @@ class TimelineRecorder:
 
         last_event_status["end_reason"] = reason
         last_event_status["in_progress"] = False
+        last_event_status["manual"] = manual_event
         if final_stream_path:
             last_event_status["recording_path"] = final_stream_path
             last_event_status["streaming_container_format"] = STREAMING_CONTAINER_FORMAT
@@ -3395,6 +3546,34 @@ class TimelineRecorder:
             if waveform_rel:
                 last_event_status["waveform_rel_path"] = waveform_rel
 
+        trigger_sources: set[str] = set()
+        if manual_event:
+            trigger_sources.add("manual")
+        normalized_reason = (reason or "").strip().lower()
+        if normalized_reason and "split" in normalized_reason:
+            trigger_sources.add("split")
+        motion_fields = (
+            "motion_trigger_offset_seconds",
+            "motion_release_offset_seconds",
+            "motion_started_epoch",
+            "motion_released_epoch",
+        )
+        motion_detected = any(
+            last_event_status.get(field) is not None for field in motion_fields
+        )
+        if not motion_detected:
+            segments = last_event_status.get("motion_segments")
+            if isinstance(segments, list) and segments:
+                motion_detected = True
+        if motion_detected:
+            trigger_sources.add("motion")
+        if self.saw_loud:
+            trigger_sources.add("rms")
+        if self.saw_voiced:
+            trigger_sources.add("vad")
+        if trigger_sources:
+            last_event_status["trigger_sources"] = sorted(trigger_sources)
+
         metadata_payload = {
             "motion_started_epoch": last_event_status.get("motion_started_epoch"),
             "motion_released_epoch": last_event_status.get("motion_released_epoch"),
@@ -3405,6 +3584,11 @@ class TimelineRecorder:
                 "motion_release_offset_seconds"
             ),
             "motion_segments": last_event_status.get("motion_segments"),
+            "manual_event": manual_event,
+            "trigger_sources": sorted(trigger_sources),
+            "detected_rms": bool(self.saw_loud),
+            "detected_vad": bool(self.saw_voiced),
+            "end_reason": reason,
         }
         if waveform_path:
             self._annotate_waveform_metadata(waveform_path, metadata_payload)
@@ -3438,6 +3622,7 @@ class TimelineRecorder:
                 "manual": manual_event,
                 "day": self.event_day,
                 "updated_at": time.time(),
+                "trigger_sources": sorted(trigger_sources),
             }
         )
         self._cleanup_live_waveform()
@@ -3611,6 +3796,7 @@ class TimelineRecorder:
         self._manual_split_requested = False
         self._event_manual_recording = False
         self._manual_motion_released = False
+        self._motion_override_event_active = False
         self._current_motion_event_start = None
         self._current_motion_event_end = None
         self._reset_motion_segments()
