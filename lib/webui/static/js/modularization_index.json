@@ -863,8 +863,51 @@
       "file": "lib/webui/static/js/dashboard_chunks/dashboard_part08.js",
       "start_line": 10431,
       "end_line": 11534,
-      "status": "pending",
-      "extracted_items": []
+      "status": "processed",
+      "extracted_items": [
+        {
+          "name": "stopLiveStream",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "openLiveStreamPanel",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "closeLiveStreamPanel",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "focusLiveStreamPanel",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "focusPreviewSurface",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "releaseLiveAudioFocus",
+          "category": "layout",
+          "destination": "src/layout/liveStreamControls.js",
+          "type": "function"
+        },
+        {
+          "name": "initialize",
+          "category": "layout",
+          "destination": "src/layout/dashboardInitializer.js",
+          "type": "function"
+        }
+      ]
     }
   ],
   "modules": {
@@ -878,9 +921,11 @@
     ],
     "services": [],
     "layout": [
+      "src/layout/dashboardInitializer.js",
+      "src/layout/liveStreamControls.js",
       "src/layout/recordRowDom.js",
-      "src/layout/waveformControls.js",
-      "src/layout/recorderConfigUi.js"
+      "src/layout/recorderConfigUi.js",
+      "src/layout/waveformControls.js"
     ],
     "unclassified": []
   },
@@ -1432,17 +1477,19 @@
       "type": "function"
     }
   },
-  "last_processed_chunk": 7,
+  "last_processed_chunk": 8,
   "modules_created": [
-    "src/utils/dashboardRuntime.js",
-    "src/utils/recordingProgress.js",
-    "src/utils/recordMetadata.js",
+    "src/layout/dashboardInitializer.js",
+    "src/layout/filterControls.js",
+    "src/layout/liveStreamControls.js",
     "src/layout/recordRowDom.js",
-    "src/layout/waveformControls.js",
-    "src/utils/recorderSettings.js",
     "src/layout/recorderConfigUi.js",
+    "src/layout/waveformControls.js",
     "src/services/recycleBinService.js",
-    "src/layout/filterControls.js"
+    "src/utils/dashboardRuntime.js",
+    "src/utils/recordMetadata.js",
+    "src/utils/recorderSettings.js",
+    "src/utils/recordingProgress.js"
   ],
-  "status": "in_progress"
+  "status": "complete"
 }
