@@ -510,6 +510,11 @@ async function loadDashboard() {
   );
   loadDependency(
     sandbox,
+    path.join(baseDir, "dashboard", "domRefs.js"),
+    "dashboard/domRefs.js",
+  );
+  loadDependency(
+    sandbox,
     path.join(baseDir, "dashboard", "theme.js"),
     "dashboard/theme.js",
   );
@@ -532,6 +537,16 @@ async function loadDashboard() {
     sandbox,
     path.join(baseDir, "dashboard", "modules", "encodingStatusController.js"),
     "dashboard/modules/encodingStatusController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "tabRecordingIndicator.js"),
+    "dashboard/modules/tabRecordingIndicator.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "recorderDom.js"),
+    "dashboard/recorderDom.js",
   );
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
@@ -570,6 +585,8 @@ async function loadDashboard() {
     `  dataAttributeFromDatasetKey = undefined,`,
     `  findChildByDataset = undefined,`,
     `} = domHelpers;`,
+    `const domRefsModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/domRefs.js")}] || {};`,
+    `const { createDashboardDom = undefined } = domRefsModule;`,
     `const themeHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/theme.js")}] || {};`,
     `const { createThemeManager = undefined } = themeHelpers;`,
     `const healthHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/health.js")}] || {};`,
@@ -580,6 +597,10 @@ async function loadDashboard() {
     `const { createRecordingMetaController = undefined } = recordingMetaModule;`,
     `const encodingStatusModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/encodingStatusController.js")}] || {};`,
     `const { createEncodingStatusController = undefined } = encodingStatusModule;`,
+    `const tabRecordingIndicatorModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/tabRecordingIndicator.js")}] || {};`,
+    `const { createTabRecordingIndicator = undefined } = tabRecordingIndicatorModule;`,
+    `const recorderDomModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/recorderDom.js")}] || {};`,
+    `const { createRecorderDom = undefined } = recorderDomModule;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
     `const {`,
     `  ARCHIVAL_BACKENDS = new Set(),`,
