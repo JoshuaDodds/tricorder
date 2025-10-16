@@ -523,6 +523,16 @@ async function loadDashboard() {
     path.join(baseDir, "dashboard", "layout", "filters.js"),
     "dashboard/layout/filters.js",
   );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "recordingMetaController.js"),
+    "dashboard/modules/recordingMetaController.js",
+  );
+  loadDependency(
+    sandbox,
+    path.join(baseDir, "dashboard", "modules", "encodingStatusController.js"),
+    "dashboard/modules/encodingStatusController.js",
+  );
   const componentsDir = path.join(baseDir, "dashboard", "components");
   loadScript(sandbox, path.join(componentsDir, "clipList.js"));
   loadScript(sandbox, path.join(componentsDir, "filtersPanel.js"));
@@ -566,6 +576,10 @@ async function loadDashboard() {
     `const { createHealthManager = undefined } = healthHelpers;`,
     `const layoutHelpers = globalThis.__dashboardModules[${JSON.stringify("dashboard/layout/filters.js")}] || {};`,
     `const { createFiltersLayoutManager = undefined } = layoutHelpers;`,
+    `const recordingMetaModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/recordingMetaController.js")}] || {};`,
+    `const { createRecordingMetaController = undefined } = recordingMetaModule;`,
+    `const encodingStatusModule = globalThis.__dashboardModules[${JSON.stringify("dashboard/modules/encodingStatusController.js")}] || {};`,
+    `const { createEncodingStatusController = undefined } = encodingStatusModule;`,
     `const configModule = globalThis.__dashboardModules[${JSON.stringify("config.js")}];`,
     `const {`,
     `  ARCHIVAL_BACKENDS = new Set(),`,
