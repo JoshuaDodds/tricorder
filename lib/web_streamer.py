@@ -4518,6 +4518,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     auto_record_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), "auto_record_state.json"
     )
+    manual_stop_request_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), "manual_stop_request.json"
+    )
     motion_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
     )
@@ -7806,6 +7809,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         return web.json_response({"ok": True, "enabled": bool(enabled)})
 
+    async def capture_stop(_: web.Request) -> web.Response:
+        try:
+            os.makedirs(os.path.dirname(manual_stop_request_path), exist_ok=True)
+            with open(manual_stop_request_path, "w", encoding="utf-8") as handle:
+                json.dump({"requested": True, "updated_at": time.time()}, handle)
+                handle.write("\n")
+        except OSError as exc:
+            return web.json_response(
+                {"ok": False, "error": f"Failed to request capture stop: {exc}"},
+                status=500,
+            )
+
+        return web.json_response({"ok": True})
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -7954,6 +7971,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/capture/split", capture_split)
     app.router.add_post("/api/capture/auto-record", capture_auto_record)
     app.router.add_post("/api/capture/manual-record", capture_manual_record)
+    app.router.add_post("/api/capture/stop", capture_stop)
 
     if stream_mode == "hls":
         app.router.add_get("/hls/start", hls_start)

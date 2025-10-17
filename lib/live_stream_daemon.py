@@ -58,6 +58,8 @@ MANUAL_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_record_state.
 MANUAL_POLL_INTERVAL = 0.5
 AUTO_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "auto_record_state.json")
 AUTO_POLL_INTERVAL = 0.5
+MANUAL_STOP_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_stop_request.json")
+STOP_POLL_INTERVAL = 0.5
 
 ARECORD_CMD = [
     "arecord",
@@ -114,6 +116,35 @@ def _auto_record_snapshot(path: str) -> tuple[bool, float]:
     elif isinstance(data, bool):
         enabled = bool(data)
     return enabled, stat.st_mtime
+
+
+def _stop_request_snapshot(path: str) -> tuple[bool, float]:
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return False, 0.0
+    except OSError:
+        return False, 0.0
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False, stat.st_mtime
+    requested = False
+    if isinstance(data, dict):
+        requested = bool(data.get("requested", False))
+    elif isinstance(data, bool):
+        requested = bool(data)
+    return requested, stat.st_mtime
+
+
+def _clear_stop_request(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
 
 
 def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
@@ -544,6 +575,8 @@ def main():
             filter_chain_error_logged = False
             next_manual_poll = 0.0
             next_auto_poll = 0.0
+            next_stop_poll = 0.0
+            manual_stop_mtime = 0.0
 
             def flush_processed(frames: list[Tuple[bytes, Optional[str]]]) -> None:
                 nonlocal frame_idx, last_frame_time, filter_chain_error_logged
@@ -636,6 +669,29 @@ def main():
                                 f"[live] WARN: failed to update auto recording mode: {exc!r}",
                                 flush=True,
                             )
+
+                if now >= next_stop_poll:
+                    next_stop_poll = now + STOP_POLL_INTERVAL
+                    requested, mtime = _stop_request_snapshot(MANUAL_STOP_PATH)
+                    if requested and mtime != manual_stop_mtime:
+                        manual_stop_mtime = mtime
+                        handled = False
+                        try:
+                            handled = rec.request_manual_stop()
+                        except Exception as exc:
+                            print(
+                                f"[live] WARN: failed to stop active capture: {exc!r}",
+                                flush=True,
+                            )
+                        if handled:
+                            print("[live] manual stop request handled", flush=True)
+                        else:
+                            print(
+                                "[live] manual stop requested but no active event",
+                                flush=True,
+                            )
+                        _clear_stop_request(MANUAL_STOP_PATH)
+                        manual_stop_mtime = 0.0
 
                 if STREAM_MODE == "hls" and now >= next_state_poll:
                     controller.refresh_from_state()
