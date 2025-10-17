@@ -44,7 +44,12 @@ FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 AUDIO_FILTER_CHAIN_ENABLED = FILTER_CHAIN is not None
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
+CHANNELS = int(cfg.get("audio", {}).get("channels", 1) or 1)
+if CHANNELS < 1:
+    CHANNELS = 1
+elif CHANNELS > 2:
+    CHANNELS = 2
+FRAME_BYTES = int(SAMPLE_RATE * CHANNELS * 2 * FRAME_MS / 1000)
 CHUNK_BYTES = 4096
 STATE_POLL_INTERVAL = 1.0
 STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
@@ -52,7 +57,8 @@ if STREAM_MODE not in {"hls", "webrtc"}:
     STREAM_MODE = "hls"
 WEBRTC_HISTORY_SECONDS = float(STREAMING_CFG.get("webrtc_history_seconds", 8.0))
 
-AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
+USE_USB_RESET_WORKAROUND = bool(cfg.get("audio", {}).get("use_usb_reset_workaround", True))
+AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"]).strip() or "default"
 
 MANUAL_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_record_state.json")
 MANUAL_POLL_INTERVAL = 0.5
@@ -62,7 +68,7 @@ AUTO_POLL_INTERVAL = 0.5
 ARECORD_CMD = [
     "arecord",
     "-D", AUDIO_DEV,
-    "-c", "1",
+    "-c", str(CHANNELS),
     "-f", "S16_LE",
     "-r", str(SAMPLE_RATE),
     "--buffer-size", "48000",
@@ -217,6 +223,7 @@ def _filter_worker_main(
     cfg_block: Any,
     sample_rate: int,
     frame_bytes: int,
+    channels: int,
     input_queue: "mp.Queue[Tuple[int, bytes]]",
     output_queue: "mp.Queue[Tuple[int, bytes, Optional[str]]]",
 ) -> None:
@@ -231,7 +238,7 @@ def _filter_worker_main(
             output_queue.put((seq, frame, None))
             continue
         try:
-            processed = chain.process(sample_rate, frame_bytes, frame)
+            processed = chain.process(sample_rate, frame_bytes, frame, channels)
             output_queue.put((seq, processed, None))
         except Exception as exc:  # pragma: no cover - defensive safeguard
             output_queue.put((seq, frame, repr(exc)))
@@ -257,11 +264,13 @@ class FilterPipeline:
         cfg_block: Any,
         sample_rate: int,
         frame_bytes: int,
+        channels: int,
         max_pending: int = 4,
     ) -> None:
         self._cfg_block = cfg_block
         self._sample_rate = sample_rate
         self._frame_bytes = frame_bytes
+        self._channels = channels
         self._max_pending = max_pending
         self._input: "mp.Queue[Tuple[int, bytes]]" = mp.Queue(maxsize=max_pending * 2)
         self._output: "mp.Queue[Tuple[int, bytes, Optional[str]]]" = mp.Queue(
@@ -273,7 +282,7 @@ class FilterPipeline:
         self._next_seq = 0
         self._process = mp.Process(
             target=_filter_worker_main,
-            args=(cfg_block, sample_rate, frame_bytes, self._input, self._output),
+            args=(cfg_block, sample_rate, frame_bytes, channels, self._input, self._output),
             daemon=True,
         )
         self._process.start()
@@ -421,6 +430,7 @@ def main():
     stop_requested = False
     split_requested = False
     print(f"[live] starting with device={AUDIO_DEV}", flush=True)
+    print(f"[live] channels={CHANNELS}", flush=True)
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
 
     manual_record_enabled, manual_record_mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
@@ -449,7 +459,7 @@ def main():
         hls = HLSTee(
             out_dir=hls_dir,
             sample_rate=SAMPLE_RATE,
-            channels=1,
+            channels=CHANNELS,
             bits_per_sample=16,
             segment_time=2.0,
             history_seconds=60,
@@ -491,6 +501,7 @@ def main():
                 FILTER_CHAIN_CFG,
                 SAMPLE_RATE,
                 FRAME_BYTES,
+                CHANNELS,
             )
             filter_pipeline_launch_error_logged = False
         except Exception as exc:
@@ -796,7 +807,7 @@ def main():
 
             if not stop_requested:
                 print("[live] arecord ended or device unavailable; retrying in 3s...", flush=True)
-                if reset_usb():
+                if USE_USB_RESET_WORKAROUND and reset_usb():
                     print("[live] USB device reset successful", flush=True)
                 time.sleep(3)
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Optional
 import array
+import audioop
 from lib.waveform_cache import DEFAULT_BUCKET_COUNT, MAX_BUCKET_COUNT, PEAK_SCALE
 from lib.motion_state import MOTION_STATE_FILENAME, MotionStateWatcher
 from lib import dashboard_events
@@ -51,7 +52,12 @@ RIGHT_TEXT_WIDTH = int(cfg["segmenter"].get("right_text_width", 54))  # fixed-wi
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
 FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+CHANNELS = int(cfg.get("audio", {}).get("channels", 1) or 1)
+if CHANNELS < 1:
+    CHANNELS = 1
+elif CHANNELS > 2:
+    CHANNELS = 2
+FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS * FRAME_MS // 1000
 FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 
 INT16_MAX = 2 ** 15 - 1
@@ -737,7 +743,11 @@ except ImportError:
 
 
 def is_voice(buf):
-    return vad.is_speech(buf, SAMPLE_RATE)
+    if CHANNELS > 1:
+        mono = audioop.tomono(buf, SAMPLE_WIDTH, 0.5, 0.5)
+    else:
+        mono = buf
+    return vad.is_speech(mono, SAMPLE_RATE)
 
 
 def rms(buf):
@@ -809,7 +819,7 @@ class _WriterWorker(threading.Thread):
                         self.path = path
                         os.makedirs(os.path.dirname(path), exist_ok=True)
                         self.wav = wave.open(path, "wb")
-                        self.wav.setnchannels(1)
+                        self.wav.setnchannels(CHANNELS)
                         self.wav.setsampwidth(SAMPLE_WIDTH)
                         self.wav.setframerate(SAMPLE_RATE)
                         self.buf.clear()
@@ -870,7 +880,7 @@ class StreamingOpusEncoder:
             "-ar",
             str(SAMPLE_RATE),
             "-ac",
-            "1",
+            str(CHANNELS),
             "-i",
             "pipe:0",
             "-c:a",
@@ -1145,7 +1155,7 @@ class LiveWaveformWriter:
         if frame_count <= 0:
             return {
                 "version": 1,
-                "channels": 1,
+                "channels": CHANNELS,
                 "sample_rate": SAMPLE_RATE,
                 "frame_count": 0,
                 "duration_seconds": 0.0,
@@ -1199,7 +1209,7 @@ class LiveWaveformWriter:
         duration_seconds = frame_count * (FRAME_MS / 1000.0)
         payload = {
             "version": 1,
-            "channels": 1,
+            "channels": CHANNELS,
             "sample_rate": SAMPLE_RATE,
             "frame_count": frame_count,
             "sample_count": self._total_samples,

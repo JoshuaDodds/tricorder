@@ -15,6 +15,7 @@ from typing import Iterable
 from lib.segmenter import (
     ENCODING_STATUS,
     FRAME_BYTES,
+    CHANNELS,
     RecorderIngestHint,
     SAMPLE_RATE,
     SAMPLE_WIDTH,
@@ -95,7 +96,7 @@ def _pcm_source(path: Path):
         "-i",
         str(path),
         "-ac",
-        "1",
+        str(CHANNELS),
         "-ar",
         str(SAMPLE_RATE),
         "-f",
@@ -115,16 +116,16 @@ def _pcm_source(path: Path):
             raise
         with wave.open(str(path), "rb") as wav_file:
             if (
-                wav_file.getnchannels() != 1
+                wav_file.getnchannels() != CHANNELS
                 or wav_file.getsampwidth() != SAMPLE_WIDTH
                 or wav_file.getframerate() != SAMPLE_RATE
             ):
                 raise RuntimeError(
-                    "ffmpeg not found and WAV fallback requires 16-bit mono "
-                    f"audio at {SAMPLE_RATE} Hz ({path})"
+                    "ffmpeg not found and WAV fallback requires 16-bit "
+                    f"{CHANNELS}-channel audio at {SAMPLE_RATE} Hz ({path})"
                 )
 
-            frames_per_chunk = FRAME_BYTES // SAMPLE_WIDTH
+            frames_per_chunk = FRAME_BYTES // (SAMPLE_WIDTH * CHANNELS)
 
             def wav_iter():
                 while True:

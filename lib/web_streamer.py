@@ -58,6 +58,7 @@ from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
+from .audio_devices import discover_capture_devices
 from .web_streamer_helpers.event_bridges import (
     CaptureStatusEventBridge,
     RecordingsEventBridge,
@@ -879,16 +880,37 @@ AUDIO_FILTER_DEFAULTS: dict[str, dict[str, Any]] = {
 def _audio_defaults() -> dict[str, Any]:
     return {
         "device": "",
+        "channels": 1,
         "sample_rate": 48000,
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "use_usb_reset_workaround": True,
         "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
         "calibration": {
             "auto_noise_profile": False,
             "auto_gain": False,
         },
     }
+
+
+def _attach_audio_device_listing(payload: dict[str, Any]) -> None:
+    devices = []
+    try:
+        devices = discover_capture_devices()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logging.getLogger("web_streamer").warning(
+            "Failed to enumerate ALSA devices: %s", exc
+        )
+    payload["available_devices"] = [
+        {
+            "id": device.identifier,
+            "label": device.label,
+            "card_index": device.card_index,
+            "device_index": device.device_index,
+        }
+        for device in devices
+    ]
 
 
 def _copy_filter_stage_sequence(value: Any) -> list[dict[str, Any]]:
@@ -1004,6 +1026,10 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         if isinstance(device, str):
             result["device"] = device.strip()
 
+        channels = raw.get("channels")
+        if isinstance(channels, (int, float)) and not isinstance(channels, bool):
+            result["channels"] = max(1, min(2, int(channels)))
+
         sr = raw.get("sample_rate")
         if isinstance(sr, (int, float)) and not isinstance(sr, bool):
             result["sample_rate"] = int(sr)
@@ -1019,6 +1045,12 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         vad = raw.get("vad_aggressiveness")
         if isinstance(vad, (int, float)) and not isinstance(vad, bool):
             result["vad_aggressiveness"] = int(vad)
+
+        usb_reset = raw.get("use_usb_reset_workaround")
+        if isinstance(usb_reset, bool):
+            result["use_usb_reset_workaround"] = usb_reset
+        elif usb_reset is not None:
+            result["use_usb_reset_workaround"] = _bool_from_any(usb_reset)
 
         filters = raw.get("filter_chain")
         if isinstance(filters, dict):
@@ -1544,6 +1576,14 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     try:
         cfg_snapshot = get_cfg()
         current_audio = cfg_snapshot.get("audio", {}) if isinstance(cfg_snapshot, dict) else {}
+        if isinstance(current_audio, dict):
+            current_channels = current_audio.get("channels")
+            if isinstance(current_channels, (int, float)) and not isinstance(current_channels, bool):
+                normalized["channels"] = max(1, min(2, int(current_channels)))
+            if "use_usb_reset_workaround" in current_audio:
+                normalized["use_usb_reset_workaround"] = _bool_from_any(
+                    current_audio.get("use_usb_reset_workaround")
+                )
         current_filters = current_audio.get("filter_chain") if isinstance(current_audio, dict) else None
         if isinstance(current_filters, dict):
             existing_filters = _copy_filter_stage_sequence(current_filters.get("filters"))
@@ -1563,6 +1603,17 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         normalized["device"] = device.strip()
     else:
         errors.append("device must be a non-empty string")
+
+    if "channels" in payload:
+        channels = _coerce_int(
+            payload.get("channels"),
+            "channels",
+            errors,
+            min_value=1,
+            max_value=2,
+        )
+        if channels is not None:
+            normalized["channels"] = channels
 
     sample_rate = _coerce_int(
         payload.get("sample_rate"),
@@ -1595,6 +1646,11 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     )
     if vad is not None:
         normalized["vad_aggressiveness"] = vad
+
+    if "use_usb_reset_workaround" in payload:
+        normalized["use_usb_reset_workaround"] = _bool_from_any(
+            payload.get("use_usb_reset_workaround")
+        )
 
     filters_payload = payload.get("filter_chain")
     stages = normalized.get("filter_chain")
@@ -7006,10 +7062,17 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     }
 
     async def _settings_get(
-        section: str, canonical_fn
+        section: str, canonical_fn, extra: Callable[[dict[str, Any]], None] | None = None
     ) -> web.Response:
         refreshed = reload_cfg()
         payload = _config_section_payload(section, refreshed, canonical_fn)
+        if extra is not None:
+            try:
+                extra(payload)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logging.getLogger("web_streamer").warning(
+                    "Failed to augment %s settings payload: %s", section, exc
+                )
         return web.json_response(payload)
 
     async def _settings_update(
@@ -7020,6 +7083,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         normalize,
         update_func,
         canonical_fn,
+        extra: Callable[[dict[str, Any]], None] | None = None,
     ) -> web.Response:
         log = logging.getLogger("web_streamer")
         try:
@@ -7052,11 +7116,18 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         payload = _config_section_payload(section, cfg_snapshot, canonical_fn)
         restart_units = section_restart_units.get(section, [])
         payload["restart_results"] = await _restart_units(restart_units)
+        if extra is not None:
+            try:
+                extra(payload)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.warning("Failed to augment %s settings response: %s", section, exc)
         _emit_config_updated(section)
         return web.json_response(payload)
 
     async def config_audio_get(request: web.Request) -> web.Response:
-        return await _settings_get("audio", _canonical_audio_settings)
+        return await _settings_get(
+            "audio", _canonical_audio_settings, extra=_attach_audio_device_listing
+        )
 
     async def config_audio_update(request: web.Request) -> web.Response:
         return await _settings_update(
@@ -7066,6 +7137,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             normalize=_normalize_audio_payload,
             update_func=update_audio_settings,
             canonical_fn=_canonical_audio_settings,
+            extra=_attach_audio_device_listing,
         )
 
     async def config_segmenter_get(request: web.Request) -> web.Response:
