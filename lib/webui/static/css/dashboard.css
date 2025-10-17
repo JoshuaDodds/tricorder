@@ -340,6 +340,17 @@ body[data-theme="light"] .app-menu-toggle {
   flex-wrap: wrap;
 }
 
+.trigger-toggle-group {
+  display: inline-flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.trigger-toggle-group .ghost-button[data-suppressed="true"] {
+  opacity: 0.6;
+}
+
 .header-status-group {
   display: flex;
   flex-direction: column;

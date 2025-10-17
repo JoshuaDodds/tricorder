@@ -280,8 +280,14 @@ try:
 except (TypeError, ValueError):
     MOTION_RELEASE_PADDING_SECONDS = 0.0
 
-AUTO_RECORD_MOTION_OVERRIDE = bool(
+ENABLE_MOTION_TRIGGER = bool(cfg["segmenter"].get("enable_motion", True))
+ENABLE_RMS_TRIGGER = bool(cfg["segmenter"].get("enable_rms", True))
+ENABLE_VAD_TRIGGER = bool(cfg["segmenter"].get("enable_vad", True))
+_AUTO_RECORD_MOTION_OVERRIDE_RAW = bool(
     cfg["segmenter"].get("auto_record_motion_override", True)
+)
+AUTO_RECORD_MOTION_OVERRIDE = bool(
+    _AUTO_RECORD_MOTION_OVERRIDE_RAW and ENABLE_MOTION_TRIGGER
 )
 
 STREAMING_ENCODE_ENABLED = bool(
@@ -2097,17 +2103,31 @@ class TimelineRecorder:
         self._filter_peak_ms: float = 0.0
         self._filter_last_log_ts: float = 0.0
         self._motion_state_path = os.path.join(TMP_DIR, MOTION_STATE_FILENAME)
-        self._motion_watcher = MotionStateWatcher(self._motion_state_path)
-        motion_state = self._motion_watcher.state
-        self._motion_forced_active = bool(motion_state.active)
-        self._motion_active_since: float | None = (
-            motion_state.active_since if motion_state.active else None
-        )
-        self._motion_pending_start = bool(self._motion_forced_active)
-        self._motion_sequence = motion_state.sequence
-        self._current_motion_event_start: float | None = (
-            motion_state.active_since if motion_state.active else None
-        )
+        self._motion_trigger_enabled = bool(ENABLE_MOTION_TRIGGER)
+        self._rms_trigger_enabled = bool(ENABLE_RMS_TRIGGER)
+        self._vad_trigger_enabled = bool(ENABLE_VAD_TRIGGER)
+        self._motion_trigger_preference = bool(ENABLE_MOTION_TRIGGER)
+        self._rms_trigger_preference = bool(ENABLE_RMS_TRIGGER)
+        self._vad_trigger_preference = bool(ENABLE_VAD_TRIGGER)
+        if self._motion_trigger_enabled:
+            self._motion_watcher = MotionStateWatcher(self._motion_state_path)
+            motion_state = self._motion_watcher.state
+            self._motion_forced_active = bool(motion_state.active)
+            self._motion_active_since: float | None = (
+                motion_state.active_since if motion_state.active else None
+            )
+            self._motion_pending_start = bool(self._motion_forced_active)
+            self._motion_sequence = motion_state.sequence
+            self._current_motion_event_start: float | None = (
+                motion_state.active_since if motion_state.active else None
+            )
+        else:
+            self._motion_watcher = None
+            self._motion_forced_active = False
+            self._motion_active_since = None
+            self._motion_pending_start = False
+            self._motion_sequence = 0
+            self._current_motion_event_start = None
         self._current_motion_event_end: float | None = None
         self._motion_event_segments: list[dict[str, float | None]] = []
         if self._current_motion_event_start is not None:
@@ -2163,6 +2183,10 @@ class TimelineRecorder:
         reason: str | None = None,
         extra: dict[str, object] | None = None,
     ) -> None:
+        merged_extra: dict[str, object] = self._trigger_status_flags()
+        if extra:
+            merged_extra.update(extra)
+        extra = merged_extra
         with self._status_lock:
             if self._status_mode == "ingest" and self._status_cache is None:
                 self._load_status_cache_from_disk()
@@ -2229,6 +2253,9 @@ class TimelineRecorder:
                 "auto_recording_enabled",
                 "auto_record_motion_override",
                 "autosplit_config_seconds",
+                "trigger_motion_enabled",
+                "trigger_rms_enabled",
+                "trigger_vad_enabled",
             )
             if extra and self._status_mode == "live":
                 for key, value in extra.items():
@@ -2316,6 +2343,28 @@ class TimelineRecorder:
             payload.pop("motion_padding_deadline_epoch", None)
             payload.pop("motion_padding_started_epoch", None)
         return payload
+
+    def _trigger_status_flags(self) -> dict[str, bool]:
+        return {
+            "trigger_motion_enabled": bool(
+                getattr(self, "_motion_trigger_enabled", True)
+            ),
+            "trigger_rms_enabled": bool(
+                getattr(self, "_rms_trigger_enabled", True)
+            ),
+            "trigger_vad_enabled": bool(
+                getattr(self, "_vad_trigger_enabled", True)
+            ),
+            "preferred_trigger_motion_enabled": bool(
+                getattr(self, "_motion_trigger_preference", True)
+            ),
+            "preferred_trigger_rms_enabled": bool(
+                getattr(self, "_rms_trigger_preference", True)
+            ),
+            "preferred_trigger_vad_enabled": bool(
+                getattr(self, "_vad_trigger_preference", True)
+            ),
+        }
 
     def _reset_motion_segments(self) -> None:
         self._motion_event_segments = []
@@ -2508,6 +2557,23 @@ class TimelineRecorder:
         )
 
     def _refresh_motion_state(self) -> None:
+        if not getattr(self, "_motion_trigger_enabled", True):
+            if (
+                getattr(self, "_motion_forced_active", False)
+                or getattr(self, "_motion_pending_start", False)
+                or getattr(self, "_current_motion_event_start", None) is not None
+            ):
+                self._motion_forced_active = False
+                self._motion_pending_start = False
+                self._motion_active_since = None
+                self._motion_override_event_active = False
+                self._current_motion_event_start = None
+                self._current_motion_event_end = None
+                self._motion_release_deadline = None
+                self._motion_padding_started_at = None
+                self._reset_motion_segments()
+                self._publish_motion_status()
+            return
         watcher = getattr(self, '_motion_watcher', None)
         if watcher is None:
             return
@@ -2660,6 +2726,99 @@ class TimelineRecorder:
                 self._refresh_capture_status()
             return
         self._refresh_capture_status()
+
+    def update_trigger_states(
+        self,
+        *,
+        motion: bool | None = None,
+        rms: bool | None = None,
+        vad: bool | None = None,
+        motion_preference: bool | None = None,
+        rms_preference: bool | None = None,
+        vad_preference: bool | None = None,
+    ) -> None:
+        pref_changed = False
+        if motion_preference is not None:
+            next_pref = bool(motion_preference)
+            if next_pref != getattr(self, "_motion_trigger_preference", True):
+                self._motion_trigger_preference = next_pref
+                pref_changed = True
+        if rms_preference is not None:
+            next_pref = bool(rms_preference)
+            if next_pref != getattr(self, "_rms_trigger_preference", True):
+                self._rms_trigger_preference = next_pref
+                pref_changed = True
+        if vad_preference is not None:
+            next_pref = bool(vad_preference)
+            if next_pref != getattr(self, "_vad_trigger_preference", True):
+                self._vad_trigger_preference = next_pref
+                pref_changed = True
+
+        changed = False
+        motion_changed = False
+        if motion is not None:
+            next_motion = bool(motion)
+            if motion_preference is None:
+                current_pref = getattr(self, "_motion_trigger_preference", True)
+                if next_motion != current_pref:
+                    self._motion_trigger_preference = next_motion
+                    pref_changed = True
+            if next_motion != getattr(self, "_motion_trigger_enabled", True):
+                self._motion_trigger_enabled = next_motion
+                motion_changed = True
+                changed = True
+                if not next_motion:
+                    self._motion_forced_active = False
+                    self._motion_active_since = None
+                    self._motion_pending_start = False
+                    self._motion_override_event_active = False
+                    self._motion_release_deadline = None
+                    self._motion_padding_started_at = None
+                    self._current_motion_event_start = None
+                    self._current_motion_event_end = None
+                    self._reset_motion_segments()
+                    self._motion_watcher = None
+                    self._motion_sequence = 0
+                else:
+                    watcher = getattr(self, "_motion_watcher", None)
+                    if watcher is None:
+                        self._motion_watcher = MotionStateWatcher(self._motion_state_path)
+                        watcher = self._motion_watcher
+                    try:
+                        watcher.force_refresh()
+                    except Exception:
+                        pass
+                    self._motion_sequence = (
+                        watcher.state.sequence if watcher is not None else 0
+                    )
+                    self._refresh_motion_state()
+
+        if rms is not None:
+            next_rms = bool(rms)
+            if rms_preference is None:
+                current_pref = getattr(self, "_rms_trigger_preference", True)
+                if next_rms != current_pref:
+                    self._rms_trigger_preference = next_rms
+                    pref_changed = True
+            if next_rms != getattr(self, "_rms_trigger_enabled", True):
+                self._rms_trigger_enabled = next_rms
+                changed = True
+
+        if vad is not None:
+            next_vad = bool(vad)
+            if vad_preference is None:
+                current_pref = getattr(self, "_vad_trigger_preference", True)
+                if next_vad != current_pref:
+                    self._vad_trigger_preference = next_vad
+                    pref_changed = True
+            if next_vad != getattr(self, "_vad_trigger_enabled", True):
+                self._vad_trigger_enabled = next_vad
+                changed = True
+
+        if changed:
+            self._refresh_capture_status()
+        elif pref_changed or motion_changed:
+            self._refresh_capture_status()
 
     def _status_snapshot(self) -> tuple[bool, dict | None, dict | None, str | None]:
         with self._status_lock:
@@ -2969,14 +3128,19 @@ class TimelineRecorder:
         self._record_filter_metrics(elapsed_ms)
 
         rms_val = rms(proc_for_analysis)
-        voiced = is_voice(proc_for_analysis)
+        if self._vad_trigger_enabled:
+            voiced = is_voice(proc_for_analysis)
+        else:
+            voiced = False
         current_threshold = self._adaptive.threshold_linear
-        loud = rms_val > current_threshold
-        frame_active = loud  # primary trigger
+        loud = bool(self._rms_trigger_enabled and rms_val > current_threshold)
+        vad_active = bool(voiced)
+        frame_active = bool(loud or (not self._rms_trigger_enabled and vad_active))
         if self._manual_recording:
             frame_active = True
             loud = True
             voiced = True
+            vad_active = True
         else:
             if self._motion_forced_active:
                 if self._auto_recording_enabled or self._motion_override_enabled:
@@ -2985,7 +3149,7 @@ class TimelineRecorder:
                     frame_active = False
             elif not self._auto_recording_enabled:
                 if self._motion_override_event_active:
-                    frame_active = bool(loud or voiced)
+                    frame_active = bool(loud or vad_active)
                 else:
                     frame_active = False
         if force_restart:

@@ -140,6 +140,11 @@ segmenter:
   # Use this to retain context around motion-triggered events before RMS/VAD regain control.
   motion_release_padding_minutes: 0.0
 
+  # Toggle individual triggers. Motion stays active while auto capture is paused when enabled.
+  enable_motion: true
+  enable_rms: true
+  enable_vad: true
+
   # Allow motion to override the dashboard auto-record toggle when true. Disable to require manual capture.
   auto_record_motion_override: true
 
