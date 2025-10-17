@@ -108,6 +108,9 @@ _DEFAULTS: Dict[str, Any] = {
     "segmenter": {
         "pre_pad_ms": 2000,
         "post_pad_ms": 3000,
+        "enable_motion": True,
+        "enable_rms": True,
+        "enable_vad": True,
         "rms_threshold": 300,
         "keep_window_frames": 30,
         "start_consecutive": 25,

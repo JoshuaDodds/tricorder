@@ -643,6 +643,58 @@ def test_auto_record_motion_override_disabled_blocks_motion(tmp_path, monkeypatc
     finally:
         rec.flush(0)
 
+
+def test_update_trigger_states_runtime(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.update_trigger_states(motion=False, rms=False, vad=False)
+        cache = rec._status_cache or {}
+        assert cache.get("trigger_motion_enabled") is False
+        assert cache.get("preferred_trigger_motion_enabled") is False
+        assert cache.get("trigger_rms_enabled") is False
+        assert cache.get("preferred_trigger_rms_enabled") is False
+        assert cache.get("trigger_vad_enabled") is False
+        assert cache.get("preferred_trigger_vad_enabled") is False
+
+        rec.update_trigger_states(motion=True, motion_preference=True)
+        cache = rec._status_cache or {}
+        assert cache.get("trigger_motion_enabled") is True
+        assert cache.get("preferred_trigger_motion_enabled") is True
+
+        rec.update_trigger_states(motion_preference=False)
+        cache = rec._status_cache or {}
+        assert cache.get("trigger_motion_enabled") is True
+        assert cache.get("preferred_trigger_motion_enabled") is False
+
+        rec.update_trigger_states(rms_preference=True)
+        cache = rec._status_cache or {}
+        assert cache.get("preferred_trigger_rms_enabled") is True
+        rec.update_trigger_states(vad=True, vad_preference=True)
+        cache = rec._status_cache or {}
+        assert cache.get("trigger_vad_enabled") is True
+        assert cache.get("preferred_trigger_vad_enabled") is True
+    finally:
+        rec.flush(0)
+
+
 def test_motion_override_event_uses_rms_after_motion_release(tmp_path, monkeypatch):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"
@@ -690,6 +742,40 @@ def test_motion_override_event_uses_rms_after_motion_release(tmp_path, monkeypat
 
         rec.ingest(make_frame(4000), 4)
         assert rec.active is False
+    finally:
+        rec.flush(0)
+
+
+def test_vad_trigger_respects_enable_flags(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "ENABLE_RMS_TRIGGER", False)
+    monkeypatch.setattr(segmenter, "ENABLE_VAD_TRIGGER", True)
+    monkeypatch.setattr(segmenter, "ENABLE_MOTION_TRIGGER", False)
+    monkeypatch.setattr(segmenter, "AUTO_RECORD_MOTION_OVERRIDE", False)
+    monkeypatch.setattr(segmenter, "is_voice", lambda buf: True)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.ingest(make_frame(0), 0)
+        assert rec.active is True
+        assert rec._auto_recording_enabled is True
+        assert rec._rms_trigger_enabled is False
+        assert rec._vad_trigger_enabled is True
     finally:
         rec.flush(0)
 

@@ -916,6 +916,9 @@ def _segmenter_defaults() -> dict[str, Any]:
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
         "min_clip_seconds": 0.0,
+        "enable_motion": True,
+        "enable_rms": True,
+        "enable_vad": True,
     }
 
 
@@ -1137,6 +1140,10 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
                 result["motion_release_padding_minutes"] = candidate
 
         for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
+            value = raw.get(key)
+            if isinstance(value, bool):
+                result[key] = value
+        for key in ("enable_motion", "enable_rms", "enable_vad"):
             value = raw.get(key)
             if isinstance(value, bool):
                 result[key] = value
@@ -1740,7 +1747,14 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
     if motion_padding is not None:
         normalized["motion_release_padding_minutes"] = motion_padding
 
-    for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
+    for field in (
+        "use_rnnoise",
+        "use_noisereduce",
+        "denoise_before_vad",
+        "enable_motion",
+        "enable_rms",
+        "enable_vad",
+    ):
         normalized[field] = _bool_from_any(payload.get(field))
 
     return normalized, errors
@@ -4521,8 +4535,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     motion_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
     )
+    trigger_motion_default = bool(cfg.get("segmenter", {}).get("enable_motion", True))
+    trigger_rms_default = bool(cfg.get("segmenter", {}).get("enable_rms", True))
+    trigger_vad_default = bool(cfg.get("segmenter", {}).get("enable_vad", True))
     auto_motion_override_default = bool(
         cfg.get("segmenter", {}).get("auto_record_motion_override", True)
+        and trigger_motion_default
     )
 
     def _normalize_partial_path(raw: object) -> tuple[str | None, str | None]:
@@ -4576,19 +4594,68 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             return bool(payload)
         return False
 
-    def _read_auto_record_flag() -> bool:
+    def _read_auto_record_state() -> dict[str, bool]:
+        state = {
+            "enabled": True,
+            "trigger_motion_enabled": trigger_motion_default,
+            "trigger_rms_enabled": trigger_rms_default,
+            "trigger_vad_enabled": trigger_vad_default,
+            "preferred_trigger_motion_enabled": trigger_motion_default,
+            "preferred_trigger_rms_enabled": trigger_rms_default,
+            "preferred_trigger_vad_enabled": trigger_vad_default,
+        }
+
         try:
             with open(auto_record_state_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except FileNotFoundError:
-            return True
+            return state
         except (json.JSONDecodeError, OSError):
-            return True
-        if isinstance(payload, dict):
-            return bool(payload.get("enabled", True))
+            return state
+
         if isinstance(payload, bool):
-            return bool(payload)
-        return True
+            state["enabled"] = bool(payload)
+            return state
+
+        if not isinstance(payload, dict):
+            return state
+
+        def _coerce_bool(value: object, default: bool) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return bool(value)
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"1", "true", "yes", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "off"}:
+                    return False
+            return default
+
+        for key in (
+            "enabled",
+            "trigger_motion_enabled",
+            "trigger_rms_enabled",
+            "trigger_vad_enabled",
+            "preferred_trigger_motion_enabled",
+            "preferred_trigger_rms_enabled",
+            "preferred_trigger_vad_enabled",
+        ):
+            state[key] = _coerce_bool(payload.get(key), state[key])
+
+        for preferred_key, base_key in (
+            ("preferred_trigger_motion_enabled", "trigger_motion_enabled"),
+            ("preferred_trigger_rms_enabled", "trigger_rms_enabled"),
+            ("preferred_trigger_vad_enabled", "trigger_vad_enabled"),
+        ):
+            if preferred_key not in payload:
+                state[preferred_key] = state[base_key]
+
+        return state
+
+    def _read_auto_record_flag() -> bool:
+        return _read_auto_record_state()["enabled"]
 
     def _float_or_none(value: object) -> float | None:
         if isinstance(value, (int, float)) and math.isfinite(value):
@@ -4749,29 +4816,68 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             with open(capture_status_path, "r", encoding="utf-8") as handle:
                 raw = json.load(handle)
         except FileNotFoundError:
+            auto_state = _read_auto_record_state()
             return {
                 "capturing": False,
                 "updated_at": None,
                 "manual_recording": _read_manual_record_flag(),
-                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_recording_enabled": auto_state["enabled"],
                 "auto_record_motion_override": auto_motion_override_default,
+                "trigger_motion_enabled": auto_state["trigger_motion_enabled"],
+                "trigger_rms_enabled": auto_state["trigger_rms_enabled"],
+                "trigger_vad_enabled": auto_state["trigger_vad_enabled"],
+                "preferred_trigger_motion_enabled": auto_state[
+                    "preferred_trigger_motion_enabled"
+                ],
+                "preferred_trigger_rms_enabled": auto_state[
+                    "preferred_trigger_rms_enabled"
+                ],
+                "preferred_trigger_vad_enabled": auto_state[
+                    "preferred_trigger_vad_enabled"
+                ],
             }
         except json.JSONDecodeError:
+            auto_state = _read_auto_record_state()
             return {
                 "capturing": False,
                 "updated_at": None,
                 "error": "invalid",
                 "manual_recording": _read_manual_record_flag(),
-                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_recording_enabled": auto_state["enabled"],
                 "auto_record_motion_override": auto_motion_override_default,
+                "trigger_motion_enabled": auto_state["trigger_motion_enabled"],
+                "trigger_rms_enabled": auto_state["trigger_rms_enabled"],
+                "trigger_vad_enabled": auto_state["trigger_vad_enabled"],
+                "preferred_trigger_motion_enabled": auto_state[
+                    "preferred_trigger_motion_enabled"
+                ],
+                "preferred_trigger_rms_enabled": auto_state[
+                    "preferred_trigger_rms_enabled"
+                ],
+                "preferred_trigger_vad_enabled": auto_state[
+                    "preferred_trigger_vad_enabled"
+                ],
             }
         except OSError:
+            auto_state = _read_auto_record_state()
             return {
                 "capturing": False,
                 "updated_at": None,
                 "manual_recording": _read_manual_record_flag(),
-                "auto_recording_enabled": _read_auto_record_flag(),
+                "auto_recording_enabled": auto_state["enabled"],
                 "auto_record_motion_override": auto_motion_override_default,
+                "trigger_motion_enabled": auto_state["trigger_motion_enabled"],
+                "trigger_rms_enabled": auto_state["trigger_rms_enabled"],
+                "trigger_vad_enabled": auto_state["trigger_vad_enabled"],
+                "preferred_trigger_motion_enabled": auto_state[
+                    "preferred_trigger_motion_enabled"
+                ],
+                "preferred_trigger_rms_enabled": auto_state[
+                    "preferred_trigger_rms_enabled"
+                ],
+                "preferred_trigger_vad_enabled": auto_state[
+                    "preferred_trigger_vad_enabled"
+                ],
             }
 
         status: dict[str, object] = {
@@ -4793,6 +4899,39 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             status["auto_record_motion_override"] = motion_override_flag
         else:
             status["auto_record_motion_override"] = auto_motion_override_default
+        motion_enabled_flag = raw.get("trigger_motion_enabled")
+        if isinstance(motion_enabled_flag, bool):
+            status["trigger_motion_enabled"] = motion_enabled_flag
+        else:
+            status["trigger_motion_enabled"] = trigger_motion_default
+        rms_enabled_flag = raw.get("trigger_rms_enabled")
+        if isinstance(rms_enabled_flag, bool):
+            status["trigger_rms_enabled"] = rms_enabled_flag
+        else:
+            status["trigger_rms_enabled"] = trigger_rms_default
+        vad_enabled_flag = raw.get("trigger_vad_enabled")
+        if isinstance(vad_enabled_flag, bool):
+            status["trigger_vad_enabled"] = vad_enabled_flag
+        else:
+            status["trigger_vad_enabled"] = trigger_vad_default
+
+        motion_pref_flag = raw.get("preferred_trigger_motion_enabled")
+        if isinstance(motion_pref_flag, bool):
+            status["preferred_trigger_motion_enabled"] = motion_pref_flag
+        else:
+            status["preferred_trigger_motion_enabled"] = status["trigger_motion_enabled"]
+
+        rms_pref_flag = raw.get("preferred_trigger_rms_enabled")
+        if isinstance(rms_pref_flag, bool):
+            status["preferred_trigger_rms_enabled"] = rms_pref_flag
+        else:
+            status["preferred_trigger_rms_enabled"] = status["trigger_rms_enabled"]
+
+        vad_pref_flag = raw.get("preferred_trigger_vad_enabled")
+        if isinstance(vad_pref_flag, bool):
+            status["preferred_trigger_vad_enabled"] = vad_pref_flag
+        else:
+            status["preferred_trigger_vad_enabled"] = status["trigger_vad_enabled"]
         updated_at = raw.get("updated_at")
         if isinstance(updated_at, (int, float)):
             status["updated_at"] = float(updated_at)
@@ -7722,33 +7861,84 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
 
-        raw_enabled = payload.get("enabled") if isinstance(payload, dict) else None
-        enabled: bool | None
-        if isinstance(raw_enabled, bool):
-            enabled = raw_enabled
-        elif isinstance(raw_enabled, (int, float)):
-            enabled = bool(raw_enabled)
-        elif isinstance(raw_enabled, str):
-            normalized = raw_enabled.strip().lower()
-            if normalized in {"1", "true", "yes", "on"}:
-                enabled = True
-            elif normalized in {"0", "false", "no", "off"}:
-                enabled = False
-            else:
-                enabled = None
-        else:
-            enabled = None
+        if not isinstance(payload, dict):
+            payload = {}
 
-        if enabled is None:
-            return web.json_response(
-                {"ok": False, "error": "Payload must include boolean 'enabled'"},
-                status=400,
-            )
+        def _parse_bool(value: object) -> bool | None:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return bool(value)
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"1", "true", "yes", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "off"}:
+                    return False
+            return None
+
+        state = _read_auto_record_state()
+
+        enabled_update: bool | None = None
+        if "enabled" in payload:
+            enabled_update = _parse_bool(payload.get("enabled"))
+            if enabled_update is None:
+                return web.json_response(
+                    {"ok": False, "error": "Payload must include boolean 'enabled'"},
+                    status=400,
+                )
+
+        trigger_fields = {
+            "trigger_motion_enabled": "preferred_trigger_motion_enabled",
+            "trigger_rms_enabled": "preferred_trigger_rms_enabled",
+            "trigger_vad_enabled": "preferred_trigger_vad_enabled",
+        }
+
+        trigger_updates: dict[str, bool] = {}
+        for field, pref_field in trigger_fields.items():
+            if field not in payload:
+                continue
+            parsed = _parse_bool(payload.get(field))
+            if parsed is None:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "error": f"Payload field '{field}' must be boolean",
+                    },
+                    status=400,
+                )
+            trigger_updates[field] = parsed
+            state[pref_field] = parsed
+
+        # Apply trigger preference updates to current state when auto capture is enabled
+        for field, value in trigger_updates.items():
+            if state["enabled"] or field == "trigger_motion_enabled":
+                state[field] = value
+
+        if enabled_update is not None:
+            state["enabled"] = enabled_update
+            if enabled_update:
+                for field, pref_field in trigger_fields.items():
+                    state[field] = state[pref_field]
+            else:
+                state["trigger_motion_enabled"] = state[
+                    "preferred_trigger_motion_enabled"
+                ]
+                state["trigger_rms_enabled"] = False
+                state["trigger_vad_enabled"] = False
+
+        if not state["enabled"]:
+            # Auto capture paused: enforce suppressed triggers regardless of direct updates
+            state["trigger_motion_enabled"] = state["preferred_trigger_motion_enabled"]
+            state["trigger_rms_enabled"] = False
+            state["trigger_vad_enabled"] = False
+
+        state["updated_at"] = time.time()
 
         try:
             os.makedirs(os.path.dirname(auto_record_state_path), exist_ok=True)
             with open(auto_record_state_path, "w", encoding="utf-8") as handle:
-                json.dump({"enabled": bool(enabled), "updated_at": time.time()}, handle)
+                json.dump(state, handle)
                 handle.write("\n")
         except OSError as exc:
             return web.json_response(
@@ -7759,7 +7949,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 status=500,
             )
 
-        return web.json_response({"ok": True, "enabled": bool(enabled)})
+        response_payload = {
+            "ok": True,
+            "enabled": state["enabled"],
+            "trigger_motion_enabled": state["trigger_motion_enabled"],
+            "trigger_rms_enabled": state["trigger_rms_enabled"],
+            "trigger_vad_enabled": state["trigger_vad_enabled"],
+            "preferred_trigger_motion_enabled": state[
+                "preferred_trigger_motion_enabled"
+            ],
+            "preferred_trigger_rms_enabled": state["preferred_trigger_rms_enabled"],
+            "preferred_trigger_vad_enabled": state["preferred_trigger_vad_enabled"],
+        }
+
+        return web.json_response(response_payload)
 
     async def capture_manual_record(request: web.Request) -> web.Response:
         try:

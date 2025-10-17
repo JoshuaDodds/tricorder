@@ -265,6 +265,32 @@
             >
               Auto Capture
             </button>
+            <div class="trigger-toggle-group" role="group" aria-label="Trigger controls">
+              <button
+                id="trigger-motion-toggle"
+                class="ghost-button"
+                type="button"
+                aria-pressed="true"
+              >
+                Motion trigger
+              </button>
+              <button
+                id="trigger-rms-toggle"
+                class="ghost-button"
+                type="button"
+                aria-pressed="true"
+              >
+                RMS trigger
+              </button>
+              <button
+                id="trigger-vad-toggle"
+                class="ghost-button"
+                type="button"
+                aria-pressed="true"
+              >
+                VAD trigger
+              </button>
+            </div>
             <button
               id="manual-record-toggle"
               class="danger-button"
@@ -1431,6 +1457,33 @@
                 <p class="field-description">
                   Extra minutes to keep motion-forced recordings active after motion clears so RMS and VAD regain control more
                   gradually.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-trigger-motion" type="checkbox" />
+                  <label for="segmenter-trigger-motion">Enable motion trigger</label>
+                </div>
+                <p class="field-description">
+                  Allow external motion events to start recordings even when auto capture is paused.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-trigger-rms" type="checkbox" />
+                  <label for="segmenter-trigger-rms">Enable RMS trigger</label>
+                </div>
+                <p class="field-description">
+                  Use the configured RMS threshold to automatically start and sustain recordings.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-trigger-vad" type="checkbox" />
+                  <label for="segmenter-trigger-vad">Enable VAD trigger</label>
+                </div>
+                <p class="field-description">
+                  Consider voice activity when classifying events and extending motion override recordings.
                 </p>
               </div>
               <div class="settings-field">

@@ -7,9 +7,17 @@ import subprocess
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass
 from queue import Empty
 from typing import Any, Iterable, Optional, Tuple
-from lib.segmenter import ENCODING_STATUS, TimelineRecorder, perform_startup_recovery
+from lib.segmenter import (
+    ENCODING_STATUS,
+    ENABLE_MOTION_TRIGGER,
+    ENABLE_RMS_TRIGGER,
+    ENABLE_VAD_TRIGGER,
+    TimelineRecorder,
+    perform_startup_recovery,
+)
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
@@ -96,24 +104,110 @@ def _manual_record_snapshot(path: str) -> tuple[bool, float]:
     return enabled, stat.st_mtime
 
 
-def _auto_record_snapshot(path: str) -> tuple[bool, float]:
+@dataclass(frozen=True)
+class AutoRecordState:
+    enabled: bool
+    trigger_motion_enabled: bool
+    trigger_rms_enabled: bool
+    trigger_vad_enabled: bool
+    preferred_trigger_motion_enabled: bool
+    preferred_trigger_rms_enabled: bool
+    preferred_trigger_vad_enabled: bool
+
+
+DEFAULT_AUTO_RECORD_STATE = AutoRecordState(
+    enabled=True,
+    trigger_motion_enabled=bool(ENABLE_MOTION_TRIGGER),
+    trigger_rms_enabled=bool(ENABLE_RMS_TRIGGER),
+    trigger_vad_enabled=bool(ENABLE_VAD_TRIGGER),
+    preferred_trigger_motion_enabled=bool(ENABLE_MOTION_TRIGGER),
+    preferred_trigger_rms_enabled=bool(ENABLE_RMS_TRIGGER),
+    preferred_trigger_vad_enabled=bool(ENABLE_VAD_TRIGGER),
+)
+
+
+def _parse_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _coerce_auto_record_state(payload: object) -> AutoRecordState:
+    base = DEFAULT_AUTO_RECORD_STATE
+    if isinstance(payload, bool):
+        return AutoRecordState(
+            enabled=bool(payload),
+            trigger_motion_enabled=base.trigger_motion_enabled,
+            trigger_rms_enabled=base.trigger_rms_enabled,
+            trigger_vad_enabled=base.trigger_vad_enabled,
+            preferred_trigger_motion_enabled=base.preferred_trigger_motion_enabled,
+            preferred_trigger_rms_enabled=base.preferred_trigger_rms_enabled,
+            preferred_trigger_vad_enabled=base.preferred_trigger_vad_enabled,
+        )
+
+    if not isinstance(payload, dict):
+        return base
+
+    enabled = _parse_bool(payload.get("enabled"))
+    if enabled is None:
+        enabled = base.enabled
+
+    motion_enabled = _parse_bool(payload.get("trigger_motion_enabled"))
+    if motion_enabled is None:
+        motion_enabled = base.trigger_motion_enabled
+
+    rms_enabled = _parse_bool(payload.get("trigger_rms_enabled"))
+    if rms_enabled is None:
+        rms_enabled = base.trigger_rms_enabled
+
+    vad_enabled = _parse_bool(payload.get("trigger_vad_enabled"))
+    if vad_enabled is None:
+        vad_enabled = base.trigger_vad_enabled
+
+    motion_pref = _parse_bool(payload.get("preferred_trigger_motion_enabled"))
+    if motion_pref is None:
+        motion_pref = motion_enabled
+
+    rms_pref = _parse_bool(payload.get("preferred_trigger_rms_enabled"))
+    if rms_pref is None:
+        rms_pref = rms_enabled
+
+    vad_pref = _parse_bool(payload.get("preferred_trigger_vad_enabled"))
+    if vad_pref is None:
+        vad_pref = vad_enabled
+
+    return AutoRecordState(
+        enabled=enabled,
+        trigger_motion_enabled=motion_enabled,
+        trigger_rms_enabled=rms_enabled,
+        trigger_vad_enabled=vad_enabled,
+        preferred_trigger_motion_enabled=motion_pref,
+        preferred_trigger_rms_enabled=rms_pref,
+        preferred_trigger_vad_enabled=vad_pref,
+    )
+
+
+def _auto_record_snapshot(path: str) -> tuple[AutoRecordState, float]:
     try:
         stat = os.stat(path)
     except FileNotFoundError:
-        return True, 0.0
+        return DEFAULT_AUTO_RECORD_STATE, 0.0
     except OSError:
-        return True, 0.0
+        return DEFAULT_AUTO_RECORD_STATE, 0.0
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return True, stat.st_mtime
-    enabled = True
-    if isinstance(data, dict):
-        enabled = bool(data.get("enabled", True))
-    elif isinstance(data, bool):
-        enabled = bool(data)
-    return enabled, stat.st_mtime
+        return DEFAULT_AUTO_RECORD_STATE, stat.st_mtime
+    return _coerce_auto_record_state(data), stat.st_mtime
 
 
 def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
@@ -424,7 +518,7 @@ def main():
     print(f"[live] streaming mode={STREAM_MODE}", flush=True)
 
     manual_record_enabled, manual_record_mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
-    auto_record_enabled, auto_record_mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
+    auto_record_state, auto_record_mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
 
     try:
         recovery_report = perform_startup_recovery()
@@ -518,17 +612,25 @@ def main():
             manual_record_enabled, manual_record_mtime = _manual_record_snapshot(
                 MANUAL_RECORD_PATH
             )
-            auto_record_enabled, auto_record_mtime = _auto_record_snapshot(
-                AUTO_RECORD_PATH
-            )
+            auto_state, auto_record_mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
             rec = TimelineRecorder()
             try:
-                rec.set_auto_recording_enabled(auto_record_enabled)
+                rec.update_trigger_states(
+                    motion=auto_state.trigger_motion_enabled,
+                    rms=auto_state.trigger_rms_enabled,
+                    vad=auto_state.trigger_vad_enabled,
+                    motion_preference=auto_state.preferred_trigger_motion_enabled,
+                    rms_preference=auto_state.preferred_trigger_rms_enabled,
+                    vad_preference=auto_state.preferred_trigger_vad_enabled,
+                )
+                rec.set_auto_recording_enabled(auto_state.enabled)
             except Exception as exc:
                 print(
                     f"[live] WARN: failed to apply auto recording state: {exc!r}",
                     flush=True,
                 )
+            else:
+                auto_record_state = auto_state
             if manual_record_enabled:
                 try:
                     rec.set_manual_recording(True)
@@ -625,12 +727,20 @@ def main():
 
                 if now >= next_auto_poll:
                     next_auto_poll = now + AUTO_POLL_INTERVAL
-                    enabled, mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
-                    if mtime != auto_record_mtime or enabled != auto_record_enabled:
-                        auto_record_enabled = enabled
+                    next_state, mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
+                    if mtime != auto_record_mtime or next_state != auto_record_state:
+                        auto_record_state = next_state
                         auto_record_mtime = mtime
                         try:
-                            rec.set_auto_recording_enabled(auto_record_enabled)
+                            rec.update_trigger_states(
+                                motion=next_state.trigger_motion_enabled,
+                                rms=next_state.trigger_rms_enabled,
+                                vad=next_state.trigger_vad_enabled,
+                                motion_preference=next_state.preferred_trigger_motion_enabled,
+                                rms_preference=next_state.preferred_trigger_rms_enabled,
+                                vad_preference=next_state.preferred_trigger_vad_enabled,
+                            )
+                            rec.set_auto_recording_enabled(next_state.enabled)
                         except Exception as exc:
                             print(
                                 f"[live] WARN: failed to update auto recording mode: {exc!r}",

@@ -149,6 +149,14 @@ segmenter:
   # Helpful when the external motion sensor tends to flicker but you still want RMS/VAD to wait.
   motion_release_padding_minutes: 0.0
 
+  # Trigger toggles control which detectors can start and sustain automatic recordings.
+  # Disable motion to ignore external motion sensors entirely (auto capture toggle will
+  # no longer allow motion override events). Disable RMS or VAD to remove their
+  # contributions while keeping manual capture and other triggers available.
+  enable_motion: true
+  enable_rms: true
+  enable_vad: true
+
   # When the dashboard disables automatic recordings, motion can still force events when this is true.
   # Set to false to require manual recording even if motion is detected.
   auto_record_motion_override: true
