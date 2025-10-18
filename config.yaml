@@ -4,9 +4,15 @@
 # - Units are noted per field. Values outside suggested ranges may degrade performance on low-power devices.
 
 audio:
-  # ALSA device identifier. Use `arecord -l` to list devices.
-  # Examples: "hw:1,0", "hw:CARD=Device,DEV=0"
-  device: "hw:CARD=Device,DEV=0"
+  # ALSA device identifier. Use `arecord -l` to list devices or pick from the web UI dropdown.
+  # Examples: "hw:1,0", "hw:CARD=Device,DEV=0", "plughw:CARD=seeed2micvoicec,DEV=0"
+  device: "default"
+
+  # Number of input channels. 1 = mono, 2 = stereo.
+  channels: 1
+
+  # Some USB microphones require a reset when capture stalls. Disable for non-USB/I²S devices.
+  use_usb_reset_workaround: true
 
   # Sample rate in Hz. Valid: 16000, 32000, 48000. Default is 48000 for best VAD and Opus quality.
   sample_rate: 48000
