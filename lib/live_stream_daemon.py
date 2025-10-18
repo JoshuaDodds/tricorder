@@ -590,7 +590,7 @@ def main():
                             SAMPLE_RATE,
                             FRAME_BYTES,
                             raw_frame,
-                            CHANNELS,
+                            channels=CHANNELS,
                         )
                         if filter_chain_error_logged:
                             filter_chain_error_logged = False
