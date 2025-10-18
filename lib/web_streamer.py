@@ -7056,7 +7056,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     recorder_unit = VOICE_RECORDER_SERVICE_UNIT
     web_streamer_unit = "web-streamer.service"
     section_restart_units: dict[str, Sequence[str]] = {
-        "audio": [recorder_unit],
+        "audio": [recorder_unit, web_streamer_unit],
         "segmenter": [recorder_unit],
         "adaptive_rms": [recorder_unit],
         "ingest": ["dropbox.path", "dropbox.service"],
