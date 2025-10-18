@@ -3812,7 +3812,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         audio_cfg = cfg.get("audio", {})
         sample_rate = int(audio_cfg.get("sample_rate", 48000))
         frame_ms = int(audio_cfg.get("frame_ms", 20))
-        frame_bytes = int(sample_rate * 2 * frame_ms / 1000)
+        channels = int(audio_cfg.get("channels", 1) or 1)
+        if channels < 1:
+            channels = 1
+        elif channels > 2:
+            channels = 2
+        frame_bytes = int(sample_rate * channels * 2 * frame_ms / 1000)
         history_seconds = float(streaming_cfg.get("webrtc_history_seconds", 8.0))
         webrtc_manager = WebRTCManager(
             buffer_dir=webrtc_dir,
@@ -3821,6 +3826,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             frame_bytes=frame_bytes,
             history_seconds=history_seconds,
             ice_servers=webrtc_ice_servers,
+            channels=channels,
         )
     app[WEBRTC_MANAGER_KEY] = webrtc_manager
     recordings_root = Path(cfg["paths"]["recordings_dir"])

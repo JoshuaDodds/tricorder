@@ -64,6 +64,7 @@ if _AIORTC_IMPORT_ERROR is None:
             *,
             sample_rate: int,
             frame_bytes: int,
+            channels: int = 1,
         ) -> None:
             super().__init__()
             self._consumer = consumer
@@ -72,6 +73,16 @@ if _AIORTC_IMPORT_ERROR is None:
             self._silence = bytes(self._frame_bytes)
             self._timestamp = 0
             self._time_base = Fraction(1, self._sample_rate)
+            try:
+                channel_count = int(channels)
+            except (TypeError, ValueError):
+                channel_count = 1
+            if channel_count < 1:
+                channel_count = 1
+            elif channel_count > 2:
+                channel_count = 2
+            self._channels = channel_count
+            self._layout = "stereo" if self._channels == 2 else "mono"
 
         async def recv(self) -> av.AudioFrame:
             loop = asyncio.get_running_loop()
@@ -79,8 +90,22 @@ if _AIORTC_IMPORT_ERROR is None:
             if frame_bytes is None:
                 frame_bytes = self._silence
 
-            samples = max(len(frame_bytes) // 2, 1)
-            frame = av.AudioFrame(format="s16", layout="mono", samples=samples)
+            channels = self._channels
+            bytes_per_sample = max(channels * 2, 2)
+            sample_count = len(frame_bytes) // bytes_per_sample
+            if sample_count <= 0:
+                sample_count = 1
+                frame_bytes = self._silence[: bytes_per_sample]
+            else:
+                expected_length = sample_count * bytes_per_sample
+                if expected_length != len(frame_bytes):
+                    frame_bytes = frame_bytes[:expected_length]
+
+            frame = av.AudioFrame(
+                format="s16",
+                layout=self._layout,
+                samples=sample_count,
+            )
             frame.planes[0].update(frame_bytes)
             frame.sample_rate = self._sample_rate
             super_obj = super()
@@ -88,7 +113,7 @@ if _AIORTC_IMPORT_ERROR is None:
             if next_timestamp is None:
                 frame.pts = self._timestamp
                 frame.time_base = self._time_base
-                self._timestamp += samples
+                self._timestamp += sample_count
             else:
                 pts, time_base = await next_timestamp()
                 frame.pts = pts
@@ -126,11 +151,21 @@ if _AIORTC_IMPORT_ERROR is None:
             frame_bytes: int,
             history_seconds: float,
             ice_servers: Optional[list[dict[str, object]]] = None,
+            channels: int = 1,
         ) -> None:
             self._buffer_dir = buffer_dir
             self._sample_rate = int(sample_rate)
             self._frame_ms = int(frame_ms)
             self._frame_bytes = int(frame_bytes)
+            try:
+                channel_count = int(channels)
+            except (TypeError, ValueError):
+                channel_count = 1
+            if channel_count < 1:
+                channel_count = 1
+            elif channel_count > 2:
+                channel_count = 2
+            self._channels = channel_count
             self._buffer_size = max(int(history_seconds * (1000.0 / self._frame_ms)), 2) * self._frame_bytes
             self._log = logging.getLogger("webrtc_manager")
             self._ice_servers = list(ice_servers or [])
@@ -189,6 +224,7 @@ if _AIORTC_IMPORT_ERROR is None:
                 consumer,
                 sample_rate=self._sample_rate,
                 frame_bytes=self._frame_bytes,
+                channels=self._channels,
             )
 
             pc = RTCPeerConnection(configuration=self._configuration)
@@ -264,6 +300,7 @@ else:
             frame_bytes: int,
             history_seconds: float,
             ice_servers: Optional[list[dict[str, object]]] = None,
+            channels: int = 1,
         ) -> None:
             self._buffer_dir = buffer_dir
             self._sample_rate = int(sample_rate)
@@ -273,6 +310,7 @@ else:
             self._log = logging.getLogger("webrtc_manager")
             self._error_text = str(_AIORTC_IMPORT_ERROR or "aiortc not installed")
             self._log.warning("WebRTC support unavailable: %s", self._error_text)
+            _ = channels
 
         def mark_started(self, session_id: Optional[str]) -> None:
             _ = session_id
