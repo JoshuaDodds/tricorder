@@ -1675,6 +1675,18 @@ def test_rms_matches_constant_signal():
     assert segmenter.rms(buf) == 1200
 
 
+def test_rms_uses_loudest_channel(monkeypatch):
+    monkeypatch.setattr(segmenter, "CHANNELS", 2, raising=False)
+    samples = bytearray()
+    loud = 1200
+    quiet = 0
+    for _ in range(48):
+        samples.extend(int(loud).to_bytes(2, 'little', signed=True))
+        samples.extend(int(quiet).to_bytes(2, 'little', signed=True))
+    buf = bytes(samples)
+    assert segmenter.pcm16_rms(buf) == loud
+
+
 def test_live_waveform_writer_preserves_start_and_trigger(tmp_path):
     destination = tmp_path / "waveform.json"
     writer = segmenter.LiveWaveformWriter(
