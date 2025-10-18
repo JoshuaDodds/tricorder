@@ -142,23 +142,10 @@ def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
     if len(buf) % SAMPLE_WIDTH:
         raise ValueError("PCM16 buffer length must be a multiple of 2 bytes")
 
-    samples = array.array('h')
-    samples.frombytes(buf)
-    if sys.byteorder != 'little':
-        samples.byteswap()
-
-    for idx, sample in enumerate(samples):
-        product = sample * gain
-        scaled = math.floor(product)
-        if scaled > INT16_MAX:
-            scaled = INT16_MAX
-        elif scaled < INT16_MIN:
-            scaled = INT16_MIN
-        samples[idx] = scaled
-
-    if sys.byteorder != 'little':
-        samples.byteswap()
-    return samples.tobytes()
+    try:
+        return audioop.mul(buf, SAMPLE_WIDTH, gain)
+    except (TypeError, audioop.error) as exc:
+        raise ValueError("Invalid PCM16 buffer or gain") from exc
 
 
 def _estimate_rms_from_file(path: str | os.PathLike[str]) -> int:
