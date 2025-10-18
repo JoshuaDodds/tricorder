@@ -108,31 +108,36 @@ def pcm16_rms(buf: bytes) -> int:
     if sample_count <= 0:
         return 0
 
-    if CHANNELS <= 1:
-        total = 0.0
-        for sample in samples:
-            total += float(sample) * float(sample)
-        mean_square = total / float(sample_count)
-        return int(round(math.sqrt(mean_square)))
+    channel_count = CHANNELS if CHANNELS > 0 else 1
+    channel_squares = [0.0] * channel_count
+    channel_counts = [0] * channel_count
+    total_square = 0.0
 
-    channel_squares = [0.0] * CHANNELS
-    channel_counts = [0] * CHANNELS
     for idx, sample in enumerate(samples):
-        channel = idx % CHANNELS
-        channel_squares[channel] += float(sample) * float(sample)
-        channel_counts[channel] += 1
+        value = float(sample)
+        total_square += value * value
+        channel_index = idx % channel_count
+        channel_squares[channel_index] += value * value
+        channel_counts[channel_index] += 1
 
-    max_rms = 0.0
-    for square_sum, count in zip(channel_squares, channel_counts):
-        if count <= 0:
-            continue
-        rms_value = math.sqrt(square_sum / float(count))
-        if rms_value > max_rms:
-            max_rms = rms_value
+    combined_rms = 0.0
+    if total_square > 0.0:
+        combined_rms = math.sqrt(total_square / float(sample_count))
 
-    if max_rms <= 0.0:
+    channel_rms = [
+        math.sqrt(square_sum / float(count))
+        for square_sum, count in zip(channel_squares, channel_counts)
+        if count > 0 and square_sum > 0.0
+    ]
+
+    if channel_rms:
+        effective_rms = max(max(channel_rms), combined_rms)
+    else:
+        effective_rms = combined_rms
+
+    if effective_rms <= 0.0:
         return 0
-    return int(round(max_rms))
+    return int(round(effective_rms))
 
 
 def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
