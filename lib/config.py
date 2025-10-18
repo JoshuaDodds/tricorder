@@ -58,7 +58,9 @@ EVENT_TAG_DEFAULTS: Dict[str, str] = {
 
 _DEFAULTS: Dict[str, Any] = {
     "audio": {
-        "device": "hw:CARD=Device,DEV=0",
+        "device": "default",
+        "channels": 1,
+        "use_usb_reset_workaround": True,
         "sample_rate": 48000,
         "frame_ms": 20,
         "gain": 2.5,
@@ -304,6 +306,17 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
     # Audio device and sample rate/gain
     if "AUDIO_DEV" in os.environ:
         cfg.setdefault("audio", {})["device"] = os.environ["AUDIO_DEV"]
+    if "AUDIO_CHANNELS" in os.environ:
+        try:
+            channels = int(os.environ["AUDIO_CHANNELS"], 10)
+        except ValueError:
+            channels = None
+        if channels and channels > 0:
+            cfg.setdefault("audio", {})["channels"] = channels
+    if "USE_USB_RESET_WORKAROUND" in os.environ:
+        raw = os.environ["USE_USB_RESET_WORKAROUND"].strip().lower()
+        enabled = raw in {"1", "true", "yes", "on"}
+        cfg.setdefault("audio", {})["use_usb_reset_workaround"] = enabled
     if "GAIN" in os.environ:
         try:
             cfg.setdefault("audio", {})["gain"] = float(os.environ["GAIN"])
