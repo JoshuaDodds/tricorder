@@ -587,7 +587,10 @@ def main():
                 if FILTER_CHAIN is not None:
                     try:
                         processed = FILTER_CHAIN.process(
-                            SAMPLE_RATE, FRAME_BYTES, raw_frame
+                            SAMPLE_RATE,
+                            FRAME_BYTES,
+                            raw_frame,
+                            CHANNELS,
                         )
                         if filter_chain_error_logged:
                             filter_chain_error_logged = False
