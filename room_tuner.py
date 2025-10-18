@@ -5,7 +5,7 @@ room_tuner.py
 A console tool to help tune RMS_THRESH for a new room.
 
 Features:
-- Live capture from arecord (mono, 16-bit, 48kHz) in 20 ms frames.
+- Live capture from arecord (16-bit PCM) in 20 ms frames with configurable channels.
 - Logs per-interval RMS stats and VAD activity to the console.
 - Rolling noise floor estimation from unvoiced frames (95th percentile).
 - Suggested RMS_THRESH = noise_floor_p95 * margin (configurable).
@@ -15,7 +15,7 @@ Features:
 Usage:
   chmod +x ./room_tuner.py
   ./room_tuner.py
-  ./room_tuner.py --device "hw:CARD=Device,DEV=0" --aggr 2 --interval 1.0 --csv room_tune.csv
+  ./room_tuner.py --device "hw:1,0" --aggr 2 --interval 1.0 --csv room_tune.csv
 
 Press Ctrl+C to stop.
 """
@@ -51,9 +51,18 @@ cfg = get_cfg()
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2
 FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+CHANNELS = int(cfg.get("audio", {}).get("channels", 1) or 1)
+if CHANNELS < 1:
+    CHANNELS = 1
+elif CHANNELS > 2:
+    CHANNELS = 2
+FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS * FRAME_MS // 1000
 
-DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
+USE_USB_RESET_WORKAROUND = bool(
+    cfg.get("audio", {}).get("use_usb_reset_workaround", True)
+)
+
+DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"]).strip() or "default"
 
 
 def _clone_filter_chain(existing: Any) -> dict[str, Any]:
@@ -135,7 +144,7 @@ def spawn_arecord(audio_dev: str):
     cmd = [
         "arecord",
         "-D", audio_dev,
-        "-c", "1",
+        "-c", str(CHANNELS),
         "-f", "S16_LE",
         "-r", str(SAMPLE_RATE),
         "--buffer-size", "48000",
@@ -172,7 +181,7 @@ def _drain_fd(fd: int | None) -> None:
 def capture_idle_audio(proc, seconds: float, stderr_fd: int | None) -> bytes:
     if seconds <= 0:
         return b""
-    target_bytes = int(seconds * SAMPLE_RATE * SAMPLE_WIDTH)
+    target_bytes = int(seconds * SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS)
     captured = bytearray()
     deadline = time.monotonic() + max(seconds * 1.5, 1.0)
     while len(captured) < target_bytes:
@@ -254,7 +263,8 @@ def main() -> int:
     except Exception as e:
         print(f"[room_tuner] failed to start arecord: {e!r}", file=sys.stderr, flush=True)
         print("[room_tuner] attempting USB reset...", flush=True)
-        reset_usb()
+        if USE_USB_RESET_WORKAROUND:
+            reset_usb()
         time.sleep(2)
         try:
             proc = spawn_arecord(args.device)
@@ -363,7 +373,8 @@ def main() -> int:
         chunk = proc.stdout.read(4096)
         if not chunk:
             print("[room_tuner] arecord ended or device unavailable; attempting USB reset", flush=True)
-            reset_usb()
+            if USE_USB_RESET_WORKAROUND:
+                reset_usb()
             time.sleep(2)
             try:
                 proc = spawn_arecord(args.device)
@@ -383,9 +394,13 @@ def main() -> int:
             del buf[:FRAME_BYTES]
 
             pcm_frame = apply_gain(pcm_frame)
-            val_rms = audioop.rms(pcm_frame, SAMPLE_WIDTH)
+            if CHANNELS > 1:
+                mono_frame = audioop.tomono(pcm_frame, SAMPLE_WIDTH, 0.5, 0.5)
+            else:
+                mono_frame = pcm_frame
+            val_rms = audioop.rms(mono_frame, SAMPLE_WIDTH)
             try:
-                voiced = vad.is_speech(pcm_frame, SAMPLE_RATE)
+                voiced = vad.is_speech(mono_frame, SAMPLE_RATE)
             except Exception:
                 voiced = False  # be defensive if VAD dislikes input
 

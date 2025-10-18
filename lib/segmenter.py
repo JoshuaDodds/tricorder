@@ -21,6 +21,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Optional
 import array
+import audioop
 from lib.waveform_cache import DEFAULT_BUCKET_COUNT, MAX_BUCKET_COUNT, PEAK_SCALE
 from lib.motion_state import MOTION_STATE_FILENAME, MotionStateWatcher
 from lib import dashboard_events
@@ -51,7 +52,12 @@ RIGHT_TEXT_WIDTH = int(cfg["segmenter"].get("right_text_width", 54))  # fixed-wi
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
 FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+CHANNELS = int(cfg.get("audio", {}).get("channels", 1) or 1)
+if CHANNELS < 1:
+    CHANNELS = 1
+elif CHANNELS > 2:
+    CHANNELS = 2
+FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS * FRAME_MS // 1000
 FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 
 INT16_MAX = 2 ** 15 - 1
@@ -98,13 +104,35 @@ def pcm16_rms(buf: bytes) -> int:
     if sys.byteorder != 'little':
         samples.byteswap()
 
-    total = 0
-    for sample in samples:
-        total += sample * sample
-    if not samples:
+    sample_count = len(samples)
+    if sample_count <= 0:
         return 0
-    mean_square = total / len(samples)
-    return int(math.sqrt(mean_square))
+
+    if CHANNELS <= 1:
+        total = 0.0
+        for sample in samples:
+            total += float(sample) * float(sample)
+        mean_square = total / float(sample_count)
+        return int(round(math.sqrt(mean_square)))
+
+    channel_squares = [0.0] * CHANNELS
+    channel_counts = [0] * CHANNELS
+    for idx, sample in enumerate(samples):
+        channel = idx % CHANNELS
+        channel_squares[channel] += float(sample) * float(sample)
+        channel_counts[channel] += 1
+
+    max_rms = 0.0
+    for square_sum, count in zip(channel_squares, channel_counts):
+        if count <= 0:
+            continue
+        rms_value = math.sqrt(square_sum / float(count))
+        if rms_value > max_rms:
+            max_rms = rms_value
+
+    if max_rms <= 0.0:
+        return 0
+    return int(round(max_rms))
 
 
 def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
@@ -737,7 +765,11 @@ except ImportError:
 
 
 def is_voice(buf):
-    return vad.is_speech(buf, SAMPLE_RATE)
+    if CHANNELS > 1:
+        mono = audioop.tomono(buf, SAMPLE_WIDTH, 0.5, 0.5)
+    else:
+        mono = buf
+    return vad.is_speech(mono, SAMPLE_RATE)
 
 
 def rms(buf):
@@ -809,7 +841,7 @@ class _WriterWorker(threading.Thread):
                         self.path = path
                         os.makedirs(os.path.dirname(path), exist_ok=True)
                         self.wav = wave.open(path, "wb")
-                        self.wav.setnchannels(1)
+                        self.wav.setnchannels(CHANNELS)
                         self.wav.setsampwidth(SAMPLE_WIDTH)
                         self.wav.setframerate(SAMPLE_RATE)
                         self.buf.clear()
@@ -870,7 +902,7 @@ class StreamingOpusEncoder:
             "-ar",
             str(SAMPLE_RATE),
             "-ac",
-            "1",
+            str(CHANNELS),
             "-i",
             "pipe:0",
             "-c:a",
@@ -1093,16 +1125,24 @@ class LiveWaveformWriter:
         samples.frombytes(buf)
         if sys.byteorder != "little":
             samples.byteswap()
-        if not samples:
-            return
-        frame_min = min(samples)
-        frame_max = max(samples)
-        square_sum = 0.0
-        for sample in samples:
-            square_sum += float(sample) * float(sample)
         sample_count = len(samples)
+        if sample_count <= 0:
+            return
+        frame_min = 32767
+        frame_max = -32768
+        channel_squares = [0.0] * CHANNELS
+        channel_counts = [0] * CHANNELS
+        for idx, sample in enumerate(samples):
+            value = int(sample)
+            if value < frame_min:
+                frame_min = value
+            if value > frame_max:
+                frame_max = value
+            channel_index = idx % CHANNELS
+            channel_squares[channel_index] += float(value) * float(value)
+            channel_counts[channel_index] += 1
         with self._lock:
-            self._frames.append((frame_min, frame_max, square_sum, sample_count))
+            self._frames.append((frame_min, frame_max, tuple(channel_squares), tuple(channel_counts)))
             self._total_frames += 1
             self._total_samples += sample_count
             now = time.monotonic()
@@ -1145,7 +1185,7 @@ class LiveWaveformWriter:
         if frame_count <= 0:
             return {
                 "version": 1,
-                "channels": 1,
+                "channels": CHANNELS,
                 "sample_rate": SAMPLE_RATE,
                 "frame_count": 0,
                 "duration_seconds": 0.0,
@@ -1164,42 +1204,58 @@ class LiveWaveformWriter:
 
         bucket_min = 32767
         bucket_max = -32768
-        bucket_sq = 0.0
-        bucket_samples = 0
+        bucket_sq = [0.0] * CHANNELS
+        bucket_samples = [0] * CHANNELS
         bucket_index = 0
         consumed_frames = 0.0
         next_threshold = frames_per_bucket
 
-        for frame_min, frame_max, square_sum, sample_count in self._frames:
+        for frame_min, frame_max, channel_squares, channel_counts in self._frames:
             if bucket_index >= bucket_count:
                 break
             if frame_min < bucket_min:
                 bucket_min = frame_min
             if frame_max > bucket_max:
                 bucket_max = frame_max
-            bucket_sq += square_sum
-            bucket_samples += sample_count
+
+            if isinstance(channel_squares, (list, tuple)) and isinstance(channel_counts, (list, tuple)):
+                limit = min(CHANNELS, len(channel_squares), len(channel_counts))
+                for idx in range(limit):
+                    bucket_sq[idx] += float(channel_squares[idx])
+                    bucket_samples[idx] += int(channel_counts[idx])
+            else:
+                bucket_sq[0] += float(channel_squares)
+                if isinstance(channel_counts, (list, tuple)):
+                    bucket_samples[0] += int(channel_counts[0]) if channel_counts else 0
+                else:
+                    bucket_samples[0] += int(channel_counts)
+
             consumed_frames += 1.0
 
             if consumed_frames >= next_threshold or bucket_index == bucket_count - 1:
                 peaks[bucket_index * 2] = max(-32768, min(32767, bucket_min))
                 peaks[bucket_index * 2 + 1] = max(-32768, min(32767, bucket_max))
-                if bucket_samples > 0:
-                    rms_val = int(round(math.sqrt(bucket_sq / bucket_samples)))
+                channel_rms = [
+                    math.sqrt(bucket_sq[idx] / float(bucket_samples[idx]))
+                    for idx in range(CHANNELS)
+                    if bucket_samples[idx] > 0
+                ]
+                if channel_rms:
+                    rms_val = int(round(max(channel_rms)))
                 else:
                     rms_val = 0
                 rms_values[bucket_index] = max(0, min(PEAK_SCALE, rms_val))
                 bucket_index += 1
                 bucket_min = 32767
                 bucket_max = -32768
-                bucket_sq = 0.0
-                bucket_samples = 0
+                bucket_sq = [0.0] * CHANNELS
+                bucket_samples = [0] * CHANNELS
                 next_threshold = frames_per_bucket * (bucket_index + 1)
 
         duration_seconds = frame_count * (FRAME_MS / 1000.0)
         payload = {
             "version": 1,
-            "channels": 1,
+            "channels": CHANNELS,
             "sample_rate": SAMPLE_RATE,
             "frame_count": frame_count,
             "sample_count": self._total_samples,

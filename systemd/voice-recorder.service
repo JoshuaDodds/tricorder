@@ -7,7 +7,7 @@ PartOf=tricorder.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-Environment=AUDIO_DEV=hw:CARD=Device,DEV=0
+# Override via /etc/systemd/system/voice-recorder.service.d/ when needed.
 WorkingDirectory=/apps/tricorder
 ExecStart=/apps/tricorder/venv/bin/python -m lib.live_stream_daemon
 Restart=always

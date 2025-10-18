@@ -1145,10 +1145,27 @@
             </div>
             <form id="audio-form" class="settings-subform" novalidate>
               <div class="settings-field">
-                <label for="audio-device">ALSA device</label>
-                <input id="audio-device" type="text" autocomplete="off" />
+                <label for="audio-device-select">Input device</label>
+                <select id="audio-device-select">
+                  <option value="">Use ALSA default</option>
+                  <option value="__custom__">Custom device…</option>
+                </select>
+                <div
+                  id="audio-device-custom-wrapper"
+                  class="field-input-row"
+                  hidden
+                  aria-hidden="true"
+                >
+                  <label class="sr-only" for="audio-device">Custom ALSA device</label>
+                  <input
+                    id="audio-device"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="hw:CARD=Device,DEV=0"
+                  />
+                </div>
                 <p class="field-description">
-                  Matches the identifier reported by <code>arecord -l</code>, for example
+                  Select a detected capture interface or choose <em>Custom device…</em> to enter an ALSA identifier such as
                   <code>hw:CARD=Device,DEV=0</code>.
                 </p>
               </div>
@@ -1161,6 +1178,16 @@
                 </select>
                 <p class="field-description">
                   Higher rates improve VAD accuracy and WebRTC stream quality at the cost of CPU and storage.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="audio-channels">Channels</label>
+                <select id="audio-channels">
+                  <option value="1">Mono (1 channel)</option>
+                  <option value="2">Stereo (2 channels)</option>
+                </select>
+                <p class="field-description">
+                  Mono keeps CPU usage lowest. Select stereo when using multi-channel capture HATs or interfaces.
                 </p>
               </div>
               <div class="settings-field">
@@ -1191,6 +1218,16 @@
                 </select>
                 <p class="field-description">
                   Controls the WebRTC voice detector sensitivity. Higher values reject more noise but may miss quiet speech.
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="audio-usb-reset" type="checkbox" />
+                  <label for="audio-usb-reset">USB reset workaround (legacy mode)</label>
+                </div>
+                <p class="field-description">
+                  Disable this when using I²S or other non-USB capture devices to avoid unnecessary USB bus resets between
+                  recordings.
                 </p>
               </div>
               <h4 class="settings-subheading">Filter chain</h4>

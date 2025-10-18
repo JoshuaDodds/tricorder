@@ -1055,6 +1055,9 @@ audio:
             payload = await resp.json()
             assert payload["audio"]["device"] == "hw:1,0"
             assert payload["audio"]["sample_rate"] == 32000
+            assert payload["audio"]["channels"] == 1
+            assert payload["audio"]["use_usb_reset_workaround"] is True
+            assert isinstance(payload.get("available_devices"), list)
             assert payload["audio"]["filter_chain"]["denoise"]["enabled"] is False
             assert payload["audio"]["filter_chain"]["denoise"]["type"] == "afftdn"
             assert payload["audio"]["filter_chain"]["highpass"]["enabled"] is True
@@ -1075,6 +1078,8 @@ audio:
                 "frame_ms": 10,
                 "gain": 1.5,
                 "vad_aggressiveness": 3,
+                "channels": 2,
+                "use_usb_reset_workaround": False,
                 "filter_chain": {
                     "denoise": {
                         "enabled": True,
@@ -1101,6 +1106,8 @@ audio:
             assert updated["audio"]["frame_ms"] == 10
             assert updated["audio"]["gain"] == pytest.approx(1.5)
             assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
+            assert updated["audio"]["channels"] == 2
+            assert updated["audio"]["use_usb_reset_workaround"] is False
             assert updated["audio"]["filter_chain"]["denoise"]["enabled"] is True
             assert (
                 updated["audio"]["filter_chain"]["denoise"]["noise_floor_db"]
@@ -1133,6 +1140,8 @@ audio:
             assert persisted["audio"]["gain"] == 1.5
             assert persisted["audio"]["frame_ms"] == 10
             assert persisted["audio"]["filter_chain"]["denoise"]["enabled"] is True
+            assert persisted["audio"]["channels"] == 2
+            assert persisted["audio"]["use_usb_reset_workaround"] is False
             assert (
                 persisted["audio"]["filter_chain"]["denoise"]["noise_floor_db"]
                 == pytest.approx(-25.0)

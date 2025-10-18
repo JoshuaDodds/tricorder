@@ -17,27 +17,28 @@ import numpy as np
 
 @dataclass
 class HighPassState:
-    prev_input: float = 0.0
-    prev_output: float = 0.0
+    prev_input: np.ndarray | None = None
+    prev_output: np.ndarray | None = None
 
 
 @dataclass
 class LowPassState:
-    prev_output: float = 0.0
+    prev_output: np.ndarray | None = None
 
 
 @dataclass
 class NotchState:
-    prev_input: complex = 0.0 + 0.0j
-    prev_stage1: complex = 0.0 + 0.0j
-    prev_stage3: complex = 0.0 + 0.0j
-    prev_stage4: complex = 0.0 + 0.0j
+    prev_input: np.ndarray | None = None
+    prev_stage1: np.ndarray | None = None
+    prev_stage3: np.ndarray | None = None
+    prev_stage4: np.ndarray | None = None
 
 
 @dataclass
 class FilterState:
     sample_rate: int
     frame_bytes: int
+    channels: int
     highpass_state: HighPassState
     lowpass_state: LowPassState
     notch_states: List[NotchState]
@@ -130,7 +131,7 @@ class AudioFilterChain:
         self._gate_startup_seconds = 0.04
         self._gate_noise_percentile = 70.0
 
-        self._states: Dict[Tuple[int, int], FilterState] = {}
+        self._states: Dict[Tuple[int, int, int], FilterState] = {}
 
         # If all individual stages are disabled, treat the chain as disabled to
         # avoid unnecessary numpy conversions on every frame. This preserves the
@@ -210,18 +211,34 @@ class AudioFilterChain:
             return None
         return chain
 
-    def process(self, sample_rate: int, frame_bytes: int, frame: bytes) -> bytes:
+    def process(
+        self,
+        sample_rate: int,
+        frame_bytes: int,
+        frame: bytes,
+        channels: int = 1,
+    ) -> bytes:
         if not self.enabled:
             return frame
         if len(frame) != frame_bytes:
             raise ValueError("Frame length does not match configured frame_bytes")
 
-        state = self._states.get((sample_rate, frame_bytes))
-        if state is None:
-            state = self._init_state(sample_rate, frame_bytes)
-            self._states[(sample_rate, frame_bytes)] = state
+        try:
+            channels = int(channels)
+        except (TypeError, ValueError):
+            channels = 1
+        if channels < 1:
+            channels = 1
+        if frame_bytes % (channels * 2) != 0:
+            raise ValueError("Frame length does not align with channel configuration")
 
-        pcm = np.frombuffer(frame, dtype="<i2").astype(np.float32)
+        key = (sample_rate, frame_bytes, channels)
+        state = self._states.get(key)
+        if state is None:
+            state = self._init_state(sample_rate, frame_bytes, channels)
+            self._states[key] = state
+
+        pcm = np.frombuffer(frame, dtype="<i2").astype(np.float32).reshape(-1, channels)
 
         if self.denoise_enabled:
             pcm = self._apply_denoise(pcm)
@@ -239,21 +256,37 @@ class AudioFilterChain:
             pcm = self._apply_gate(pcm, state)
 
         pcm = np.clip(np.rint(pcm), -32768, 32767).astype("<i2")
-        return pcm.tobytes()
+        return pcm.reshape(-1).tobytes()
 
-    def _init_state(self, sample_rate: int, frame_bytes: int) -> FilterState:
+    def _init_state(self, sample_rate: int, frame_bytes: int, channels: int) -> FilterState:
         notch_count = len(self._notch_filters) if self.notch_enabled else 0
+        highpass_state = HighPassState(
+            prev_input=np.zeros(channels, dtype=np.float64),
+            prev_output=np.zeros(channels, dtype=np.float64),
+        )
+        lowpass_state = LowPassState(prev_output=np.zeros(channels, dtype=np.float64))
+        notch_states = [
+            NotchState(
+                prev_input=np.zeros(channels, dtype=np.complex128),
+                prev_stage1=np.zeros(channels, dtype=np.complex128),
+                prev_stage3=np.zeros(channels, dtype=np.complex128),
+                prev_stage4=np.zeros(channels, dtype=np.complex128),
+            )
+            for _ in range(notch_count)
+        ]
+        notch_coeffs = [None for _ in range(notch_count)]
+
         gate_history = None
         gate_startup_frames = 0
         if self.spectral_gate_enabled:
-            frame_samples = max(1, frame_bytes // 2)
+            frame_samples = max(1, frame_bytes // (2 * channels))
             frames_per_second = max(1, int(round(sample_rate / frame_samples)))
             history_len = max(
                 4,
                 min(200, int(round(self._gate_history_seconds * frames_per_second))),
             )
             freq_bins = frame_samples // 2 + 1
-            gate_history = np.zeros((history_len, freq_bins), dtype=np.float32)
+            gate_history = np.zeros((channels, history_len, freq_bins), dtype=np.float32)
             gate_startup_frames = max(
                 1,
                 min(history_len, int(round(self._gate_startup_seconds * frames_per_second))),
@@ -261,10 +294,11 @@ class AudioFilterChain:
         state = FilterState(
             sample_rate=sample_rate,
             frame_bytes=frame_bytes,
-            highpass_state=HighPassState(),
-            lowpass_state=LowPassState(),
-            notch_states=[NotchState() for _ in range(notch_count)],
-            notch_coeffs=[None for _ in range(notch_count)],
+            channels=channels,
+            highpass_state=highpass_state,
+            lowpass_state=lowpass_state,
+            notch_states=notch_states,
+            notch_coeffs=notch_coeffs,
             noise_history=gate_history,
             gate_startup_frames=gate_startup_frames,
         )
@@ -274,53 +308,86 @@ class AudioFilterChain:
     def _apply_highpass(
         self, data: np.ndarray, state: HighPassState, sample_rate: int
     ) -> np.ndarray:
-        if self.highpass_cutoff_hz <= 0:
+        if self.highpass_cutoff_hz <= 0 or not data.size:
             return data
         rc = 1.0 / (2.0 * math.pi * self.highpass_cutoff_hz)
         dt = 1.0 / float(sample_rate)
         alpha = rc / (rc + dt)
-        if not data.size:
-            return data
-        deltas = np.empty_like(data)
-        deltas[0] = data[0] - state.prev_input
-        if data.size > 1:
-            deltas[1:] = np.diff(data)
+
+        if data.ndim == 1:
+            work = data.reshape(-1, 1)
+        else:
+            work = data
+        channels = work.shape[1]
+        if state.prev_input is None or state.prev_input.shape[0] != channels:
+            state.prev_input = np.zeros(channels, dtype=np.float64)
+            state.prev_output = np.zeros(channels, dtype=np.float64)
+
+        deltas = np.empty_like(work)
+        deltas[0] = work[0] - state.prev_input
+        if work.shape[0] > 1:
+            deltas[1:] = np.diff(work, axis=0)
         drive = alpha * deltas
         result = self._solve_first_order_recursive(alpha, drive, state.prev_output)
-        state.prev_input = float(data[-1])
-        state.prev_output = float(result[-1])
+        state.prev_input = work[-1].astype(np.float64, copy=True)
+        state.prev_output = result[-1].astype(np.float64, copy=True)
+        if data.ndim == 1:
+            return result.reshape(-1)
         return result
 
     def _apply_lowpass(
         self, data: np.ndarray, state: LowPassState, sample_rate: int
     ) -> np.ndarray:
-        if self.lowpass_cutoff_hz <= 0:
+        if self.lowpass_cutoff_hz <= 0 or not data.size:
             return data
         rc = 1.0 / (2.0 * math.pi * self.lowpass_cutoff_hz)
         dt = 1.0 / float(sample_rate)
         alpha = dt / (rc + dt)
         coeff = 1.0 - alpha
-        if not data.size:
-            return data
-        drive = (alpha * data).astype(data.dtype, copy=False)
+
+        if data.ndim == 1:
+            work = data.reshape(-1, 1)
+        else:
+            work = data
+        channels = work.shape[1]
+        if state.prev_output is None or state.prev_output.shape[0] != channels:
+            state.prev_output = np.zeros(channels, dtype=np.float64)
+
+        drive = (alpha * work).astype(work.dtype, copy=False)
         result = self._solve_first_order_recursive(coeff, drive, state.prev_output)
         if result.size:
-            state.prev_output = float(result[-1])
+            state.prev_output = result[-1].astype(np.float64, copy=True)
+        if data.ndim == 1:
+            return result.reshape(-1)
         return result
 
     def _apply_denoise(self, data: np.ndarray) -> np.ndarray:
         if self.denoise_type != "afftdn" or not data.size:
             return data
+        if data.ndim == 1:
+            normalized = data.astype(np.float32, copy=False) / 32768.0
+            spectrum = np.fft.rfft(normalized)
+            mags = np.abs(spectrum) / max(1, normalized.size)
+            safe_mags = np.maximum(mags, 1e-8)
+            mags_db = 20.0 * np.log10(safe_mags)
+            target_db = np.maximum(mags_db, self.denoise_noise_floor_db)
+            gains_db = mags_db - target_db
+            gains = 10.0 ** (gains_db / 20.0)
+            spectrum *= gains
+            restored = np.fft.irfft(spectrum, n=normalized.size)
+            restored *= 32768.0
+            return restored.astype(data.dtype, copy=False)
+
         normalized = data.astype(np.float32, copy=False) / 32768.0
-        spectrum = np.fft.rfft(normalized)
-        mags = np.abs(spectrum) / max(1, normalized.size)
+        spectrum = np.fft.rfft(normalized, axis=0)
+        mags = np.abs(spectrum) / max(1, normalized.shape[0])
         safe_mags = np.maximum(mags, 1e-8)
         mags_db = 20.0 * np.log10(safe_mags)
         target_db = np.maximum(mags_db, self.denoise_noise_floor_db)
         gains_db = mags_db - target_db
         gains = 10.0 ** (gains_db / 20.0)
         spectrum *= gains
-        restored = np.fft.irfft(spectrum, n=normalized.size)
+        restored = np.fft.irfft(spectrum, n=normalized.shape[0], axis=0)
         restored *= 32768.0
         return restored.astype(data.dtype, copy=False)
 
@@ -343,13 +410,26 @@ class AudioFilterChain:
         work_complex = np.iscomplexobj(drive) or abs(coeff_val.imag) > 1e-18
         work_dtype = np.complex128 if work_complex else np.float64
         drive_arr = drive.astype(work_dtype, copy=False)
-        prev_val = work_dtype(prev)
         coeff_scalar = coeff_val if work_complex else coeff_val.real
         coeff_arr = work_dtype(coeff_scalar)
+
+        if drive_arr.ndim == 1:
+            prev_val = work_dtype(prev)
+            result = np.empty_like(drive_arr)
+            acc = coeff_arr * prev_val + drive_arr[0]
+            result[0] = acc
+            for idx in range(1, drive_arr.shape[0]):
+                acc = coeff_arr * acc + drive_arr[idx]
+                result[idx] = acc
+            return result.astype(drive.dtype, copy=False)
+
+        prev_arr = np.array(prev, dtype=work_dtype, copy=False)
+        if prev_arr.ndim == 0:
+            prev_arr = np.full(drive_arr.shape[1:], prev_arr, dtype=work_dtype)
         result = np.empty_like(drive_arr)
-        acc = coeff_arr * prev_val + drive_arr[0]
+        acc = coeff_arr * prev_arr + drive_arr[0]
         result[0] = acc
-        for idx in range(1, drive_arr.size):
+        for idx in range(1, drive_arr.shape[0]):
             acc = coeff_arr * acc + drive_arr[idx]
             result[idx] = acc
         return result.astype(drive.dtype, copy=False)
@@ -384,16 +464,33 @@ class AudioFilterChain:
     def _apply_notch(self, data: np.ndarray, state: FilterState, sample_rate: int) -> np.ndarray:
         if not self._notch_filters:
             return data
+        if data.ndim == 1:
+            work = data.reshape(-1, 1)
+        else:
+            work = data
+        channels = work.shape[1]
         if len(state.notch_states) != len(self._notch_filters):
             state.notch_states = [NotchState() for _ in self._notch_filters]
             state.notch_coeffs = [None for _ in self._notch_filters]
-        result = data
+        for notch_state in state.notch_states:
+            if (
+                notch_state.prev_input is None
+                or notch_state.prev_input.shape[0] != channels
+            ):
+                notch_state.prev_input = np.zeros(channels, dtype=np.complex128)
+                notch_state.prev_stage1 = np.zeros(channels, dtype=np.complex128)
+                notch_state.prev_stage3 = np.zeros(channels, dtype=np.complex128)
+                notch_state.prev_stage4 = np.zeros(channels, dtype=np.complex128)
+
+        result = work
         for idx, (freq, quality) in enumerate(self._notch_filters):
             coeffs = state.notch_coeffs[idx]
             if coeffs is None or coeffs.sample_rate != sample_rate:
                 coeffs = self._compute_notch_coeffs(sample_rate, freq, quality)
                 state.notch_coeffs[idx] = coeffs
             result = self._apply_notch_stage(result, state.notch_states[idx], coeffs)
+        if data.ndim == 1:
+            return result.reshape(-1)
         return result
 
     def _apply_notch_stage(
@@ -401,45 +498,64 @@ class AudioFilterChain:
     ) -> np.ndarray:
         if not data.size:
             return data
-        complex_data = data.astype(np.complex64, copy=False)
-        shifted = np.empty_like(complex_data)
+        if data.ndim == 1:
+            work = data.reshape(-1, 1).astype(np.complex128, copy=False)
+        else:
+            work = data.astype(np.complex128, copy=False)
+
+        shifted = np.empty_like(work)
         shifted[0] = notch_state.prev_input
-        if complex_data.size > 1:
-            shifted[1:] = complex_data[:-1]
-        stage1 = complex_data - params.zero * shifted
-        notch_state.prev_input = complex_data[-1]
+        if work.shape[0] > 1:
+            shifted[1:] = work[:-1]
+        stage1 = work - params.zero * shifted
+        notch_state.prev_input = work[-1].astype(np.complex128, copy=True)
 
         shifted_stage1 = np.empty_like(stage1)
         shifted_stage1[0] = notch_state.prev_stage1
-        if stage1.size > 1:
+        if stage1.shape[0] > 1:
             shifted_stage1[1:] = stage1[:-1]
         stage2 = stage1 - np.conjugate(params.zero) * shifted_stage1
-        notch_state.prev_stage1 = stage1[-1]
+        notch_state.prev_stage1 = stage1[-1].astype(np.complex128, copy=True)
 
         stage3 = self._solve_first_order_recursive(
             params.pole1, stage2, notch_state.prev_stage3
         )
-        notch_state.prev_stage3 = stage3[-1]
+        notch_state.prev_stage3 = stage3[-1].astype(np.complex128, copy=True)
         stage4 = self._solve_first_order_recursive(
             params.pole2, stage3, notch_state.prev_stage4
         )
-        notch_state.prev_stage4 = stage4[-1]
+        notch_state.prev_stage4 = stage4[-1].astype(np.complex128, copy=True)
         final = (params.scale * stage4).real.astype(data.dtype, copy=False)
+        if data.ndim == 1:
+            return final.reshape(-1)
         return final
 
     def _apply_gate(self, data: np.ndarray, state: FilterState) -> np.ndarray:
-        spectrum = np.fft.rfft(data)
+        if not data.size:
+            return data
+        if data.ndim == 1:
+            work = data.reshape(-1, 1)
+        else:
+            work = data
+
+        spectrum = np.fft.rfft(work, axis=0)
         mags = np.abs(spectrum).astype(np.float32, copy=False)
 
         history = state.noise_history
-        if history is None or history.shape[1] != mags.size:
-            frame_samples = max(1, state.frame_bytes // 2)
+        freq_bins = mags.shape[0]
+        channels = work.shape[1]
+        if (
+            history is None
+            or history.shape[0] != channels
+            or history.shape[2] != freq_bins
+        ):
+            frame_samples = max(1, state.frame_bytes // (2 * channels))
             frames_per_second = max(1, int(round(state.sample_rate / frame_samples)))
             history_len = max(
                 4,
                 min(200, int(round(self._gate_history_seconds * frames_per_second))),
             )
-            history = np.zeros((history_len, mags.size), dtype=np.float32)
+            history = np.zeros((channels, history_len, freq_bins), dtype=np.float32)
             state.noise_history = history
             state.noise_history_pos = 0
             state.noise_history_filled = 0
@@ -448,30 +564,34 @@ class AudioFilterChain:
                 min(history_len, int(round(self._gate_startup_seconds * frames_per_second))),
             )
 
-        history[state.noise_history_pos] = mags
-        state.noise_history_pos = (state.noise_history_pos + 1) % history.shape[0]
-        if state.noise_history_filled < history.shape[0]:
+        pos = state.noise_history_pos
+        history[:, pos, :] = mags.T
+        state.noise_history_pos = (pos + 1) % history.shape[1]
+        if state.noise_history_filled < history.shape[1]:
             state.noise_history_filled += 1
 
         if state.noise_history_filled < max(1, state.gate_startup_frames):
-            return data
+            return work if data.ndim == 2 else work.reshape(-1)
 
-        if state.noise_history_filled < history.shape[0]:
-            samples = history[: state.noise_history_filled]
+        if state.noise_history_filled < history.shape[1]:
+            samples = history[:, : state.noise_history_filled, :]
         else:
             samples = history
 
-        noise = np.percentile(samples, self._gate_noise_percentile, axis=0).astype(
+        noise = np.percentile(samples, self._gate_noise_percentile, axis=1).astype(
             np.float32,
             copy=False,
         )
         state.noise_estimate = noise
 
         noise = np.maximum(noise, 1e-6)
-        threshold = noise * self.gate_sensitivity
+        threshold = (noise * self.gate_sensitivity).transpose(1, 0)
         gain_floor = 10 ** (self.gate_reduction_db / 20.0)
         gains = np.where(mags >= threshold, 1.0, gain_floor)
         spectrum *= gains
 
-        restored = np.fft.irfft(spectrum, n=data.size)
-        return restored.astype(data.dtype, copy=False)
+        restored = np.fft.irfft(spectrum, n=work.shape[0], axis=0)
+        restored = restored.astype(data.dtype, copy=False)
+        if data.ndim == 1:
+            return restored.reshape(-1)
+        return restored

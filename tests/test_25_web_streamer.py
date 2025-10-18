@@ -913,6 +913,76 @@ async def test_webrtc_mode_registers_webrtc_routes(monkeypatch, tmp_path, aiohtt
     assert legacy_response.status == 404
 
 
+@pytest.mark.asyncio
+async def test_webrtc_manager_receives_channel_aware_frame_bytes(
+    monkeypatch, tmp_path, aiohttp_client
+):
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_path))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+    base_cfg = copy.deepcopy(config_module.get_cfg())
+    base_cfg.setdefault("streaming", {})
+    base_cfg["streaming"].update({"mode": "webrtc", "webrtc_history_seconds": 1.0})
+    base_cfg.setdefault("audio", {})
+    base_cfg["audio"]["channels"] = 2
+    base_cfg["audio"]["sample_rate"] = 48000
+    base_cfg["audio"]["frame_ms"] = 20
+    monkeypatch.setattr(config_module, "_cfg_cache", base_cfg, raising=False)
+
+    captured: dict[str, object] = {}
+
+    class DummyManager:
+        def __init__(
+            self,
+            *,
+            buffer_dir: str,
+            sample_rate: int,
+            frame_ms: int,
+            frame_bytes: int,
+            history_seconds: float,
+            ice_servers,
+            channels: int,
+        ) -> None:
+            captured.update(
+                {
+                    "buffer_dir": buffer_dir,
+                    "sample_rate": sample_rate,
+                    "frame_ms": frame_ms,
+                    "frame_bytes": frame_bytes,
+                    "history_seconds": history_seconds,
+                    "ice_servers": ice_servers,
+                    "channels": channels,
+                }
+            )
+
+        def mark_started(self, session_id):
+            _ = session_id
+
+        async def stop(self, session_id):
+            _ = session_id
+
+        def stats(self):
+            return {"active_clients": 0, "encoder_running": False}
+
+        async def shutdown(self):
+            return None
+
+        async def create_answer(self, session_id, offer):
+            _ = (session_id, offer)
+            return None
+
+    monkeypatch.setattr("lib.webrtc_stream.WebRTCManager", DummyManager)
+
+    client = await aiohttp_client(web_streamer.build_app())
+    assert client.app[web_streamer.WEBRTC_MANAGER_KEY] is not None
+
+    assert captured["channels"] == 2
+    expected_frame_bytes = 48000 * 2 * 2 * 20 // 1000
+    assert captured["frame_bytes"] == expected_frame_bytes
+
+
 def test_normalize_webrtc_ice_servers_defaults():
     servers = web_streamer._normalize_webrtc_ice_servers(None)
     assert servers
