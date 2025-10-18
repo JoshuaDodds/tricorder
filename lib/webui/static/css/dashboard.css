@@ -1702,7 +1702,7 @@ button.small {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.2s ease;
-  z-index: 3;
+  z-index: 4;
 }
 
 .waveform-marker {
@@ -1714,7 +1714,7 @@ button.small {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.2s ease;
-  z-index: 2;
+  z-index: 3;
 }
 
 .waveform-marker span {
@@ -1741,6 +1741,25 @@ button.small {
   inset: 0;
   pointer-events: none;
   z-index: 1;
+}
+
+.waveform-clip-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.12), rgba(56, 189, 248, 0.28));
+  border-left: 2px solid rgba(56, 189, 248, 0.55);
+  border-right: 2px solid rgba(56, 189, 248, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 2;
+}
+
+.waveform-clip-selection[data-active="true"] {
+  opacity: 1;
 }
 
 .waveform-motion-segment {

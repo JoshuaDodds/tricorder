@@ -928,6 +928,7 @@ async function loadDashboard() {
     `  setWaveformMarker = undefined,`,
     `  layoutWaveformMarkerLabels = undefined,`,
     `  renderMotionSegments = undefined,`,
+    `  setWaveformClipSelection = undefined,`,
     `  updateWaveformMarkers = undefined,`,
     `  updateCursorFromPlayer = undefined,`,
     `  handlePlayerLoadedMetadata = undefined,`,
