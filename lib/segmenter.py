@@ -1200,12 +1200,19 @@ class LiveWaveformWriter:
 
         bucket_min = 32767
         bucket_max = -32768
-        channel_count = CHANNELS if CHANNELS > 0 else 1
-        bucket_sq = [0.0] * channel_count
-        bucket_samples = [0] * channel_count
+        bucket_sq: list[float] = []
+        bucket_samples: list[int] = []
+
+        def ensure_capacity(count: int) -> None:
+            if count <= 0:
+                return
+            while len(bucket_sq) < count:
+                bucket_sq.append(0.0)
+                bucket_samples.append(0)
         bucket_index = 0
         consumed_frames = 0.0
         next_threshold = frames_per_bucket
+        bucket_frames = 0
 
         for frame_min, frame_max, channel_squares, channel_counts in self._frames:
             if bucket_index >= bucket_count:
@@ -1216,31 +1223,73 @@ class LiveWaveformWriter:
                 bucket_max = frame_max
 
             if isinstance(channel_squares, (list, tuple)) and isinstance(channel_counts, (list, tuple)):
-                limit = min(channel_count, len(channel_squares), len(channel_counts))
-                for idx in range(limit):
-                    bucket_sq[idx] += float(channel_squares[idx])
-                    bucket_samples[idx] += int(channel_counts[idx])
-            else:
-                bucket_sq[0] += float(channel_squares)
-                if isinstance(channel_counts, (list, tuple)):
-                    bucket_samples[0] += int(channel_counts[0]) if channel_counts else 0
+                limit = min(len(channel_squares), len(channel_counts))
+                if limit <= 0:
+                    ensure_capacity(1)
+                    sq_total = 0.0
+                    for value in channel_squares:
+                        try:
+                            sq_total += float(value)
+                        except (TypeError, ValueError):
+                            continue
+                    bucket_sq[0] += sq_total
+                    count_total = 0
+                    for value in channel_counts:
+                        try:
+                            count_total += int(value)
+                        except (TypeError, ValueError):
+                            continue
+                    bucket_samples[0] += count_total
                 else:
-                    bucket_samples[0] += int(channel_counts)
+                    ensure_capacity(limit)
+                    for idx in range(limit):
+                        square_val = 0.0
+                        try:
+                            square_val = float(channel_squares[idx])
+                        except (TypeError, ValueError):
+                            pass
+                        count_val = 0
+                        try:
+                            count_val = int(channel_counts[idx])
+                        except (TypeError, ValueError):
+                            pass
+                        bucket_sq[idx] += square_val
+                        bucket_samples[idx] += count_val
+            else:
+                ensure_capacity(1)
+                try:
+                    bucket_sq[0] += float(channel_squares)
+                except (TypeError, ValueError):
+                    pass
+                if isinstance(channel_counts, (list, tuple)):
+                    if channel_counts:
+                        try:
+                            bucket_samples[0] += int(channel_counts[0])
+                        except (TypeError, ValueError):
+                            pass
+                else:
+                    try:
+                        bucket_samples[0] += int(channel_counts)
+                    except (TypeError, ValueError):
+                        pass
 
             consumed_frames += 1.0
+            bucket_frames += 1
 
             if consumed_frames >= next_threshold or bucket_index == bucket_count - 1:
                 peaks[bucket_index * 2] = max(-32768, min(32767, bucket_min))
                 peaks[bucket_index * 2 + 1] = max(-32768, min(32767, bucket_max))
                 combined_samples = sum(bucket_samples)
+                combined_sq = sum(bucket_sq)
+                if combined_samples <= 0 and combined_sq > 0.0:
+                    approx_frames = max(1, bucket_frames)
+                    combined_samples = max(1, FRAME_SAMPLES * approx_frames)
                 combined_rms = 0.0
-                if combined_samples > 0:
-                    combined_sq = sum(bucket_sq)
-                    if combined_sq > 0.0:
-                        combined_rms = math.sqrt(combined_sq / float(combined_samples))
+                if combined_samples > 0 and combined_sq > 0.0:
+                    combined_rms = math.sqrt(combined_sq / float(combined_samples))
                 channel_rms = [
                     math.sqrt(bucket_sq[idx] / float(bucket_samples[idx]))
-                    for idx in range(channel_count)
+                    for idx in range(len(bucket_sq))
                     if bucket_samples[idx] > 0 and bucket_sq[idx] > 0.0
                 ]
                 if channel_rms:
@@ -1255,8 +1304,11 @@ class LiveWaveformWriter:
                 bucket_index += 1
                 bucket_min = 32767
                 bucket_max = -32768
-                bucket_sq = [0.0] * channel_count
-                bucket_samples = [0] * channel_count
+                bucket_frames = 0
+                if bucket_sq:
+                    for idx in range(len(bucket_sq)):
+                        bucket_sq[idx] = 0.0
+                        bucket_samples[idx] = 0
                 next_threshold = frames_per_bucket * (bucket_index + 1)
 
         duration_seconds = frame_count * (FRAME_MS / 1000.0)
