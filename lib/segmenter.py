@@ -108,31 +108,36 @@ def pcm16_rms(buf: bytes) -> int:
     if sample_count <= 0:
         return 0
 
-    if CHANNELS <= 1:
-        total = 0.0
-        for sample in samples:
-            total += float(sample) * float(sample)
-        mean_square = total / float(sample_count)
-        return int(round(math.sqrt(mean_square)))
+    channel_count = CHANNELS if CHANNELS > 0 else 1
+    channel_squares = [0.0] * channel_count
+    channel_counts = [0] * channel_count
+    total_square = 0.0
 
-    channel_squares = [0.0] * CHANNELS
-    channel_counts = [0] * CHANNELS
     for idx, sample in enumerate(samples):
-        channel = idx % CHANNELS
-        channel_squares[channel] += float(sample) * float(sample)
-        channel_counts[channel] += 1
+        value = float(sample)
+        total_square += value * value
+        channel_index = idx % channel_count
+        channel_squares[channel_index] += value * value
+        channel_counts[channel_index] += 1
 
-    max_rms = 0.0
-    for square_sum, count in zip(channel_squares, channel_counts):
-        if count <= 0:
-            continue
-        rms_value = math.sqrt(square_sum / float(count))
-        if rms_value > max_rms:
-            max_rms = rms_value
+    combined_rms = 0.0
+    if total_square > 0.0:
+        combined_rms = math.sqrt(total_square / float(sample_count))
 
-    if max_rms <= 0.0:
+    channel_rms = [
+        math.sqrt(square_sum / float(count))
+        for square_sum, count in zip(channel_squares, channel_counts)
+        if count > 0 and square_sum > 0.0
+    ]
+
+    if channel_rms:
+        effective_rms = max(max(channel_rms), combined_rms)
+    else:
+        effective_rms = combined_rms
+
+    if effective_rms <= 0.0:
         return 0
-    return int(round(max_rms))
+    return int(round(effective_rms))
 
 
 def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
@@ -1073,7 +1078,10 @@ class LiveWaveformWriter:
         self.destination = destination
         self.bucket_count = max(1, min(bucket_count, MAX_BUCKET_COUNT))
         self.update_interval = max(0.1, float(update_interval))
-        self._frames: list[tuple[int, int, float, int]] = []
+        self._frames: list[
+            tuple[int, int, tuple[float, ...], tuple[int, ...]]
+            | tuple[int, int, float, int]
+        ] = []
         self._total_frames = 0
         self._total_samples = 0
         self._last_write = 0.0
@@ -1117,15 +1125,16 @@ class LiveWaveformWriter:
             return
         frame_min = 32767
         frame_max = -32768
-        channel_squares = [0.0] * CHANNELS
-        channel_counts = [0] * CHANNELS
+        channel_count = CHANNELS if CHANNELS > 0 else 1
+        channel_squares = [0.0] * channel_count
+        channel_counts = [0] * channel_count
         for idx, sample in enumerate(samples):
             value = int(sample)
             if value < frame_min:
                 frame_min = value
             if value > frame_max:
                 frame_max = value
-            channel_index = idx % CHANNELS
+            channel_index = idx % channel_count
             channel_squares[channel_index] += float(value) * float(value)
             channel_counts[channel_index] += 1
         with self._lock:
@@ -1191,8 +1200,9 @@ class LiveWaveformWriter:
 
         bucket_min = 32767
         bucket_max = -32768
-        bucket_sq = [0.0] * CHANNELS
-        bucket_samples = [0] * CHANNELS
+        channel_count = CHANNELS if CHANNELS > 0 else 1
+        bucket_sq = [0.0] * channel_count
+        bucket_samples = [0] * channel_count
         bucket_index = 0
         consumed_frames = 0.0
         next_threshold = frames_per_bucket
@@ -1206,7 +1216,7 @@ class LiveWaveformWriter:
                 bucket_max = frame_max
 
             if isinstance(channel_squares, (list, tuple)) and isinstance(channel_counts, (list, tuple)):
-                limit = min(CHANNELS, len(channel_squares), len(channel_counts))
+                limit = min(channel_count, len(channel_squares), len(channel_counts))
                 for idx in range(limit):
                     bucket_sq[idx] += float(channel_squares[idx])
                     bucket_samples[idx] += int(channel_counts[idx])
@@ -1222,21 +1232,31 @@ class LiveWaveformWriter:
             if consumed_frames >= next_threshold or bucket_index == bucket_count - 1:
                 peaks[bucket_index * 2] = max(-32768, min(32767, bucket_min))
                 peaks[bucket_index * 2 + 1] = max(-32768, min(32767, bucket_max))
+                combined_samples = sum(bucket_samples)
+                combined_rms = 0.0
+                if combined_samples > 0:
+                    combined_sq = sum(bucket_sq)
+                    if combined_sq > 0.0:
+                        combined_rms = math.sqrt(combined_sq / float(combined_samples))
                 channel_rms = [
                     math.sqrt(bucket_sq[idx] / float(bucket_samples[idx]))
-                    for idx in range(CHANNELS)
-                    if bucket_samples[idx] > 0
+                    for idx in range(channel_count)
+                    if bucket_samples[idx] > 0 and bucket_sq[idx] > 0.0
                 ]
                 if channel_rms:
-                    rms_val = int(round(max(channel_rms)))
+                    effective = max(max(channel_rms), combined_rms)
+                else:
+                    effective = combined_rms
+                if effective > 0.0:
+                    rms_val = int(round(effective))
                 else:
                     rms_val = 0
                 rms_values[bucket_index] = max(0, min(PEAK_SCALE, rms_val))
                 bucket_index += 1
                 bucket_min = 32767
                 bucket_max = -32768
-                bucket_sq = [0.0] * CHANNELS
-                bucket_samples = [0] * CHANNELS
+                bucket_sq = [0.0] * channel_count
+                bucket_samples = [0] * channel_count
                 next_threshold = frames_per_bucket * (bucket_index + 1)
 
         duration_seconds = frame_count * (FRAME_MS / 1000.0)
