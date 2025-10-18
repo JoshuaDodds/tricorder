@@ -1134,6 +1134,8 @@ audio:
             assert systemctl_calls == [
                 ["is-active", "voice-recorder.service"],
                 ["restart", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
+                ["restart", "web-streamer.service"],
             ]
 
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -1338,6 +1340,8 @@ def test_audio_settings_preserve_filter_stage_list(tmp_path, monkeypatch):
             assert systemctl_calls == [
                 ["is-active", "voice-recorder.service"],
                 ["restart", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
+                ["restart", "web-streamer.service"],
             ]
         finally:
             await client.close()
@@ -1431,6 +1435,8 @@ def test_audio_settings_preserve_inline_comments(tmp_path, monkeypatch):
             assert systemctl_calls == [
                 ["is-active", "voice-recorder.service"],
                 ["restart", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
+                ["restart", "web-streamer.service"],
             ]
         finally:
             await client.close()
@@ -1505,6 +1511,8 @@ def test_audio_settings_rehydrate_comments_when_missing(tmp_path, monkeypatch):
             assert systemctl_calls == [
                 ["is-active", "voice-recorder.service"],
                 ["restart", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
+                ["restart", "web-streamer.service"],
             ]
         finally:
             await client.close()
@@ -1556,7 +1564,10 @@ def test_audio_settings_skip_restart_when_inactive(tmp_path, monkeypatch):
             assert payload["audio"]["gain"] == pytest.approx(1.5)
             assert payload["audio"]["device"] == "hw:CARD=Device,DEV=0"
 
-            assert systemctl_calls == [["is-active", "voice-recorder.service"]]
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
+            ]
 
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["audio"]["gain"] == 1.5
