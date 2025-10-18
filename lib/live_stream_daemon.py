@@ -9,7 +9,13 @@ import time
 from collections import deque
 from queue import Empty
 from typing import Any, Iterable, Optional, Tuple
-from lib.segmenter import ENCODING_STATUS, TimelineRecorder, perform_startup_recovery
+from lib.segmenter import (
+    CHANNELS,
+    ENCODING_STATUS,
+    FRAME_BYTES as SEGMENTER_FRAME_BYTES,
+    TimelineRecorder,
+    perform_startup_recovery,
+)
 from lib.config import get_cfg
 from lib.fault_handler import reset_usb
 from lib.hls_mux import HLSTee
@@ -44,7 +50,7 @@ FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 AUDIO_FILTER_CHAIN_ENABLED = FILTER_CHAIN is not None
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
+FRAME_BYTES = SEGMENTER_FRAME_BYTES
 CHUNK_BYTES = 4096
 STATE_POLL_INTERVAL = 1.0
 STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
@@ -62,7 +68,7 @@ AUTO_POLL_INTERVAL = 0.5
 ARECORD_CMD = [
     "arecord",
     "-D", AUDIO_DEV,
-    "-c", "1",
+    "-c", str(CHANNELS),
     "-f", "S16_LE",
     "-r", str(SAMPLE_RATE),
     "--buffer-size", "48000",
@@ -217,6 +223,7 @@ def _filter_worker_main(
     cfg_block: Any,
     sample_rate: int,
     frame_bytes: int,
+    channels: int,
     input_queue: "mp.Queue[Tuple[int, bytes]]",
     output_queue: "mp.Queue[Tuple[int, bytes, Optional[str]]]",
 ) -> None:
@@ -231,7 +238,7 @@ def _filter_worker_main(
             output_queue.put((seq, frame, None))
             continue
         try:
-            processed = chain.process(sample_rate, frame_bytes, frame)
+            processed = chain.process(sample_rate, frame_bytes, frame, channels=channels)
             output_queue.put((seq, processed, None))
         except Exception as exc:  # pragma: no cover - defensive safeguard
             output_queue.put((seq, frame, repr(exc)))
@@ -257,11 +264,13 @@ class FilterPipeline:
         cfg_block: Any,
         sample_rate: int,
         frame_bytes: int,
+        channels: int,
         max_pending: int = 4,
     ) -> None:
         self._cfg_block = cfg_block
         self._sample_rate = sample_rate
         self._frame_bytes = frame_bytes
+        self._channels = max(1, int(channels))
         self._max_pending = max_pending
         self._input: "mp.Queue[Tuple[int, bytes]]" = mp.Queue(maxsize=max_pending * 2)
         self._output: "mp.Queue[Tuple[int, bytes, Optional[str]]]" = mp.Queue(
@@ -273,7 +282,7 @@ class FilterPipeline:
         self._next_seq = 0
         self._process = mp.Process(
             target=_filter_worker_main,
-            args=(cfg_block, sample_rate, frame_bytes, self._input, self._output),
+            args=(cfg_block, sample_rate, frame_bytes, self._channels, self._input, self._output),
             daemon=True,
         )
         self._process.start()
@@ -449,7 +458,7 @@ def main():
         hls = HLSTee(
             out_dir=hls_dir,
             sample_rate=SAMPLE_RATE,
-            channels=1,
+            channels=CHANNELS,
             bits_per_sample=16,
             segment_time=2.0,
             history_seconds=60,
@@ -491,6 +500,7 @@ def main():
                 FILTER_CHAIN_CFG,
                 SAMPLE_RATE,
                 FRAME_BYTES,
+                CHANNELS,
             )
             filter_pipeline_launch_error_logged = False
         except Exception as exc:
@@ -576,7 +586,7 @@ def main():
                 if FILTER_CHAIN is not None:
                     try:
                         processed = FILTER_CHAIN.process(
-                            SAMPLE_RATE, FRAME_BYTES, raw_frame
+                            SAMPLE_RATE, FRAME_BYTES, raw_frame, channels=CHANNELS
                         )
                         if filter_chain_error_logged:
                             filter_chain_error_logged = False

@@ -1,6 +1,6 @@
 # Tricorder
 
-Tricorder is an embedded audio event recorder designed for 24/7 capture on a Raspberry Pi Zero 2 W. It listens to a mono ALSA input, segments interesting activity with WebRTC VAD, encodes events to Opus, and serves them through an on-device dashboard and HLS stream.
+Tricorder is an embedded audio event recorder designed for 24/7 capture on a Raspberry Pi Zero 2 W. It captures from ALSA devices (mono USB mics or stereo I²S hats), downmixes to mono for detection, preserves the original channel count for recordings/streams, segments interesting activity with WebRTC VAD, encodes events to Opus, and serves them through an on-device dashboard and HLS stream.
 
 This project targets **single-purpose deployments** on low-power hardware. The runtime is pinned to Python&nbsp;3.10 via `requirements.txt` to ensure wheel availability for the Pi Zero 2&nbsp;W.
 
@@ -437,7 +437,7 @@ Environment variables override YAML values. Common overrides include:
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
-- `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
+- `audio` – device, sample rate, frame size, channel count, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.autosplit_interval_minutes` enforces a maximum continuous clip length (default 15 minutes) so encoder workloads stay bounded, `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in, and `segmenter.max_pending_encodes` bounds the in-memory encode queue so new jobs are deferred to disk whenever the encoder backlog grows, keeping the capture loop responsive.
 - `segmenter.motion_release_padding_minutes` keeps motion-forced recordings alive for the configured minutes after the motion integration clears, delaying the hand-off back to RMS/adaptive/VAD gating so conversation tails are not clipped.

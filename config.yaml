@@ -14,6 +14,11 @@ audio:
   # Frame size in milliseconds. Valid: 10, 20, 30. Default 20ms (WebRTC VAD friendly).
   frame_ms: 20
 
+  # Number of input channels exposed by the capture device. Use 1 for mono USB mics,
+  # 2 for stereo I²S hats (dual-mic arrays). Detection is run on a mono mixdown but
+  # recordings and live streams preserve all channels.
+  channels: 1
+
   # Software gain multiplier (linear). Typical safe range: 0.5 → 4.0
   # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
   gain: 2.5

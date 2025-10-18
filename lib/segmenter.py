@@ -50,9 +50,12 @@ RIGHT_TEXT_WIDTH = int(cfg["segmenter"].get("right_text_width", 54))  # fixed-wi
 
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 SAMPLE_WIDTH = 2   # 16-bit
+CHANNELS = max(1, int(cfg["audio"].get("channels", 1)))
 FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+FRAME_SAMPLES_PER_CHANNEL = SAMPLE_RATE * FRAME_MS // 1000
+FRAME_BYTES = FRAME_SAMPLES_PER_CHANNEL * SAMPLE_WIDTH * CHANNELS
 FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
+FRAME_STRIDE = SAMPLE_WIDTH * CHANNELS
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
@@ -105,6 +108,35 @@ def pcm16_rms(buf: bytes) -> int:
         return 0
     mean_square = total / len(samples)
     return int(math.sqrt(mean_square))
+
+
+def pcm16_downmix_to_mono(buf: bytes, channels: int) -> bytes:
+    """Average multi-channel PCM16 data into a mono buffer."""
+    if channels <= 1:
+        return buf
+    if not buf:
+        return buf
+    stride = SAMPLE_WIDTH * channels
+    if len(buf) % stride:
+        raise ValueError("PCM16 buffer length must align to frame stride")
+
+    samples = array.array('h')
+    samples.frombytes(buf)
+    if sys.byteorder != 'little':
+        samples.byteswap()
+
+    frame_count = len(samples) // channels
+    mono = array.array('h', [0] * frame_count)
+    for frame_idx in range(frame_count):
+        base = frame_idx * channels
+        total = 0
+        for ch in range(channels):
+            total += samples[base + ch]
+        mono[frame_idx] = int(total / channels)
+
+    if sys.byteorder != 'little':
+        mono.byteswap()
+    return mono.tobytes()
 
 
 def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
@@ -430,7 +462,7 @@ def _log_recovery(message: str) -> None:
 def _estimate_rms_from_file(path: Path) -> int:
     total = 0
     count = 0
-    chunk_frames = max(1, FRAME_BYTES // SAMPLE_WIDTH)
+    chunk_frames = max(1, FRAME_BYTES // FRAME_STRIDE)
     try:
         with wave.open(str(path), "rb") as wav_file:
             while True:
@@ -809,7 +841,7 @@ class _WriterWorker(threading.Thread):
                         self.path = path
                         os.makedirs(os.path.dirname(path), exist_ok=True)
                         self.wav = wave.open(path, "wb")
-                        self.wav.setnchannels(1)
+                        self.wav.setnchannels(CHANNELS)
                         self.wav.setsampwidth(SAMPLE_WIDTH)
                         self.wav.setframerate(SAMPLE_RATE)
                         self.buf.clear()
@@ -870,7 +902,7 @@ class StreamingOpusEncoder:
             "-ar",
             str(SAMPLE_RATE),
             "-ac",
-            "1",
+            str(CHANNELS),
             "-i",
             "pipe:0",
             "-c:a",
@@ -1089,8 +1121,12 @@ class LiveWaveformWriter:
     def add_frame(self, buf: bytes) -> None:
         if not buf:
             return
+        try:
+            mono_bytes = pcm16_downmix_to_mono(buf, CHANNELS)
+        except ValueError:
+            return
         samples = array.array("h")
-        samples.frombytes(buf)
+        samples.frombytes(mono_bytes)
         if sys.byteorder != "little":
             samples.byteswap()
         if not samples:
@@ -1145,7 +1181,7 @@ class LiveWaveformWriter:
         if frame_count <= 0:
             return {
                 "version": 1,
-                "channels": 1,
+                "channels": CHANNELS,
                 "sample_rate": SAMPLE_RATE,
                 "frame_count": 0,
                 "duration_seconds": 0.0,
@@ -1199,7 +1235,7 @@ class LiveWaveformWriter:
         duration_seconds = frame_count * (FRAME_MS / 1000.0)
         payload = {
             "version": 1,
-            "channels": 1,
+            "channels": CHANNELS,
             "sample_rate": SAMPLE_RATE,
             "frame_count": frame_count,
             "sample_count": self._total_samples,
@@ -2818,7 +2854,7 @@ class TimelineRecorder:
     def _denoise(samples: bytes) -> bytes:
         if USE_RNNOISE:
             denoiser = rnnoise.RNNoise() # noqa: for future expansion
-            frame_size = FRAME_BYTES
+            frame_size = max(1, FRAME_BYTES // max(1, CHANNELS))
             out = bytearray()
             for i in range(0, len(samples), frame_size):
                 chunk = samples[i:i+frame_size]
@@ -2961,10 +2997,14 @@ class TimelineRecorder:
 
         start = time.perf_counter()
         buf = self._apply_gain(buf)
+        try:
+            analysis_frame = pcm16_downmix_to_mono(buf, CHANNELS)
+        except ValueError:
+            analysis_frame = buf
         if DENOISE_BEFORE_VAD:
-            proc_for_analysis = self._denoise(buf)
+            proc_for_analysis = self._denoise(analysis_frame)
         else:
-            proc_for_analysis = buf
+            proc_for_analysis = analysis_frame
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         self._record_filter_metrics(elapsed_ms)
 

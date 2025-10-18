@@ -130,7 +130,7 @@ class AudioFilterChain:
         self._gate_startup_seconds = 0.04
         self._gate_noise_percentile = 70.0
 
-        self._states: Dict[Tuple[int, int], FilterState] = {}
+        self._states: Dict[Tuple[int, int, int], FilterState] = {}
 
         # If all individual stages are disabled, treat the chain as disabled to
         # avoid unnecessary numpy conversions on every frame. This preserves the
@@ -210,36 +210,41 @@ class AudioFilterChain:
             return None
         return chain
 
-    def process(self, sample_rate: int, frame_bytes: int, frame: bytes) -> bytes:
+    def process(
+        self,
+        sample_rate: int,
+        frame_bytes: int,
+        frame: bytes,
+        *,
+        channels: int = 1,
+    ) -> bytes:
         if not self.enabled:
             return frame
         if len(frame) != frame_bytes:
             raise ValueError("Frame length does not match configured frame_bytes")
-
-        state = self._states.get((sample_rate, frame_bytes))
-        if state is None:
-            state = self._init_state(sample_rate, frame_bytes)
-            self._states[(sample_rate, frame_bytes)] = state
+        channel_count = max(1, int(channels))
+        if channel_count > 1 and frame_bytes % channel_count:
+            raise ValueError("frame_bytes must be divisible by channel count")
 
         pcm = np.frombuffer(frame, dtype="<i2").astype(np.float32)
 
-        if self.denoise_enabled:
-            pcm = self._apply_denoise(pcm)
+        if channel_count == 1:
+            state = self._get_state(sample_rate, frame_bytes, 0)
+            processed = self._process_channel(pcm, state, sample_rate)
+            final = np.clip(np.rint(processed), -32768, 32767).astype("<i2")
+            return final.tobytes()
 
-        if self.highpass_enabled:
-            pcm = self._apply_highpass(pcm, state.highpass_state, sample_rate)
+        frame_bytes_per_channel = frame_bytes // channel_count
+        result = pcm.copy()
+        for channel_index in range(channel_count):
+            state = self._get_state(sample_rate, frame_bytes_per_channel, channel_index)
+            channel_slice = slice(channel_index, None, channel_count)
+            channel_data = pcm[channel_slice].copy()
+            processed = self._process_channel(channel_data, state, sample_rate)
+            result[channel_slice] = processed
 
-        if self.lowpass_enabled:
-            pcm = self._apply_lowpass(pcm, state.lowpass_state, sample_rate)
-
-        if self.notch_enabled:
-            pcm = self._apply_notch(pcm, state, sample_rate)
-
-        if self.spectral_gate_enabled:
-            pcm = self._apply_gate(pcm, state)
-
-        pcm = np.clip(np.rint(pcm), -32768, 32767).astype("<i2")
-        return pcm.tobytes()
+        final = np.clip(np.rint(result), -32768, 32767).astype("<i2")
+        return final.tobytes()
 
     def _init_state(self, sample_rate: int, frame_bytes: int) -> FilterState:
         notch_count = len(self._notch_filters) if self.notch_enabled else 0
@@ -270,6 +275,40 @@ class AudioFilterChain:
         )
 
         return state
+
+    def _get_state(
+        self,
+        sample_rate: int,
+        frame_bytes: int,
+        channel_index: int,
+    ) -> FilterState:
+        key = (sample_rate, frame_bytes, channel_index)
+        state = self._states.get(key)
+        if state is None:
+            state = self._init_state(sample_rate, frame_bytes)
+            self._states[key] = state
+        return state
+
+    def _process_channel(
+        self, data: np.ndarray, state: FilterState, sample_rate: int
+    ) -> np.ndarray:
+        working = data
+        if self.denoise_enabled:
+            working = self._apply_denoise(working)
+
+        if self.highpass_enabled:
+            working = self._apply_highpass(working, state.highpass_state, sample_rate)
+
+        if self.lowpass_enabled:
+            working = self._apply_lowpass(working, state.lowpass_state, sample_rate)
+
+        if self.notch_enabled:
+            working = self._apply_notch(working, state, sample_rate)
+
+        if self.spectral_gate_enabled:
+            working = self._apply_gate(working, state)
+
+        return working
 
     def _apply_highpass(
         self, data: np.ndarray, state: HighPassState, sample_rate: int

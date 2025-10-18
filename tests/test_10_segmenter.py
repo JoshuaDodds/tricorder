@@ -34,7 +34,7 @@ def read_sample(buf: bytes, idx: int = 0) -> int:
 def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as wav_file:
-        wav_file.setnchannels(1)
+        wav_file.setnchannels(segmenter.CHANNELS)
         wav_file.setsampwidth(segmenter.SAMPLE_WIDTH)
         wav_file.setframerate(segmenter.SAMPLE_RATE)
         sample_bytes = sample.to_bytes(2, "little", signed=True)

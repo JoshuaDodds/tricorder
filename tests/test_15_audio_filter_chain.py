@@ -20,6 +20,14 @@ def pcm_to_float(frame: bytes) -> np.ndarray:
     return np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768.0
 
 
+def interleave_stereo(mono_frame: bytes) -> bytes:
+    samples = np.frombuffer(mono_frame, dtype="<i2")
+    stereo = np.empty(samples.size * 2, dtype=np.int16)
+    stereo[0::2] = samples
+    stereo[1::2] = samples
+    return stereo.astype("<i2").tobytes()
+
+
 def test_chain_disabled_when_all_stages_off():
     chain = AudioFilterChain(
         {
@@ -113,6 +121,39 @@ def test_notch_suppresses_mains_hum():
     tone_peak_filtered = spectrum_peak(filtered, 400.0)
     # Ensure the nearby tone survives.
     assert tone_peak_filtered > tone_peak_original * 0.6
+
+
+def test_stereo_processing_matches_mono_per_channel():
+    cfg = {
+        "enabled": True,
+        "highpass": {"enabled": True, "cutoff_hz": 70.0},
+        "lowpass": {"enabled": False},
+        "notch": {"enabled": False},
+        "spectral_gate": {"enabled": False},
+        "denoise": {"enabled": False},
+    }
+    mono_chain = AudioFilterChain(cfg)
+    stereo_chain = AudioFilterChain(cfg)
+
+    t = np.arange(FRAME_SAMPLES)
+    signal = 0.5 * np.sin(2 * math.pi * 120.0 * t / SAMPLE_RATE)
+    mono_frame = float_to_pcm(signal)
+
+    mono_processed = mono_chain.process(SAMPLE_RATE, FRAME_BYTES, mono_frame)
+
+    stereo_frame = interleave_stereo(mono_frame)
+    stereo_processed = stereo_chain.process(
+        SAMPLE_RATE,
+        FRAME_BYTES * 2,
+        stereo_frame,
+        channels=2,
+    )
+
+    mono_samples = np.frombuffer(mono_processed, dtype="<i2")
+    stereo_samples = np.frombuffer(stereo_processed, dtype="<i2")
+
+    assert np.array_equal(stereo_samples[0::2], mono_samples)
+    assert np.array_equal(stereo_samples[1::2], mono_samples)
 
 
 def test_spectral_gate_reduces_stationary_noise():

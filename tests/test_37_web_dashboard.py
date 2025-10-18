@@ -17,6 +17,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from lib import web_streamer
+import lib.segmenter as segmenter
 import lib.config as config
 import yaml
 
@@ -62,7 +63,7 @@ def _write_waveform_stub(
 ) -> None:
     payload = {
         "version": 1,
-        "channels": 1,
+        "channels": segmenter.CHANNELS,
         "sample_rate": 48000,
         "frame_count": int(max(duration, 0) * 48000),
         "duration_seconds": duration,
@@ -84,7 +85,7 @@ def _write_waveform_stub(
 def _create_silent_wav(path: Path, duration: float = 2.0) -> None:
     frame_count = max(1, int(48000 * max(duration, 0)))
     with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
+        handle.setnchannels(segmenter.CHANNELS)
         handle.setsampwidth(2)
         handle.setframerate(48000)
         handle.writeframes(b"\x00\x00" * frame_count)
@@ -716,7 +717,7 @@ def test_recordings_returns_partial_waveform_snapshot(dashboard_env):
         waveform_path = day_dir / "gamma.partial.opus.waveform.json"
         payload = {
             "version": 1,
-            "channels": 1,
+            "channels": segmenter.CHANNELS,
             "sample_rate": 48000,
             "frame_count": 48000,
             "duration_seconds": 1.0,
