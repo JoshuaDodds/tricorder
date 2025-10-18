@@ -1706,6 +1706,35 @@ def test_live_waveform_writer_preserves_start_and_trigger(tmp_path):
     assert payload["trigger_rms"] == 789
 
 
+def test_live_waveform_writer_rms_uses_combined_when_channel_counts_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(segmenter, "CHANNELS", 2, raising=False)
+    destination = tmp_path / "waveform.json"
+    writer = segmenter.LiveWaveformWriter(
+        str(destination),
+        bucket_count=1,
+        update_interval=0.0,
+    )
+
+    # Simulate a frame that has energy recorded for one channel but a zero
+    # sample count due to legacy bookkeeping. The fallback should consider the
+    # combined RMS so we do not lose the louder channel.
+    with writer._lock:  # pylint: disable=protected-access
+        writer._frames = [
+            (
+                -1200,
+                1200,
+                (900_000.0, 1_600_000.0),
+                (960, 0),
+            )
+        ]
+        writer._total_frames = 1
+        writer._total_samples = 1920
+        payload = writer._build_payload_locked(time.monotonic())  # pylint: disable=protected-access
+
+    expected = int(round(math.sqrt((900_000.0 + 1_600_000.0) / 960.0)))
+    assert payload["rms_values"] == [expected]
+
+
 def test_apply_gain_scales_and_clips(monkeypatch):
     buf = (32000).to_bytes(2, 'little', signed=True) * 2
     monkeypatch.setattr(segmenter, "GAIN", 0.5)
