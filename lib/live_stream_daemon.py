@@ -44,13 +44,19 @@ FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 AUDIO_FILTER_CHAIN_ENABLED = FILTER_CHAIN is not None
 SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
 FRAME_MS = int(cfg["audio"]["frame_ms"])
+SAMPLE_WIDTH = 2  # 16-bit PCM
 CHANNELS = int(cfg.get("audio", {}).get("channels", 1) or 1)
 if CHANNELS < 1:
     CHANNELS = 1
 elif CHANNELS > 2:
     CHANNELS = 2
-FRAME_BYTES = int(SAMPLE_RATE * CHANNELS * 2 * FRAME_MS / 1000)
-CHUNK_BYTES = 4096
+BYTES_PER_SAMPLE = SAMPLE_WIDTH * CHANNELS
+FRAME_BYTES = int(SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH * FRAME_MS / 1000)
+MIN_CHUNK_BYTES = 4096
+CHUNK_BYTES = max(FRAME_BYTES, MIN_CHUNK_BYTES)
+remainder = CHUNK_BYTES % BYTES_PER_SAMPLE
+if remainder:
+    CHUNK_BYTES += BYTES_PER_SAMPLE - remainder
 STATE_POLL_INTERVAL = 1.0
 STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
 if STREAM_MODE not in {"hls", "webrtc"}:
