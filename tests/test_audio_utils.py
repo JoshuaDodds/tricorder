@@ -1,6 +1,6 @@
 import pytest
 
-from lib.audio_utils import select_channel
+from lib.audio_utils import mix_channels_to_mono, select_channel
 
 
 def test_select_channel_extracts_left_channel():
@@ -27,3 +27,35 @@ def test_select_channel_handles_mono_data():
 def test_select_channel_rejects_invalid_sample_width():
     with pytest.raises(ValueError):
         select_channel(b"", channels=2, sample_width=0)
+
+
+def test_mix_channels_to_mono_preserves_information():
+    # Two frames of stereo S16_LE PCM: L0=1000, R0=-1000, L1=2000, R1=6000
+    samples = (1000, -1000, 2000, 6000)
+    stereo_bytes = b"".join(int.to_bytes(x, 2, "little", signed=True) for x in samples)
+
+    mixed = mix_channels_to_mono(stereo_bytes, channels=2, sample_width=2)
+
+    expected = b"".join(
+        int.to_bytes(x, 2, "little", signed=True) for x in (0, 4000)
+    )
+    assert mixed == expected
+
+
+def test_mix_channels_to_mono_supports_multiple_channels():
+    frames = (
+        30000,
+        30000,
+        -30000,
+        -32000,
+        -32000,
+        -32000,
+    )
+    interleaved = b"".join(int.to_bytes(x, 2, "little", signed=True) for x in frames)
+
+    mixed = mix_channels_to_mono(interleaved, channels=3, sample_width=2)
+
+    expected = b"".join(
+        int.to_bytes(x, 2, "little", signed=True) for x in (10000, -32000)
+    )
+    assert mixed == expected
