@@ -2175,6 +2175,13 @@ class TimelineRecorder:
         self.saw_voiced = False
         self.saw_loud = False
 
+        # Monotonic timestamp representing when the active event logically
+        # started. This mirrors ``event_started_epoch`` (wall clock) but
+        # avoids issues with time adjustments and lets us derive a more
+        # accurate duration even when frame metrics are throttled.
+        self._event_started_monotonic: float | None = None
+        self._last_frame_rms: int = 0
+
         self._ingest_hint: Optional[RecorderIngestHint] = ingest_hint
         self._ingest_hint_used = False
         self._encode_jobs: list[int] = []
@@ -2209,6 +2216,7 @@ class TimelineRecorder:
         self._last_metrics_update = 0.0
         self._last_metrics_value: int | None = None
         self._last_metrics_threshold: int | None = None
+        self._last_metrics_duration: float | None = None
         self._filter_chain_samples: collections.deque[float] = collections.deque(
             maxlen=max(1, FILTER_CHAIN_METRICS_WINDOW)
         )
@@ -2491,7 +2499,10 @@ class TimelineRecorder:
         if start_epoch is None or not segments:
             return []
         if duration_seconds is None and self.frames_written > 0:
-            duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+            duration_seconds = self._event_duration_from_frames(
+                self.frames_written,
+                start_monotonic=self._event_started_monotonic,
+            )
         duration = (
             float(duration_seconds)
             if isinstance(duration_seconds, (int, float)) and duration_seconds > 0
@@ -2855,24 +2866,63 @@ class TimelineRecorder:
             return None
         return self._live_waveform_rel_path
 
-    def _maybe_update_live_metrics(self, rms_value: int) -> None:
+    def _event_duration_from_frames(
+        self,
+        frames: int,
+        *,
+        start_monotonic: float | None,
+        now_monotonic: float | None = None,
+    ) -> float:
+        frame_duration = max(0, int(frames)) * (FRAME_MS / 1000.0)
+        if start_monotonic is None:
+            return frame_duration
+
+        if now_monotonic is None:
+            now_monotonic = time.monotonic()
+        elapsed = max(0.0, now_monotonic - start_monotonic)
+        if frame_duration <= 0.0:
+            return elapsed
+        return max(frame_duration, elapsed)
+
+    def _maybe_update_live_metrics(self, rms_value: int, *, force: bool = False) -> None:
         if self._status_mode != "live":
             return
         now = time.monotonic()
         whole = int(rms_value)
         threshold = int(self._adaptive.threshold_linear)
-        if (
-            now - self._last_metrics_update < self._metrics_interval
+
+        capturing, event, last_event, reason = self._status_snapshot()
+        duration_seconds: float | None = None
+        if capturing:
+            duration_seconds = self._event_duration_from_frames(
+                self.frames_written,
+                start_monotonic=self._event_started_monotonic,
+            )
+
+        skip_update = (
+            not force
+            and now - self._last_metrics_update < self._metrics_interval
             and self._last_metrics_value == whole
             and self._last_metrics_threshold == threshold
-        ):
-            return
+        )
+        if skip_update:
+            if capturing and duration_seconds is not None:
+                last_duration = self._last_metrics_duration
+                min_increment = self._metrics_interval
+                if last_duration is None or (
+                    duration_seconds - last_duration
+                ) >= min_increment:
+                    pass
+                else:
+                    return
+            else:
+                return
 
         self._last_metrics_update = now
         self._last_metrics_value = whole
         self._last_metrics_threshold = threshold
+        self._last_metrics_duration = duration_seconds if capturing else None
 
-        capturing, event, last_event, reason = self._status_snapshot()
         self._update_capture_status(
             capturing,
             event=event,
@@ -2881,11 +2931,7 @@ class TimelineRecorder:
             extra={
                 "current_rms": whole,
                 "service_running": True,
-                "event_duration_seconds": (
-                    self.frames_written * (FRAME_MS / 1000.0)
-                    if capturing
-                    else None
-                ),
+                "event_duration_seconds": duration_seconds,
                 "event_size_bytes": self._current_event_size() if capturing else None,
                 "partial_recording_path": self._current_partial_path(capturing),
                 "streaming_container_format": self._current_partial_format(capturing),
@@ -3128,6 +3174,7 @@ class TimelineRecorder:
             if threshold_changed:
                 self._emit_threshold_update()
 
+        self._last_frame_rms = int(rms_val)
         self._maybe_update_live_metrics(rms_val)
 
         # once per-second debug (only if DEV enabled)
@@ -3182,6 +3229,7 @@ class TimelineRecorder:
 
                 prebuf_frames = len(self.prebuf)
                 prebuf_seconds = max(prebuf_frames - 1, 0) * (FRAME_MS / 1000.0)
+                trigger_monotonic = time.monotonic()
                 trigger_epoch = time.time()
 
                 if hint_timestamp:
@@ -3208,6 +3256,10 @@ class TimelineRecorder:
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
                 self.event_started_epoch = start_epoch
+                start_monotonic = trigger_monotonic - prebuf_seconds
+                if start_monotonic < 0.0:
+                    start_monotonic = 0.0
+                self._event_started_monotonic = start_monotonic
                 self.event_day = time.strftime("%Y%m%d", time.localtime(start_epoch))
 
                 day_stamp = time.strftime("%Y%m%d")
@@ -3318,7 +3370,10 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
-                duration_hint = self.frames_written * (FRAME_MS / 1000.0)
+                duration_hint = self._event_duration_from_frames(
+                    self.frames_written,
+                    start_monotonic=self._event_started_monotonic,
+                )
                 event_status.update(
                     self._current_motion_event_payload(
                         duration_seconds=duration_hint
@@ -3387,6 +3442,9 @@ class TimelineRecorder:
         if self.frames_written <= 0 or not self.base_name:
             self._reset_event_state()
             return
+
+        if self._status_mode == "live" and self.active:
+            self._maybe_update_live_metrics(self._last_frame_rms, force=True)
 
         streaming_result: StreamingEncoderResult | None = None
         parallel_result: StreamingEncoderResult | None = None
@@ -3482,7 +3540,11 @@ class TimelineRecorder:
         trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 
         ended_epoch = time.time()
-        duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+        duration_seconds = self._event_duration_from_frames(
+            self.frames_written,
+            start_monotonic=self._event_started_monotonic,
+            now_monotonic=time.monotonic(),
+        )
 
         self._q_send(('close', self.base_name))
 
@@ -3909,6 +3971,7 @@ class TimelineRecorder:
         self.event_counter = None
         self.trigger_rms = None
         self.event_started_epoch = None
+        self._event_started_monotonic = None
         self.event_day = None
         self._ingest_hint = None
         self._ingest_hint_used = True
@@ -3920,6 +3983,8 @@ class TimelineRecorder:
         self._current_motion_event_end = None
         self._reset_motion_segments()
         self._cleanup_live_waveform()
+        self._last_frame_rms = 0
+        self._last_metrics_duration = None
 
     def flush(self, idx: int):
         if self.active:
