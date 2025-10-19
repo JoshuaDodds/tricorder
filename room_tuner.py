@@ -56,7 +56,12 @@ if CHANNELS < 1:
     CHANNELS = 1
 elif CHANNELS > 2:
     CHANNELS = 2
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS * FRAME_MS // 1000
+BYTES_PER_SAMPLE = SAMPLE_WIDTH * CHANNELS
+FRAME_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * FRAME_MS // 1000
+MIN_CHUNK_BYTES = 4096
+CHUNK_BYTES = max(FRAME_BYTES, MIN_CHUNK_BYTES)
+if CHUNK_BYTES % BYTES_PER_SAMPLE:
+    CHUNK_BYTES += BYTES_PER_SAMPLE - (CHUNK_BYTES % BYTES_PER_SAMPLE)
 
 USE_USB_RESET_WORKAROUND = bool(
     cfg.get("audio", {}).get("use_usb_reset_workaround", True)
@@ -186,7 +191,7 @@ def capture_idle_audio(proc, seconds: float, stderr_fd: int | None) -> bytes:
     deadline = time.monotonic() + max(seconds * 1.5, 1.0)
     while len(captured) < target_bytes:
         remaining = target_bytes - len(captured)
-        chunk = proc.stdout.read(min(4096, remaining))
+        chunk = proc.stdout.read(min(CHUNK_BYTES, remaining))
         if chunk:
             captured.extend(chunk)
         else:
@@ -370,7 +375,7 @@ def main() -> int:
 
     while not stop:
         # Read raw bytes
-        chunk = proc.stdout.read(4096)
+        chunk = proc.stdout.read(CHUNK_BYTES)
         if not chunk:
             print("[room_tuner] arecord ended or device unavailable; attempting USB reset", flush=True)
             if USE_USB_RESET_WORKAROUND:
