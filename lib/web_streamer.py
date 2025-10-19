@@ -101,6 +101,14 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
+
+def _quiet_noisy_dependencies(ice_level: int = logging.WARNING) -> None:
+    """Tone down overly chatty third-party loggers."""
+
+    for name in ("aioice", "aioice.ice", "aioice.stun"):
+        logging.getLogger(name).setLevel(ice_level)
+
+
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RAW_AUDIO_DIRNAME = ".original_wav"
 RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
@@ -8180,6 +8188,7 @@ def start_web_streamer_in_thread(
         level=getattr(logging, log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    _quiet_noisy_dependencies()
     log = logging.getLogger("web_streamer")
 
     loop = asyncio.new_event_loop()
@@ -8243,6 +8252,7 @@ def cli_main():
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    _quiet_noisy_dependencies()
     log = logging.getLogger("web_streamer")
 
     apply_config_migrations(logger=log)

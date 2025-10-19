@@ -9,6 +9,7 @@ Type=simple
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=/apps/tricorder
 ExecStart=/apps/tricorder/bin/run_with_runtime_env.sh -- /apps/tricorder/venv/bin/python -m lib.web_streamer
+SyslogIdentifier=web-streamer
 Restart=always
 RestartSec=3
 StandardOutput=journal
