@@ -896,7 +896,6 @@ class StreamingOpusEncoder:
         self._closed = threading.Event()
         self._queue_wait_events = 0
         self._queue_max_wait = 0.0
-        self._queue_last_warn = 0.0
 
     def _build_command(self) -> list[str]:
         base_cmd = [
@@ -1006,16 +1005,36 @@ class StreamingOpusEncoder:
             self._queue.put_nowait(payload)
             return True
         except queue.Full:
-            now = time.monotonic()
-            self._queue_wait_events += 1
-            self._dropped += 1
-            if (now - self._queue_last_warn) >= STREAMING_QUEUE_LOG_SECONDS:
-                print(
-                    "[streaming] WARN: streaming encoder queue saturated; dropping frame",
-                    flush=True,
-                )
-                self._queue_last_warn = now
-            return False
+            wait_start = time.monotonic()
+            warned = False
+            while True:
+                elapsed = time.monotonic() - wait_start
+                if elapsed >= STREAMING_QUEUE_MAX_BLOCK_SECONDS:
+                    self._queue_wait_events += 1
+                    if elapsed > self._queue_max_wait:
+                        self._queue_max_wait = elapsed
+                    self._dropped += 1
+                    if not warned:
+                        print(
+                            "[streaming] WARN: streaming encoder queue saturated; dropping frame",
+                            flush=True,
+                        )
+                    return False
+                try:
+                    self._queue.put(payload, timeout=STREAMING_QUEUE_RETRY_SECONDS)
+                except queue.Full:
+                    if (not warned) and elapsed >= STREAMING_QUEUE_LOG_SECONDS:
+                        warned = True
+                        print(
+                            "[streaming] WARN: streaming encoder queue full; throttling feed",
+                            flush=True,
+                        )
+                    continue
+                self._queue_wait_events += 1
+                elapsed = time.monotonic() - wait_start
+                if elapsed > self._queue_max_wait:
+                    self._queue_max_wait = elapsed
+                return True
 
     def close(self, *, timeout: float | None = None) -> StreamingEncoderResult:
         if self._process is None:
@@ -3140,7 +3159,6 @@ class TimelineRecorder:
         except queue.Full:
             wait_start = time.monotonic()
             warned = False
-            saturation_logged = False
             self._writer_backpressure_events += 1
             while True:
                 writer_alive = self.writer.is_alive() if hasattr(self, "writer") else True
@@ -3158,18 +3176,20 @@ class TimelineRecorder:
                     drop_ok
                     and WRITER_QUEUE_MAX_BLOCK_SECONDS > 0.0
                     and elapsed >= WRITER_QUEUE_MAX_BLOCK_SECONDS
-                    and not saturation_logged
                 ):
                     depth = self._audio_queue_depth()
                     detail = (
                         f" (depth={depth}/{MAX_QUEUE_FRAMES})" if depth is not None else ""
                     )
+                    if elapsed > self._writer_backpressure_max_wait:
+                        self._writer_backpressure_max_wait = elapsed
                     print(
-                        "[segmenter] WARN: writer queue saturated; waiting for consumer"
-                        f"{detail}",
+                        "[segmenter] WARN: writer queue saturated; dropping frame"
+                        f" after {elapsed:.3f}s{detail}",
                         flush=True,
                     )
-                    saturation_logged = True
+                    self.writer_queue_drops += 1
+                    return False
                 try:
                     self.audio_q.put(item, timeout=WRITER_QUEUE_RETRY_SECONDS)
                 except queue.Full:
