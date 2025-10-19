@@ -1,29 +1,31 @@
+import struct
+
 import pytest
 
-from lib.audio_utils import select_channel
+from lib.audio_utils import downmix_to_mono
 
 
-def test_select_channel_extracts_left_channel():
-    # Two frames of stereo S16_LE PCM: L0=1, R0=2, L1=3, R1=4
-    samples = (1, 2, 3, 4)
-    stereo_bytes = b"".join(int.to_bytes(x, 2, "little", signed=True) for x in samples)
-
-    left = select_channel(stereo_bytes, channels=2, sample_width=2, channel_index=0)
-    right = select_channel(stereo_bytes, channels=2, sample_width=2, channel_index=1)
-
-    expected_left = b"".join(int.to_bytes(x, 2, "little", signed=True) for x in (1, 3))
-    expected_right = b"".join(int.to_bytes(x, 2, "little", signed=True) for x in (2, 4))
-
-    assert left == expected_left
-    assert right == expected_right
+def _pcm16(values):
+    return struct.pack("<" + "h" * len(values), *values)
 
 
-def test_select_channel_handles_mono_data():
-    mono_samples = b"\x01\x00\x02\x00\x03\x00"
-    result = select_channel(mono_samples, channels=1, sample_width=2)
-    assert result == mono_samples
+def test_downmix_to_mono_stereo_average():
+    left = [1000, -1000, 500]
+    right = [3000, -3000, -500]
+    stereo = b"".join(
+        struct.pack("<hh", l, r) for l, r in zip(left, right, strict=True)
+    )
+    mixed = downmix_to_mono(stereo, channels=2, sample_width=2)
+    expected = _pcm16([2000, -2000, 0])
+    assert mixed == expected
 
 
-def test_select_channel_rejects_invalid_sample_width():
+def test_downmix_to_mono_trims_partial_frames():
+    stereo = _pcm16([100, 200, 300, 400]) + b"\x01"
+    mixed = downmix_to_mono(stereo, channels=2, sample_width=2)
+    assert mixed == _pcm16([150, 350])
+
+
+def test_downmix_to_mono_invalid_width():
     with pytest.raises(ValueError):
-        select_channel(b"", channels=2, sample_width=0)
+        downmix_to_mono(b"", channels=2, sample_width=0)
