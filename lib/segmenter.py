@@ -3159,29 +3159,36 @@ class TimelineRecorder:
         except queue.Full:
             wait_start = time.monotonic()
             warned = False
+            saturation_logged = False
             self._writer_backpressure_events += 1
             while True:
+                writer_alive = self.writer.is_alive() if hasattr(self, "writer") else True
                 elapsed = time.monotonic() - wait_start
-                if elapsed >= WRITER_QUEUE_MAX_BLOCK_SECONDS:
+                if not writer_alive:
                     if elapsed > self._writer_backpressure_max_wait:
                         self._writer_backpressure_max_wait = elapsed
-                    if not drop_ok:
-                        print(
-                            "[segmenter] ERROR: writer queue stalled while sending control message",
-                            flush=True,
-                        )
-                        return False
-                    self.writer_queue_drops += 1
-                    detail = ""
-                    depth = self._audio_queue_depth()
-                    if depth is not None:
-                        detail = f" (depth={depth}/{MAX_QUEUE_FRAMES})"
                     print(
-                        "[segmenter] ERROR: writer queue saturated; dropping audio frame"
-                        f" after waiting {elapsed:.3f}s{detail}",
+                        "[segmenter] ERROR: writer thread unavailable while queue full; dropping frame",
                         flush=True,
                     )
+                    self.writer_queue_drops += 1
                     return False
+                if (
+                    drop_ok
+                    and WRITER_QUEUE_MAX_BLOCK_SECONDS > 0.0
+                    and elapsed >= WRITER_QUEUE_MAX_BLOCK_SECONDS
+                    and not saturation_logged
+                ):
+                    depth = self._audio_queue_depth()
+                    detail = (
+                        f" (depth={depth}/{MAX_QUEUE_FRAMES})" if depth is not None else ""
+                    )
+                    print(
+                        "[segmenter] WARN: writer queue saturated; waiting for consumer"
+                        f"{detail}",
+                        flush=True,
+                    )
+                    saturation_logged = True
                 try:
                     self.audio_q.put(item, timeout=WRITER_QUEUE_RETRY_SECONDS)
                 except queue.Full:
@@ -3200,6 +3207,16 @@ class TimelineRecorder:
                 elapsed = time.monotonic() - wait_start
                 if elapsed > self._writer_backpressure_max_wait:
                     self._writer_backpressure_max_wait = elapsed
+                if warned and elapsed >= WRITER_QUEUE_LOG_SECONDS:
+                    depth = self._audio_queue_depth()
+                    detail = (
+                        f" (depth={depth}/{MAX_QUEUE_FRAMES})" if depth is not None else ""
+                    )
+                    print(
+                        "[segmenter] INFO: writer queue drained after backpressure"
+                        f" in {elapsed:.3f}s{detail}",
+                        flush=True,
+                    )
                 return True
 
     def ingest(self, buf: bytes, idx: int) -> bytes:
