@@ -6,11 +6,7 @@ RuntimeDirectoryMode=0755
 # Ensure module imports resolve
 WorkingDirectory=/apps/tricorder
 Environment=PYTHONPATH=/apps/tricorder
-EnvironmentFile=-/run/tricorder/runtime.env
-ExecStartPre=/apps/tricorder/venv/bin/python -m lib.unit_runtime --env-file /run/tricorder/runtime.env --ensure-dirs --dropbox-link /apps/tricorder/dropbox
-# Single-run ingestion with a lock to avoid concurrent sweeps
-ExecStart=/usr/bin/flock -n /run/tricorder/dropbox.lock /apps/tricorder/venv/bin/python3 -m lib.process_dropped_file --scan
-# ExecStart=/bin/bash -c 'for f in /apps/tricorder/dropbox/*; do [ -f "$f" ] && /apps/tricorder/venv/bin/python3 /apps/tricorder/lib/process_dropped_file.py "$f"; done; true'
+ExecStart=/apps/tricorder/bin/run_with_runtime_env.sh --ensure-dirs --dropbox-link /apps/tricorder/dropbox -- /usr/bin/flock -n /run/tricorder/dropbox.lock /apps/tricorder/venv/bin/python3 -m lib.process_dropped_file --scan
 
 [Install]
 WantedBy=multi-user.target

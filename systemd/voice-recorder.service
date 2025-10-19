@@ -7,10 +7,8 @@ PartOf=tricorder.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/run/tricorder/runtime.env
-ExecStartPre=/apps/tricorder/venv/bin/python -m lib.unit_runtime --env-file /run/tricorder/runtime.env --ensure-dirs
 WorkingDirectory=/apps/tricorder
-ExecStart=/apps/tricorder/venv/bin/python -m lib.live_stream_daemon
+ExecStart=/apps/tricorder/bin/run_with_runtime_env.sh --ensure-dirs -- /apps/tricorder/venv/bin/python -m lib.live_stream_daemon
 Restart=always
 RestartSec=3
 Nice=5

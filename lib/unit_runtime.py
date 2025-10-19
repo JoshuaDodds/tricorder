@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Dict
 
-from .config import get_cfg
+from .config import reload_cfg
 
 
 def _escape_env_value(value: str) -> str:
@@ -83,7 +83,7 @@ def prepare_runtime(
     ensure_dirs: bool = False,
     dropbox_link: Path | None = None,
 ) -> Dict[str, str]:
-    cfg = get_cfg()
+    cfg = reload_cfg()
     audio_cfg = cfg.get("audio", {})
     paths_cfg = cfg.get("paths", {})
 
