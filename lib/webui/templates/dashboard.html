@@ -1164,6 +1164,16 @@
                 </p>
               </div>
               <div class="settings-field">
+                <label for="audio-channels">Channels</label>
+                <select id="audio-channels">
+                  <option value="1">Mono (1 channel)</option>
+                  <option value="2">Stereo (2 channels)</option>
+                </select>
+                <p class="field-description">
+                  Stereo sources are mixed down to mono before detection to keep the pipeline compatible with single-channel processing.
+                </p>
+              </div>
+              <div class="settings-field">
                 <label for="audio-frame-ms">Frame duration</label>
                 <select id="audio-frame-ms">
                   <option value="10">10&nbsp;ms</option>
@@ -1191,6 +1201,15 @@
                 </select>
                 <p class="field-description">
                   Controls the WebRTC voice detector sensitivity. Higher values reject more noise but may miss quiet speech.
+                </p>
+              </div>
+              <div class="settings-field">
+                <div class="field-control">
+                  <input id="audio-usb-reset" type="checkbox" />
+                  <label for="audio-usb-reset">USB reset workaround (legacy mode)</label>
+                </div>
+                <p class="field-description">
+                  Leave enabled for USB microphones. Disable for I2S or HAT capture cards to skip resetting the USB controller during retries.
                 </p>
               </div>
               <h4 class="settings-subheading">Filter chain</h4>

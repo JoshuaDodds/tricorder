@@ -298,6 +298,9 @@ def _deep_merge(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
+    def _parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
     # DEV mode
     if os.getenv("DEV") == "1":
         cfg.setdefault("logging", {})["dev_mode"] = True
@@ -309,6 +312,17 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
             cfg.setdefault("audio", {})["gain"] = float(os.environ["GAIN"])
         except ValueError:
             pass
+    if "AUDIO_CHANNELS" in os.environ:
+        try:
+            channels = int(os.environ["AUDIO_CHANNELS"])
+        except ValueError:
+            pass
+        else:
+            cfg.setdefault("audio", {})["channels"] = max(1, min(2, channels))
+    if "AUDIO_USB_RESET_WORKAROUND" in os.environ:
+        cfg.setdefault("audio", {})["usb_reset_workaround"] = _parse_bool(
+            os.environ["AUDIO_USB_RESET_WORKAROUND"]
+        )
     # Paths
     if "REC_DIR" in os.environ:
         cfg.setdefault("paths", {})["recordings_dir"] = os.environ["REC_DIR"]
@@ -332,9 +346,6 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
                 cfg.setdefault(section, {})[key] = cast(os.environ[env_key])
             except Exception:
                 pass
-
-    def _parse_bool(value: str) -> bool:
-        return value.strip().lower() in {"1", "true", "yes", "on"}
 
     transcription_env = {
         "TRANSCRIPTION_ENABLED": ("enabled", _parse_bool),
