@@ -57,8 +57,11 @@ if CHANNELS < 1:
     CHANNELS = 1
 elif CHANNELS > 2:
     CHANNELS = 2
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS * FRAME_MS // 1000
-FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
+os.environ.setdefault("AUDIO_CHANNELS", str(CHANNELS))
+os.environ.setdefault("ENCODER_CHANNELS", str(CHANNELS))
+FRAME_SAMPLES_PER_CHANNEL = max(1, SAMPLE_RATE * FRAME_MS // 1000)
+FRAME_BYTES = FRAME_SAMPLES_PER_CHANNEL * SAMPLE_WIDTH * CHANNELS
+FRAME_SAMPLES = FRAME_SAMPLES_PER_CHANNEL * CHANNELS
 
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
@@ -450,7 +453,7 @@ def _log_recovery(message: str) -> None:
 def _estimate_rms_from_file(path: Path) -> int:
     total = 0
     count = 0
-    chunk_frames = max(1, FRAME_BYTES // SAMPLE_WIDTH)
+    chunk_frames = FRAME_SAMPLES_PER_CHANNEL
     try:
         with wave.open(str(path), "rb") as wav_file:
             while True:
@@ -1721,6 +1724,7 @@ class _EncoderWorker(threading.Thread):
                 env.setdefault("STREAMING_CONTAINER_FORMAT", STREAMING_CONTAINER_FORMAT)
                 env.setdefault("STREAMING_EXTENSION", STREAMING_EXTENSION)
                 env.setdefault("ENCODER_MIN_CLIP_SECONDS", str(MIN_CLIP_SECONDS))
+                env.setdefault("ENCODER_CHANNELS", str(CHANNELS))
                 if target_day:
                     day_component = target_day.strip()
                     if len(day_component) == 8 and day_component.isdigit():

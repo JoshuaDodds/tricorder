@@ -14,6 +14,16 @@ MIN_CLIP_SECONDS="${ENCODER_MIN_CLIP_SECONDS:-0}"
 FFPROBE_WARNED=0
 LAST_CLIP_DURATION=""
 
+CHANNELS="${ENCODER_CHANNELS:-${AUDIO_CHANNELS:-1}}"
+if ! [[ "$CHANNELS" =~ ^[0-9]+$ ]]; then
+  CHANNELS=1
+fi
+if (( CHANNELS < 1 )); then
+  CHANNELS=1
+elif (( CHANNELS > 2 )); then
+  CHANNELS=2
+fi
+
 in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1
 existing_opus="${3:-}"
@@ -258,7 +268,7 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
     if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
       -i "$existing_opus" \
       "${FILTERS[@]}" \
-      -ac 1 -ar 48000 -sample_fmt s16 \
+      -ac "$CHANNELS" -ar 48000 -sample_fmt s16 \
       -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
       "$temp_outfile"; then
         echo "[encode] ffmpeg failed for $existing_opus" | systemd-cat -t tricorder
@@ -297,7 +307,7 @@ else
   if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
     -i "$in_wav" \
     "${FILTERS[@]}" \
-    -ac 1 -ar 48000 -sample_fmt s16 \
+    -ac "$CHANNELS" -ar 48000 -sample_fmt s16 \
     -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
     "$outfile"; then
       echo "[encode] ffmpeg failed for $in_wav" | systemd-cat -t tricorder

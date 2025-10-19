@@ -15,6 +15,7 @@ from typing import Iterable
 from lib.segmenter import (
     ENCODING_STATUS,
     FRAME_BYTES,
+    FRAME_SAMPLES_PER_CHANNEL,
     CHANNELS,
     RecorderIngestHint,
     SAMPLE_RATE,
@@ -125,7 +126,7 @@ def _pcm_source(path: Path):
                     f"{CHANNELS}-channel audio at {SAMPLE_RATE} Hz ({path})"
                 )
 
-            frames_per_chunk = FRAME_BYTES // (SAMPLE_WIDTH * CHANNELS)
+            frames_per_chunk = FRAME_SAMPLES_PER_CHANNEL
 
             def wav_iter():
                 while True:
