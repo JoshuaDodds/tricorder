@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from lib.unit_runtime import prepare_runtime
@@ -42,3 +43,37 @@ paths:
     assert ingest_dir.is_dir()
     assert dropbox_link.is_symlink()
     assert dropbox_link.resolve() == dropbox_dir
+
+
+def test_prepare_runtime_escapes_shell_metacharacters(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.yaml"
+    special_value = '$(echo pwned) "quoted" $PATH `echo hi` \\'
+
+    cfg_path.write_text(
+        f"""
+paths:
+  encoder_script: '{special_value}'
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TRICORDER_CONFIG", str(cfg_path))
+
+    env_file = tmp_path / "runtime.env"
+    values = prepare_runtime(env_file)
+
+    assert values["ENCODER_SCRIPT"] == special_value
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -a; source \"$1\"; printf '%s' \"$ENCODER_SCRIPT\"",
+            "_",
+            str(env_file),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout == special_value

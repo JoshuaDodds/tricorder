@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from pathlib import Path
 from typing import Dict
@@ -10,7 +11,9 @@ from .config import reload_cfg
 
 
 def _escape_env_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    """Escape a value so sourcing the env file keeps it literal."""
+
+    return shlex.quote(value)
 
 
 def _write_env_file(env_path: Path, values: Dict[str, str]) -> None:
@@ -20,7 +23,7 @@ def _write_env_file(env_path: Path, values: Dict[str, str]) -> None:
         for key, raw_value in values.items():
             if not raw_value:
                 continue
-            handle.write(f'{key}="{_escape_env_value(raw_value)}"\n')
+            handle.write(f"{key}={_escape_env_value(raw_value)}\n")
     tmp_path.replace(env_path)
 
 
