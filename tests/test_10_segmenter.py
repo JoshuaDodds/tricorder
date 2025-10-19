@@ -31,6 +31,15 @@ def read_sample(buf: bytes, idx: int = 0) -> int:
     return int.from_bytes(buf[start:start + 2], 'little', signed=True)
 
 
+def _make_stub_recorder():
+    rec = object.__new__(TimelineRecorder)
+    rec._writer_backpressure_events = 0
+    rec._writer_backpressure_max_wait = 0.0
+    rec.writer_queue_drops = 0
+    rec._audio_queue_depth = lambda: 1  # type: ignore[attr-defined]
+    return rec
+
+
 def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as wav_file:
@@ -53,6 +62,64 @@ def test_event_trigger_and_flush(tmp_path, monkeypatch):
 
     # After flush, recorder resets state
     assert rec.base_name is None
+
+
+def test_writer_queue_waits_for_space(monkeypatch):
+    rec = _make_stub_recorder()
+
+    class DummyQueue:
+        def __init__(self):
+            self.calls = 0
+
+        def put_nowait(self, item):  # pragma: no cover - exercised below
+            raise queue.Full
+
+        def put(self, item, timeout=None):
+            self.calls += 1
+            if self.calls < 3:
+                raise queue.Full
+
+        def qsize(self):
+            return 256
+
+    rec.audio_q = DummyQueue()
+
+    class AliveWriter:
+        def is_alive(self):
+            return True
+
+    rec.writer = AliveWriter()
+
+    assert rec._q_send(b"test") is True
+    assert rec.writer_queue_drops == 0
+    assert rec._writer_backpressure_events == 1
+    assert rec._writer_backpressure_max_wait >= 0.0
+
+
+def test_writer_queue_drops_when_writer_dead():
+    rec = _make_stub_recorder()
+
+    class DummyQueue:
+        def put_nowait(self, item):
+            raise queue.Full
+
+        def put(self, item, timeout=None):  # pragma: no cover - not used when dropping
+            raise queue.Full
+
+        def qsize(self):
+            return 0
+
+    rec.audio_q = DummyQueue()
+
+    class DeadWriter:
+        def is_alive(self):
+            return False
+
+    rec.writer = DeadWriter()
+
+    assert rec._q_send(b"test") is False
+    assert rec.writer_queue_drops == 1
+    assert rec._writer_backpressure_events == 1
 
 
 def test_flush_does_not_block_on_encode(monkeypatch):

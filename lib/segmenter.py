@@ -433,6 +433,14 @@ MAX_PENDING_ENCODE_JOBS = max(
     1, int(cfg["segmenter"].get("max_pending_encodes", 8))
 )
 
+WRITER_QUEUE_RETRY_SECONDS = 0.05
+WRITER_QUEUE_MAX_BLOCK_SECONDS = 2.0
+WRITER_QUEUE_LOG_SECONDS = 0.5
+
+STREAMING_QUEUE_RETRY_SECONDS = 0.02
+STREAMING_QUEUE_MAX_BLOCK_SECONDS = 0.75
+STREAMING_QUEUE_LOG_SECONDS = 0.25
+
 
 @dataclass
 class StartupRecoveryReport:
@@ -867,6 +875,8 @@ class StreamingEncoderResult:
     stderr: str | None
     bytes_sent: int
     dropped_chunks: int
+    queue_wait_events: int = 0
+    max_queue_wait: float = 0.0
 
 
 class StreamingOpusEncoder:
@@ -884,6 +894,9 @@ class StreamingOpusEncoder:
         self._stderr: bytes | None = None
         self._returncode: int | None = None
         self._closed = threading.Event()
+        self._queue_wait_events = 0
+        self._queue_max_wait = 0.0
+        self._queue_last_warn = 0.0
 
     def _build_command(self) -> list[str]:
         base_cmd = [
@@ -988,11 +1001,20 @@ class StreamingOpusEncoder:
     def feed(self, chunk: bytes) -> bool:
         if not chunk or self._process is None:
             return False
+        payload = bytes(chunk)
         try:
-            self._queue.put_nowait(bytes(chunk))
+            self._queue.put_nowait(payload)
             return True
         except queue.Full:
+            now = time.monotonic()
+            self._queue_wait_events += 1
             self._dropped += 1
+            if (now - self._queue_last_warn) >= STREAMING_QUEUE_LOG_SECONDS:
+                print(
+                    "[streaming] WARN: streaming encoder queue saturated; dropping frame",
+                    flush=True,
+                )
+                self._queue_last_warn = now
             return False
 
     def close(self, *, timeout: float | None = None) -> StreamingEncoderResult:
@@ -1005,6 +1027,8 @@ class StreamingOpusEncoder:
                 stderr=None,
                 bytes_sent=self._bytes_sent,
                 dropped_chunks=self._dropped,
+                queue_wait_events=self._queue_wait_events,
+                max_queue_wait=self._queue_max_wait,
             )
 
         try:
@@ -1061,6 +1085,8 @@ class StreamingOpusEncoder:
             stderr=stderr_text,
             bytes_sent=self._bytes_sent,
             dropped_chunks=self._dropped,
+            queue_wait_events=self._queue_wait_events,
+            max_queue_wait=self._queue_max_wait,
         )
 
 
@@ -2169,11 +2195,22 @@ class TimelineRecorder:
         self.trigger_rms: int | None = None
         self.writer_queue_drops = 0
         self.streaming_queue_drops = 0
+        self._writer_backpressure_events = 0
+        self._writer_backpressure_max_wait = 0.0
+        self._frame_mismatch_count = 0
+        self._frame_mismatch_last_len: int | None = None
 
         self.frames_written = 0
         self.sum_rms = 0
         self.saw_voiced = False
         self.saw_loud = False
+
+        # Monotonic timestamp representing when the active event logically
+        # started. This mirrors ``event_started_epoch`` (wall clock) but
+        # avoids issues with time adjustments and lets us derive a more
+        # accurate duration even when frame metrics are throttled.
+        self._event_started_monotonic: float | None = None
+        self._last_frame_rms: int = 0
 
         self._ingest_hint: Optional[RecorderIngestHint] = ingest_hint
         self._ingest_hint_used = False
@@ -2209,6 +2246,7 @@ class TimelineRecorder:
         self._last_metrics_update = 0.0
         self._last_metrics_value: int | None = None
         self._last_metrics_threshold: int | None = None
+        self._last_metrics_duration: float | None = None
         self._filter_chain_samples: collections.deque[float] = collections.deque(
             maxlen=max(1, FILTER_CHAIN_METRICS_WINDOW)
         )
@@ -2491,7 +2529,10 @@ class TimelineRecorder:
         if start_epoch is None or not segments:
             return []
         if duration_seconds is None and self.frames_written > 0:
-            duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+            duration_seconds = self._event_duration_from_frames(
+                self.frames_written,
+                start_monotonic=self._event_started_monotonic,
+            )
         duration = (
             float(duration_seconds)
             if isinstance(duration_seconds, (int, float)) and duration_seconds > 0
@@ -2855,24 +2896,63 @@ class TimelineRecorder:
             return None
         return self._live_waveform_rel_path
 
-    def _maybe_update_live_metrics(self, rms_value: int) -> None:
+    def _event_duration_from_frames(
+        self,
+        frames: int,
+        *,
+        start_monotonic: float | None,
+        now_monotonic: float | None = None,
+    ) -> float:
+        frame_duration = max(0, int(frames)) * (FRAME_MS / 1000.0)
+        if start_monotonic is None:
+            return frame_duration
+
+        if now_monotonic is None:
+            now_monotonic = time.monotonic()
+        elapsed = max(0.0, now_monotonic - start_monotonic)
+        if frame_duration <= 0.0:
+            return elapsed
+        return max(frame_duration, elapsed)
+
+    def _maybe_update_live_metrics(self, rms_value: int, *, force: bool = False) -> None:
         if self._status_mode != "live":
             return
         now = time.monotonic()
         whole = int(rms_value)
         threshold = int(self._adaptive.threshold_linear)
-        if (
-            now - self._last_metrics_update < self._metrics_interval
+
+        capturing, event, last_event, reason = self._status_snapshot()
+        duration_seconds: float | None = None
+        if capturing:
+            duration_seconds = self._event_duration_from_frames(
+                self.frames_written,
+                start_monotonic=self._event_started_monotonic,
+            )
+
+        skip_update = (
+            not force
+            and now - self._last_metrics_update < self._metrics_interval
             and self._last_metrics_value == whole
             and self._last_metrics_threshold == threshold
-        ):
-            return
+        )
+        if skip_update:
+            if capturing and duration_seconds is not None:
+                last_duration = self._last_metrics_duration
+                min_increment = self._metrics_interval
+                if last_duration is None or (
+                    duration_seconds - last_duration
+                ) >= min_increment:
+                    pass
+                else:
+                    return
+            else:
+                return
 
         self._last_metrics_update = now
         self._last_metrics_value = whole
         self._last_metrics_threshold = threshold
+        self._last_metrics_duration = duration_seconds if capturing else None
 
-        capturing, event, last_event, reason = self._status_snapshot()
         self._update_capture_status(
             capturing,
             event=event,
@@ -2881,11 +2961,7 @@ class TimelineRecorder:
             extra={
                 "current_rms": whole,
                 "service_running": True,
-                "event_duration_seconds": (
-                    self.frames_written * (FRAME_MS / 1000.0)
-                    if capturing
-                    else None
-                ),
+                "event_duration_seconds": duration_seconds,
                 "event_size_bytes": self._current_event_size() if capturing else None,
                 "partial_recording_path": self._current_partial_path(capturing),
                 "streaming_container_format": self._current_partial_format(capturing),
@@ -2980,6 +3056,32 @@ class TimelineRecorder:
             print(json.dumps(payload), flush=True)
             self._filter_last_log_ts = now
 
+    def _record_frame_size_mismatch(self, actual_len: int) -> None:
+        self._frame_mismatch_count += 1
+        self._frame_mismatch_last_len = max(0, int(actual_len))
+        if self._frame_mismatch_count == 1 or self._frame_mismatch_count % 100 == 0:
+            print(
+                "[segmenter] WARN: unexpected frame length "
+                f"{actual_len} (expected {FRAME_BYTES})",
+                flush=True,
+            )
+
+    def _prepare_frame_bytes(self, data: bytes | bytearray | memoryview) -> bytes:
+        frame = bytes(data)
+        if len(frame) != FRAME_BYTES:
+            self._record_frame_size_mismatch(len(frame))
+        return frame
+
+    def _audio_queue_depth(self) -> int | None:
+        try:
+            depth = self.audio_q.qsize()
+        except (AttributeError, NotImplementedError):
+            return None
+        try:
+            return int(depth)
+        except (TypeError, ValueError):
+            return None
+
     def _parallel_cpu_ready(self) -> bool:
         if PARALLEL_ENCODE_LOAD_THRESHOLD <= 0.0:
             return True
@@ -3031,11 +3133,72 @@ class TimelineRecorder:
             flush=True,
         )
 
-    def _q_send(self, item):
+    def _q_send(self, item, *, drop_ok: bool = True) -> bool:
         try:
             self.audio_q.put_nowait(item)
+            return True
         except queue.Full:
-            self.writer_queue_drops += 1
+            wait_start = time.monotonic()
+            warned = False
+            saturation_logged = False
+            self._writer_backpressure_events += 1
+            while True:
+                writer_alive = self.writer.is_alive() if hasattr(self, "writer") else True
+                elapsed = time.monotonic() - wait_start
+                if not writer_alive:
+                    if elapsed > self._writer_backpressure_max_wait:
+                        self._writer_backpressure_max_wait = elapsed
+                    print(
+                        "[segmenter] ERROR: writer thread unavailable while queue full; dropping frame",
+                        flush=True,
+                    )
+                    self.writer_queue_drops += 1
+                    return False
+                if (
+                    drop_ok
+                    and WRITER_QUEUE_MAX_BLOCK_SECONDS > 0.0
+                    and elapsed >= WRITER_QUEUE_MAX_BLOCK_SECONDS
+                    and not saturation_logged
+                ):
+                    depth = self._audio_queue_depth()
+                    detail = (
+                        f" (depth={depth}/{MAX_QUEUE_FRAMES})" if depth is not None else ""
+                    )
+                    print(
+                        "[segmenter] WARN: writer queue saturated; waiting for consumer"
+                        f"{detail}",
+                        flush=True,
+                    )
+                    saturation_logged = True
+                try:
+                    self.audio_q.put(item, timeout=WRITER_QUEUE_RETRY_SECONDS)
+                except queue.Full:
+                    if (not warned) and elapsed >= WRITER_QUEUE_LOG_SECONDS:
+                        warned = True
+                        depth = self._audio_queue_depth()
+                        detail = (
+                            f" (depth={depth}/{MAX_QUEUE_FRAMES})" if depth is not None else ""
+                        )
+                        print(
+                            "[segmenter] WARN: writer queue full; applying backpressure"
+                            f"{detail}",
+                            flush=True,
+                        )
+                    continue
+                elapsed = time.monotonic() - wait_start
+                if elapsed > self._writer_backpressure_max_wait:
+                    self._writer_backpressure_max_wait = elapsed
+                if warned and elapsed >= WRITER_QUEUE_LOG_SECONDS:
+                    depth = self._audio_queue_depth()
+                    detail = (
+                        f" (depth={depth}/{MAX_QUEUE_FRAMES})" if depth is not None else ""
+                    )
+                    print(
+                        "[segmenter] INFO: writer queue drained after backpressure"
+                        f" in {elapsed:.3f}s{detail}",
+                        flush=True,
+                    )
+                return True
 
     def ingest(self, buf: bytes, idx: int) -> bytes:
         force_restart = False
@@ -3128,6 +3291,7 @@ class TimelineRecorder:
             if threshold_changed:
                 self._emit_threshold_update()
 
+        self._last_frame_rms = int(rms_val)
         self._maybe_update_live_metrics(rms_val)
 
         # once per-second debug (only if DEV enabled)
@@ -3182,6 +3346,7 @@ class TimelineRecorder:
 
                 prebuf_frames = len(self.prebuf)
                 prebuf_seconds = max(prebuf_frames - 1, 0) * (FRAME_MS / 1000.0)
+                trigger_monotonic = time.monotonic()
                 trigger_epoch = time.time()
 
                 if hint_timestamp:
@@ -3208,6 +3373,10 @@ class TimelineRecorder:
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
                 self.event_started_epoch = start_epoch
+                start_monotonic = trigger_monotonic - prebuf_seconds
+                if start_monotonic < 0.0:
+                    start_monotonic = 0.0
+                self._event_started_monotonic = start_monotonic
                 self.event_day = time.strftime("%Y%m%d", time.localtime(start_epoch))
 
                 day_stamp = time.strftime("%Y%m%d")
@@ -3217,7 +3386,13 @@ class TimelineRecorder:
                 except OSError:
                     pass
 
-                self._q_send(('open', self.base_name, self.tmp_wav_path))
+                if not self._q_send(('open', self.base_name, self.tmp_wav_path), drop_ok=False):
+                    print(
+                        "[segmenter] ERROR: failed to enqueue writer open command; aborting event",
+                        flush=True,
+                    )
+                    self._reset_event_state()
+                    return buf
 
                 if self._streaming_enabled:
                     try:
@@ -3266,7 +3441,7 @@ class TimelineRecorder:
                 prebuf_bytes: list[bytes] = []
                 if self.prebuf:
                     for f in self.prebuf:
-                        frame_bytes = bytes(f)
+                        frame_bytes = self._prepare_frame_bytes(f)
                         prebuf_bytes.append(frame_bytes)
                         self._q_send(frame_bytes)
                         if self._streaming_encoder and not self._streaming_encoder.feed(frame_bytes):
@@ -3279,7 +3454,7 @@ class TimelineRecorder:
                             except Exception:
                                 pass
                         self.frames_written += 1
-                        self.sum_rms += rms(f)
+                        self.sum_rms += rms(frame_bytes)
                 self.prebuf.clear()
 
                 self.active = True
@@ -3318,7 +3493,10 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
-                duration_hint = self.frames_written * (FRAME_MS / 1000.0)
+                duration_hint = self._event_duration_from_frames(
+                    self.frames_written,
+                    start_monotonic=self._event_started_monotonic,
+                )
                 event_status.update(
                     self._current_motion_event_payload(
                         duration_seconds=duration_hint
@@ -3349,14 +3527,15 @@ class TimelineRecorder:
                     self._update_capture_status(True, event=event_status)
             return buf
 
-        self._q_send(bytes(buf))
-        if self._streaming_encoder and not self._streaming_encoder.feed(bytes(buf)):
+        frame_bytes = self._prepare_frame_bytes(buf)
+        self._q_send(frame_bytes)
+        if self._streaming_encoder and not self._streaming_encoder.feed(frame_bytes):
             self.streaming_queue_drops += 1
-        if self._parallel_encoder and not self._parallel_encoder.feed(bytes(buf)):
+        if self._parallel_encoder and not self._parallel_encoder.feed(frame_bytes):
             self._parallel_encoder_drops += 1
         if self._live_waveform:
             try:
-                self._live_waveform.add_frame(bytes(buf))
+                self._live_waveform.add_frame(frame_bytes)
             except Exception:
                 pass
         self.frames_written += 1
@@ -3387,6 +3566,9 @@ class TimelineRecorder:
         if self.frames_written <= 0 or not self.base_name:
             self._reset_event_state()
             return
+
+        if self._status_mode == "live" and self.active:
+            self._maybe_update_live_metrics(self._last_frame_rms, force=True)
 
         streaming_result: StreamingEncoderResult | None = None
         parallel_result: StreamingEncoderResult | None = None
@@ -3482,9 +3664,13 @@ class TimelineRecorder:
         trigger_rms = int(self.trigger_rms) if self.trigger_rms is not None else 0
 
         ended_epoch = time.time()
-        duration_seconds = self.frames_written * (FRAME_MS / 1000.0)
+        duration_seconds = self._event_duration_from_frames(
+            self.frames_written,
+            start_monotonic=self._event_started_monotonic,
+            now_monotonic=time.monotonic(),
+        )
 
-        self._q_send(('close', self.base_name))
+        self._q_send(('close', self.base_name), drop_ok=False)
 
         tmp_wav_path, base = None, None
         try:
@@ -3493,10 +3679,34 @@ class TimelineRecorder:
             print("[segmenter] WARN: writer did not close file within 5s", flush=True)
 
         total_queue_drops = self.writer_queue_drops + self.streaming_queue_drops
+        detail_parts: list[str] = []
+        if total_queue_drops:
+            detail_parts.append(f"q_drops={total_queue_drops}")
+        if self._writer_backpressure_events:
+            detail_parts.append(
+                f"writer_backpressure={self._writer_backpressure_events}"
+            )
+            if self._writer_backpressure_max_wait > 0.0:
+                detail_parts.append(
+                    f"writer_max_wait={self._writer_backpressure_max_wait:.3f}s"
+                )
+        if (
+            streaming_result
+            and isinstance(streaming_result.queue_wait_events, int)
+            and streaming_result.queue_wait_events > 0
+        ):
+            detail_parts.append(
+                f"stream_queue_waits={streaming_result.queue_wait_events}"
+            )
+            if streaming_result.max_queue_wait > 0.0:
+                detail_parts.append(
+                    f"stream_max_wait={streaming_result.max_queue_wait:.3f}s"
+                )
+        detail_suffix = f", {', '.join(detail_parts)}" if detail_parts else ""
         print(
-            f"[segmenter] Event ended ({reason}). type={etype_label}, avg_rms={avg_rms:.1f}, frames={self.frames_written}"
-            + (f", q_drops={total_queue_drops}" if total_queue_drops else ""),
-            flush=True
+            f"[segmenter] Event ended ({reason}). type={etype_label}, avg_rms={avg_rms:.1f}, "
+            f"frames={self.frames_written}{detail_suffix}",
+            flush=True,
         )
 
         job_id: int | None = None
@@ -3650,6 +3860,34 @@ class TimelineRecorder:
                     duration_seconds=duration_seconds,
                 )
             )
+
+        last_event_status["writer_queue_drops"] = int(self.writer_queue_drops)
+        last_event_status["streaming_queue_drops"] = int(self.streaming_queue_drops)
+        if self._writer_backpressure_events:
+            last_event_status["writer_backpressure_events"] = int(
+                self._writer_backpressure_events
+            )
+        if self._writer_backpressure_max_wait > 0.0:
+            last_event_status["writer_backpressure_max_wait_seconds"] = (
+                float(self._writer_backpressure_max_wait)
+            )
+        if self._frame_mismatch_count:
+            last_event_status["frame_size_mismatch_count"] = int(
+                self._frame_mismatch_count
+            )
+            if self._frame_mismatch_last_len is not None:
+                last_event_status["last_frame_size_bytes"] = int(
+                    self._frame_mismatch_last_len
+                )
+        if streaming_result:
+            if streaming_result.queue_wait_events:
+                last_event_status["stream_queue_wait_events"] = int(
+                    streaming_result.queue_wait_events
+                )
+            if streaming_result.max_queue_wait > 0.0:
+                last_event_status["stream_max_queue_wait_seconds"] = float(
+                    streaming_result.max_queue_wait
+                )
 
         last_event_status["end_reason"] = reason
         last_event_status["in_progress"] = False
@@ -3909,6 +4147,7 @@ class TimelineRecorder:
         self.event_counter = None
         self.trigger_rms = None
         self.event_started_epoch = None
+        self._event_started_monotonic = None
         self.event_day = None
         self._ingest_hint = None
         self._ingest_hint_used = True
@@ -3920,6 +4159,12 @@ class TimelineRecorder:
         self._current_motion_event_end = None
         self._reset_motion_segments()
         self._cleanup_live_waveform()
+        self._last_frame_rms = 0
+        self._last_metrics_duration = None
+        self._writer_backpressure_events = 0
+        self._writer_backpressure_max_wait = 0.0
+        self._frame_mismatch_count = 0
+        self._frame_mismatch_last_len = None
 
     def flush(self, idx: int):
         if self.active:
