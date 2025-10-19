@@ -1,6 +1,8 @@
 """Audio helper utilities."""
 from __future__ import annotations
 
+import audioop
+
 from typing import Final
 
 
@@ -10,25 +12,11 @@ def select_channel(
     sample_width: int,
     channel_index: int = 0,
 ) -> bytes:
-    """Extract a single channel from interleaved PCM audio.
-
-    Args:
-        data: Raw PCM samples in little-endian format.
-        channels: Number of interleaved channels present in ``data``.
-        sample_width: Bytes per sample (e.g. ``2`` for ``S16_LE``).
-        channel_index: Zero-based channel to extract; values outside the
-            available range are clamped to the closest valid index.
-
-    Returns:
-        ``bytes`` containing PCM samples for the requested channel. Any partial
-        frame at the end of ``data`` is discarded to ensure alignment.
-    """
+    """Extract a single channel from interleaved PCM audio."""
     if sample_width <= 0:
         raise ValueError("sample_width must be positive")
 
     if channels <= 1:
-        # Trim trailing partial samples to keep callers from accidentally feeding
-        # misaligned frames further down the pipeline.
         usable = len(data) - (len(data) % sample_width)
         return bytes(data[:usable]) if usable else b""
 
@@ -50,4 +38,61 @@ def select_channel(
         end = start + sample_width
         out_start = frame_idx * sample_width
         result[out_start:out_start + sample_width] = view[start:end]
+    return bytes(result)
+
+
+def downmix_to_mono(
+    data: bytes | bytearray | memoryview,
+    channels: int,
+    sample_width: int,
+) -> bytes:
+    """Combine multi-channel PCM data into a single mono stream.
+
+    ``audioop.tomono`` is used for the common stereo case to keep the
+    implementation efficient. A generic arithmetic fallback is provided for
+    other channel counts or when ``audioop`` raises an exception.
+    """
+
+    if sample_width <= 0:
+        raise ValueError("sample_width must be positive")
+
+    if channels <= 1:
+        usable = len(data) - (len(data) % sample_width)
+        return bytes(data[:usable]) if usable else b""
+
+    frame_stride: Final[int] = channels * sample_width
+    usable = len(data) - (len(data) % frame_stride)
+    if usable <= 0:
+        return b""
+
+    chunk = memoryview(data)[:usable]
+
+    if channels == 2:
+        try:
+            return audioop.tomono(bytes(chunk), sample_width, 0.5, 0.5)
+        except (audioop.error, ValueError):
+            pass
+
+    frames = usable // frame_stride
+    result = bytearray(frames * sample_width)
+    min_val = -(1 << (8 * sample_width - 1))
+    max_val = (1 << (8 * sample_width - 1)) - 1
+
+    for frame_idx in range(frames):
+        start = frame_idx * frame_stride
+        acc = 0
+        for channel in range(channels):
+            sample_start = start + channel * sample_width
+            sample_end = sample_start + sample_width
+            sample = int.from_bytes(
+                chunk[sample_start:sample_end], "little", signed=True
+            )
+            acc += sample
+        averaged = round(acc / channels)
+        averaged = max(min_val, min(max_val, averaged))
+        out_start = frame_idx * sample_width
+        result[out_start : out_start + sample_width] = averaged.to_bytes(
+            sample_width, "little", signed=True
+        )
+
     return bytes(result)

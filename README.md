@@ -436,6 +436,15 @@ Environment variables override YAML values. Common overrides include:
 - `TRICORDER_CONFIG_TEMPLATE` — optional absolute path to a commented template used to rehydrate inline guidance if the active
   YAML lost its comments.
 
+The systemd units now render these overrides into `/run/tricorder/runtime.env`
+at launch via `python -m lib.unit_runtime`. This keeps the recorder, web
+streamer, and dropbox ingest service in sync with `config.yaml` without
+hard-coding ALSA devices or directory paths in the unit files. The helper also
+ensures the configured tmp, recordings, dropbox, and ingest directories exist
+and maintains a compatibility symlink at `/apps/tricorder/dropbox` so the
+existing path unit continues to react to file drops even when the dropbox
+location is customized.
+
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
 - `audio` – device, sample rate, channel count, frame size, gain, USB reset workaround toggle, VAD aggressiveness, optional filter chain for hum/rumble control.

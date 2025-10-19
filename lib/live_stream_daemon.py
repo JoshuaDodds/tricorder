@@ -16,7 +16,7 @@ from lib.hls_mux import HLSTee
 from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 from lib.audio_filter_chain import AudioFilterChain
-from lib.audio_utils import select_channel
+from lib.audio_utils import downmix_to_mono
 
 cfg = get_cfg()
 
@@ -661,7 +661,7 @@ def main():
                     capture_frame = bytes(buf[:CAPTURE_FRAME_BYTES])
                     del buf[:CAPTURE_FRAME_BYTES]
                     if CAPTURE_CHANNELS > 1:
-                        frame = select_channel(
+                        frame = downmix_to_mono(
                             capture_frame, CAPTURE_CHANNELS, SAMPLE_WIDTH_BYTES
                         )
                         if len(frame) != FRAME_BYTES:
