@@ -1599,7 +1599,9 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
         existing_filters = []
 
     device = payload.get("device")
-    if isinstance(device, str) and device.strip():
+    if device is None:
+        pass
+    elif isinstance(device, str):
         normalized["device"] = device.strip()
     else:
         errors.append("device must be a non-empty string")

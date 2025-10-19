@@ -1666,6 +1666,67 @@ def test_audio_settings_validation_error(tmp_path, monkeypatch):
     asyncio.run(runner())
 
 
+def test_audio_settings_allows_default_device(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("audio:\n  device: hw:1,0\n", encoding="utf-8")
+
+    monkeypatch.setenv("TRICORDER_CONFIG", str(config_path))
+    monkeypatch.setattr(config, "_cfg_cache", None, raising=False)
+    monkeypatch.setattr(config, "_primary_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_active_config_path", None, raising=False)
+    monkeypatch.setattr(config, "_search_paths", [], raising=False)
+
+    async def runner():
+        systemctl_calls: list[list[str]] = []
+
+        async def fake_systemctl(args):
+            systemctl_calls.append(list(args))
+            if args and args[0] == "is-active":
+                return 0, "active\n", ""
+            return 0, "", ""
+
+        monkeypatch.setattr(web_streamer, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(web_streamer, "discover_capture_devices", lambda: [])
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "device": "",
+                "sample_rate": 48000,
+                "frame_ms": 20,
+                "gain": 2.5,
+                "vad_aggressiveness": 3,
+                "channels": 1,
+                "use_usb_reset_workaround": True,
+            }
+            resp = await client.post("/api/config/audio", json=payload)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["audio"]["device"] == ""
+            restart_units = [result["unit"] for result in data["restart_results"]]
+            assert restart_units == [
+                "voice-recorder.service",
+                "web-streamer.service",
+            ]
+            assert all(result.get("ok") for result in data["restart_results"])
+            assert systemctl_calls == [
+                ["is-active", "voice-recorder.service"],
+                ["restart", "voice-recorder.service"],
+                ["is-active", "web-streamer.service"],
+                ["restart", "web-streamer.service"],
+            ]
+
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["audio"]["device"] == ""
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_transcription_settings_roundtrip(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
