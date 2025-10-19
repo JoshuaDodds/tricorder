@@ -1851,6 +1851,7 @@ def test_encoder_worker_pins_affinity(monkeypatch):
     assert calls["cmd"][0] == "/bin/true"
     assert calls["preexec_fn"] is segmenter._set_single_core_affinity
     assert calls["env"].get("ENCODER_MIN_CLIP_SECONDS") == "1.75"
+    assert calls["env"].get("ENCODER_CHANNELS") == str(segmenter.CHANNELS)
 
 
 def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
@@ -1917,9 +1918,15 @@ def test_encode_script_discards_short_new_clips(tmp_path):
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
 
+    ffmpeg_log = tmp_path / "ffmpeg_args.log"
     ffmpeg_stub = stub_bin / "ffmpeg"
     ffmpeg_stub.write_text(
-        "#!/usr/bin/env bash\nout=\"${@: -1}\"\nmkdir -p \"$(dirname \"$out\")\"\nprintf 'fake' > \"$out\"\nexit 0\n",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"${FFMPEG_LOG_PATH}\"\n"
+        "out=\"${@: -1}\"\n"
+        "mkdir -p \"$(dirname \"$out\")\"\n"
+        "printf 'fake' > \"$out\"\n"
+        "exit 0\n",
         encoding="utf-8",
     )
     ffmpeg_stub.chmod(0o755)
@@ -1939,10 +1946,12 @@ def test_encode_script_discards_short_new_clips(tmp_path):
     env["PATH"] = f"{stub_bin}:{env['PATH']}"
     env["PYTHONPATH"] = str(repo_root)
     env["ENCODER_PYTHON"] = sys.executable
+    env["ENCODER_CHANNELS"] = "2"
     env["DENOISE"] = "0"
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
     env["ENCODER_RECORDINGS_DIR"] = str(tmp_path / "recordings")
+    env["FFMPEG_LOG_PATH"] = str(ffmpeg_log)
     env["ENCODER_MIN_CLIP_SECONDS"] = "1.0"
 
     result = subprocess.run(
@@ -1975,6 +1984,11 @@ def test_encode_script_discards_short_new_clips(tmp_path):
     assert not remaining_opus, "no short clips should remain in the recordings directory"
     raw_dir = recordings_dir / ".original_wav"
     assert not raw_dir.exists(), "original WAVs should not be preserved for discarded clips"
+
+    logged_args = ffmpeg_log.read_text(encoding="utf-8").strip().split()
+    assert "-ac" in logged_args, "ffmpeg invocation should include channel flag"
+    ac_index = logged_args.index("-ac")
+    assert logged_args[ac_index + 1] == "2"
 
 
 def test_encode_script_skips_filters_for_short_streaming_clip(tmp_path):
