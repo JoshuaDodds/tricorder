@@ -7105,6 +7105,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             message = errors[0]
             return web.json_response({"error": message, "errors": errors}, status=400)
 
+        provided_audio_channels: int | None = None
+        if (
+            section == "audio"
+            and isinstance(data, dict)
+            and "channels" in data
+        ):
+            candidate = normalized.get("channels")
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+                provided_audio_channels = max(1, min(2, int(candidate)))
+
         try:
             update_func(normalized)
         except ConfigPersistenceError as exc:
@@ -7119,6 +7129,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 {"error": f"Unexpected error while saving {section_label} settings"},
                 status=500,
             )
+
+        if section == "audio" and provided_audio_channels is not None:
+            os.environ["AUDIO_CHANNELS"] = str(provided_audio_channels)
+            os.environ["ENCODER_CHANNELS"] = str(provided_audio_channels)
 
         cfg_snapshot = get_cfg()
         payload = _config_section_payload(section, cfg_snapshot, canonical_fn)
