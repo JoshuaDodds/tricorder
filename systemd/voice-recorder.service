@@ -9,6 +9,7 @@ Type=simple
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=/apps/tricorder
 ExecStart=/apps/tricorder/bin/run_with_runtime_env.sh --ensure-dirs -- /apps/tricorder/venv/bin/python -m lib.live_stream_daemon
+SyslogIdentifier=live-recorder
 Restart=always
 RestartSec=3
 Nice=5

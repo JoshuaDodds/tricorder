@@ -431,8 +431,10 @@ def main():
     global p, stop_requested, split_requested
     stop_requested = False
     split_requested = False
-    print(f"[live] starting with device={AUDIO_DEV}", flush=True)
-    print(f"[live] streaming mode={STREAM_MODE}", flush=True)
+    print(
+        f"[live] starting stream (device={AUDIO_DEV}, mode={STREAM_MODE})",
+        flush=True,
+    )
 
     manual_record_enabled, manual_record_mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
     auto_record_enabled, auto_record_mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
@@ -833,7 +835,7 @@ def main():
         webrtc_writer.close()
     if filter_pipeline is not None:
         filter_pipeline.close()
-    print("[live] clean shutdown complete", flush=True)
+    print("[live] shutdown complete", flush=True)
 
 if __name__ == "__main__":
     try:
