@@ -7134,7 +7134,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             os.environ["AUDIO_CHANNELS"] = str(provided_audio_channels)
             os.environ["ENCODER_CHANNELS"] = str(provided_audio_channels)
 
-        cfg_snapshot = get_cfg()
+        cfg_snapshot = reload_cfg()
         payload = _config_section_payload(section, cfg_snapshot, canonical_fn)
         restart_units = section_restart_units.get(section, [])
         payload["restart_results"] = await _restart_units(restart_units)
