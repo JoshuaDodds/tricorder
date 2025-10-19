@@ -16,6 +16,7 @@ from lib.hls_mux import HLSTee
 from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 from lib.audio_filter_chain import AudioFilterChain
+from lib.audio_utils import select_channel
 
 cfg = get_cfg()
 
@@ -42,10 +43,20 @@ LEGACY_HLS_EXTRA_ARGS = _collect_legacy_extra_args(STREAMING_CFG)
 FILTER_CHAIN_CFG = cfg.get("audio", {}).get("filter_chain")
 FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 AUDIO_FILTER_CHAIN_ENABLED = FILTER_CHAIN is not None
-SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
-FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
+audio_cfg = cfg.get("audio", {})
+SAMPLE_RATE = int(audio_cfg.get("sample_rate", 48000))
+FRAME_MS = int(audio_cfg.get("frame_ms", 20))
+SAMPLE_WIDTH_BYTES = 2
+FRAME_SAMPLES = max(1, int(SAMPLE_RATE * FRAME_MS / 1000))
+FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH_BYTES
+try:
+    CAPTURE_CHANNELS = int(audio_cfg.get("channels", 1))
+except (TypeError, ValueError):
+    CAPTURE_CHANNELS = 1
+CAPTURE_CHANNELS = max(1, min(2, CAPTURE_CHANNELS))
+CAPTURE_FRAME_BYTES = FRAME_BYTES * CAPTURE_CHANNELS
 CHUNK_BYTES = 4096
+USB_RESET_WORKAROUND = bool(audio_cfg.get("usb_reset_workaround", True))
 STATE_POLL_INTERVAL = 1.0
 STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
 if STREAM_MODE not in {"hls", "webrtc"}:
@@ -62,7 +73,7 @@ AUTO_POLL_INTERVAL = 0.5
 ARECORD_CMD = [
     "arecord",
     "-D", AUDIO_DEV,
-    "-c", "1",
+    "-c", str(CAPTURE_CHANNELS),
     "-f", "S16_LE",
     "-r", str(SAMPLE_RATE),
     "--buffer-size", "48000",
@@ -538,6 +549,7 @@ def main():
                         flush=True,
                     )
             buf = bytearray()
+            stereo_mismatch_logged = False
             frame_idx = 0
             last_frame_time = time.monotonic()
             next_state_poll = 0.0
@@ -645,9 +657,25 @@ def main():
                     break
                 buf.extend(chunk)
 
-                while len(buf) >= FRAME_BYTES:
-                    frame = bytes(buf[:FRAME_BYTES])
-                    del buf[:FRAME_BYTES]
+                while len(buf) >= CAPTURE_FRAME_BYTES:
+                    capture_frame = bytes(buf[:CAPTURE_FRAME_BYTES])
+                    del buf[:CAPTURE_FRAME_BYTES]
+                    if CAPTURE_CHANNELS > 1:
+                        frame = select_channel(
+                            capture_frame, CAPTURE_CHANNELS, SAMPLE_WIDTH_BYTES
+                        )
+                        if len(frame) != FRAME_BYTES:
+                            if not stereo_mismatch_logged:
+                                print(
+                                    "[live] WARN: capture frame size mismatch after mono mixdown; dropping frame",
+                                    flush=True,
+                                )
+                                stereo_mismatch_logged = True
+                            continue
+                        if stereo_mismatch_logged:
+                            stereo_mismatch_logged = False
+                    else:
+                        frame = capture_frame
                     if filter_pipeline is not None:
                         try:
                             drained = filter_pipeline.push(frame)
@@ -796,8 +824,11 @@ def main():
 
             if not stop_requested:
                 print("[live] arecord ended or device unavailable; retrying in 3s...", flush=True)
-                if reset_usb():
-                    print("[live] USB device reset successful", flush=True)
+                if USB_RESET_WORKAROUND:
+                    if reset_usb():
+                        print("[live] USB device reset successful", flush=True)
+                else:
+                    print("[live] USB reset skipped (disabled in config)", flush=True)
                 time.sleep(3)
 
     if webrtc_writer is not None:

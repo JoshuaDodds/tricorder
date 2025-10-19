@@ -997,8 +997,10 @@ def test_audio_settings_round_trip(tmp_path, monkeypatch):
 audio:
   device: "hw:1,0"
   sample_rate: 32000
+  channels: 2
   frame_ms: 20
   gain: 2.0
+  usb_reset_workaround: false
   vad_aggressiveness: 2
   filter_chain:
     denoise:
@@ -1055,6 +1057,8 @@ audio:
             payload = await resp.json()
             assert payload["audio"]["device"] == "hw:1,0"
             assert payload["audio"]["sample_rate"] == 32000
+            assert payload["audio"]["channels"] == 2
+            assert payload["audio"]["usb_reset_workaround"] is False
             assert payload["audio"]["filter_chain"]["denoise"]["enabled"] is False
             assert payload["audio"]["filter_chain"]["denoise"]["type"] == "afftdn"
             assert payload["audio"]["filter_chain"]["highpass"]["enabled"] is True
@@ -1072,8 +1076,10 @@ audio:
             update_payload = {
                 "device": "hw:CARD=Device,DEV=0",
                 "sample_rate": 48000,
+                "channels": 1,
                 "frame_ms": 10,
                 "gain": 1.5,
+                "usb_reset_workaround": True,
                 "vad_aggressiveness": 3,
                 "filter_chain": {
                     "denoise": {
@@ -1099,6 +1105,8 @@ audio:
             assert resp.status == 200
             updated = await resp.json()
             assert updated["audio"]["frame_ms"] == 10
+            assert updated["audio"]["channels"] == 1
+            assert updated["audio"]["usb_reset_workaround"] is True
             assert updated["audio"]["gain"] == pytest.approx(1.5)
             assert updated["audio"]["device"] == "hw:CARD=Device,DEV=0"
             assert updated["audio"]["filter_chain"]["denoise"]["enabled"] is True
@@ -1132,6 +1140,8 @@ audio:
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             assert persisted["audio"]["gain"] == 1.5
             assert persisted["audio"]["frame_ms"] == 10
+            assert persisted["audio"]["channels"] == 1
+            assert persisted["audio"]["usb_reset_workaround"] is True
             assert persisted["audio"]["filter_chain"]["denoise"]["enabled"] is True
             assert (
                 persisted["audio"]["filter_chain"]["denoise"]["noise_floor_db"]

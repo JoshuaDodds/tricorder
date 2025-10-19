@@ -41,6 +41,7 @@ from lib.config import (
     update_audio_settings,
 )
 from lib.fault_handler import reset_usb   # 🔧 added
+from lib.audio_utils import select_channel
 from lib.noise_analyzer import (
     analyze_idle_noise,
     recommend_notch_filters,
@@ -48,10 +49,19 @@ from lib.noise_analyzer import (
 )
 
 cfg = get_cfg()
-SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
+audio_cfg = cfg.get("audio", {})
+SAMPLE_RATE = int(audio_cfg.get("sample_rate", 48000))
 SAMPLE_WIDTH = 2
-FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * FRAME_MS // 1000
+FRAME_MS = int(audio_cfg.get("frame_ms", 20))
+FRAME_SAMPLES = max(1, SAMPLE_RATE * FRAME_MS // 1000)
+FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH
+try:
+    CHANNELS = int(audio_cfg.get("channels", 1))
+except (TypeError, ValueError):
+    CHANNELS = 1
+CHANNELS = max(1, min(2, CHANNELS))
+CAPTURE_FRAME_BYTES = FRAME_BYTES * CHANNELS
+USB_RESET_WORKAROUND = bool(audio_cfg.get("usb_reset_workaround", True))
 
 DEFAULT_AUDIO_DEV = os.environ.get("AUDIO_DEV", cfg["audio"]["device"])
 
@@ -135,7 +145,7 @@ def spawn_arecord(audio_dev: str):
     cmd = [
         "arecord",
         "-D", audio_dev,
-        "-c", "1",
+        "-c", str(CHANNELS),
         "-f", "S16_LE",
         "-r", str(SAMPLE_RATE),
         "--buffer-size", "48000",
@@ -172,7 +182,7 @@ def _drain_fd(fd: int | None) -> None:
 def capture_idle_audio(proc, seconds: float, stderr_fd: int | None) -> bytes:
     if seconds <= 0:
         return b""
-    target_bytes = int(seconds * SAMPLE_RATE * SAMPLE_WIDTH)
+    target_bytes = int(seconds * SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS)
     captured = bytearray()
     deadline = time.monotonic() + max(seconds * 1.5, 1.0)
     while len(captured) < target_bytes:
@@ -185,7 +195,10 @@ def capture_idle_audio(proc, seconds: float, stderr_fd: int | None) -> bytes:
         _drain_fd(stderr_fd)
         if time.monotonic() >= deadline:
             break
-    return bytes(captured)
+    if not captured:
+        return b""
+    mono = select_channel(captured, CHANNELS, SAMPLE_WIDTH)
+    return mono
 
 
 def percentile_p95(values):
@@ -272,6 +285,7 @@ def main() -> int:
             pass
 
     buf = bytearray()
+    stereo_mismatch_logged = False
 
     if args.analyze_noise:
         capture_seconds = max(args.analyze_duration, FRAME_MS / 1000.0)
@@ -362,15 +376,18 @@ def main() -> int:
         # Read raw bytes
         chunk = proc.stdout.read(4096)
         if not chunk:
-            print("[room_tuner] arecord ended or device unavailable; attempting USB reset", flush=True)
-            reset_usb()
+            if USB_RESET_WORKAROUND:
+                print("[room_tuner] arecord ended or device unavailable; attempting USB reset", flush=True)
+                reset_usb()
+            else:
+                print("[room_tuner] arecord ended or device unavailable; USB reset disabled", flush=True)
             time.sleep(2)
             try:
                 proc = spawn_arecord(args.device)
                 buf.clear()
                 continue
             except Exception as e:
-                print(f"[room_tuner] failed to restart arecord after USB reset: {e!r}", file=sys.stderr, flush=True)
+                print(f"[room_tuner] failed to restart arecord after capture restart: {e!r}", file=sys.stderr, flush=True)
                 break
         buf.extend(chunk)
 
@@ -378,9 +395,21 @@ def main() -> int:
         _drain_fd(stderr_fd)
 
         # Process frames
-        while len(buf) >= FRAME_BYTES:
-            pcm_frame = bytes(buf[:FRAME_BYTES])
-            del buf[:FRAME_BYTES]
+        while len(buf) >= CAPTURE_FRAME_BYTES:
+            capture_frame = bytes(buf[:CAPTURE_FRAME_BYTES])
+            del buf[:CAPTURE_FRAME_BYTES]
+
+            if CHANNELS > 1:
+                pcm_frame = select_channel(capture_frame, CHANNELS, SAMPLE_WIDTH)
+                if len(pcm_frame) != FRAME_BYTES:
+                    if not stereo_mismatch_logged:
+                        print("[room_tuner] WARN: capture frame size mismatch after mono mixdown; dropping frame", flush=True)
+                        stereo_mismatch_logged = True
+                    continue
+                if stereo_mismatch_logged:
+                    stereo_mismatch_logged = False
+            else:
+                pcm_frame = capture_frame
 
             pcm_frame = apply_gain(pcm_frame)
             val_rms = audioop.rms(pcm_frame, SAMPLE_WIDTH)
