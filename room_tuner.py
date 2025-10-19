@@ -379,8 +379,6 @@ def main() -> int:
             if USB_RESET_WORKAROUND:
                 print("[room_tuner] arecord ended or device unavailable; attempting USB reset", flush=True)
                 reset_usb()
-            else:
-                print("[room_tuner] arecord ended or device unavailable; USB reset disabled", flush=True)
             time.sleep(2)
             try:
                 proc = spawn_arecord(args.device)

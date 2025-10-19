@@ -428,6 +428,7 @@ Environment variables override YAML values. Common overrides include:
 
 - `DEV=1` — enable verbose logging.
 - `AUDIO_DEV`, `GAIN` — audio input and software gain.
+- `AUDIO_CHANNELS`, `AUDIO_USB_RESET_WORKAROUND` — capture channel count and whether to reset USB audio devices between retries.
 - `REC_DIR`, `TMP_DIR`, `DROPBOX_DIR` — paths for recordings, tmpfs, and dropbox.
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
 - `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.

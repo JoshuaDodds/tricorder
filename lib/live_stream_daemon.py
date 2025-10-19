@@ -16,7 +16,7 @@ from lib.hls_mux import HLSTee
 from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 from lib.audio_filter_chain import AudioFilterChain
-from lib.audio_utils import mix_channels_to_mono
+from lib.audio_utils import select_channel
 
 cfg = get_cfg()
 
@@ -661,7 +661,7 @@ def main():
                     capture_frame = bytes(buf[:CAPTURE_FRAME_BYTES])
                     del buf[:CAPTURE_FRAME_BYTES]
                     if CAPTURE_CHANNELS > 1:
-                        frame = mix_channels_to_mono(
+                        frame = select_channel(
                             capture_frame, CAPTURE_CHANNELS, SAMPLE_WIDTH_BYTES
                         )
                         if len(frame) != FRAME_BYTES:
@@ -827,8 +827,6 @@ def main():
                 if USB_RESET_WORKAROUND:
                     if reset_usb():
                         print("[live] USB device reset successful", flush=True)
-                else:
-                    print("[live] USB reset skipped (disabled in config)", flush=True)
                 time.sleep(3)
 
     if webrtc_writer is not None:
