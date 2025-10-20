@@ -1249,6 +1249,10 @@ def update_audio_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("audio", settings, merge=True)
 
 
+def update_paths_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("paths", settings, merge=True)
+
+
 def update_segmenter_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("segmenter", settings, merge=True)
 
@@ -1279,3 +1283,7 @@ def update_dashboard_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 def update_web_server_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("web_server", settings, merge=True)
+
+
+def update_notifications_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("notifications", settings, merge=True)
