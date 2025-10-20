@@ -29,3 +29,20 @@ def test_downmix_to_mono_trims_partial_frames():
 def test_downmix_to_mono_invalid_width():
     with pytest.raises(ValueError):
         downmix_to_mono(b"", channels=2, sample_width=0)
+
+
+def test_downmix_to_mono_multichannel_fallback_rounds_correctly():
+    # Force the arithmetic fallback by using three channels.
+    frames = []
+    # Frame 1 averages cleanly to 1000.
+    frames.extend([1000, 1000, 1000])
+    # Frame 2 demonstrates fractional rounding: (1000 + 1000 + 1001) / 3.
+    frames.extend([1000, 1000, 1001])
+    # Frame 3 mixes positive and negative values.
+    frames.extend([-2000, -1000, 1000])
+
+    interleaved = struct.pack("<" + "h" * len(frames), *frames)
+    mixed = downmix_to_mono(interleaved, channels=3, sample_width=2)
+
+    expected = _pcm16([1000, 1000, -667])
+    assert mixed == expected
