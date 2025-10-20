@@ -15,6 +15,7 @@ Environment variables override file values when present.
 from __future__ import annotations
 import copy
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -943,6 +944,316 @@ def _normalize_string_list(container: MutableMapping[str, Any], key: str) -> boo
     return True
 
 
+_MISSING = object()
+
+
+def _parse_int_like(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 10)
+        except ValueError:
+            try:
+                float_candidate = float(text)
+            except ValueError:
+                return None
+            if not math.isfinite(float_candidate) or not float_candidate.is_integer():
+                return None
+            return int(float_candidate)
+    return None
+
+
+def _parse_float_like(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        candidate = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            candidate = float(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(candidate):
+        return None
+    return candidate
+
+
+def _normalize_int_field(
+    container: MutableMapping[str, Any],
+    key: str,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    candidate = _parse_int_like(value)
+    if candidate is None:
+        return False
+    if min_value is not None and candidate < min_value:
+        candidate = min_value
+    if max_value is not None and candidate > max_value:
+        candidate = max_value
+    if candidate != value:
+        container[key] = candidate
+        return True
+    return False
+
+
+def _normalize_float_field(
+    container: MutableMapping[str, Any],
+    key: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    candidate = _parse_float_like(value)
+    if candidate is None:
+        return False
+    if min_value is not None and candidate < min_value:
+        candidate = min_value
+    if max_value is not None and candidate > max_value:
+        candidate = max_value
+    if candidate != value:
+        container[key] = candidate
+        return True
+    return False
+
+
+def _normalize_bool_field(container: MutableMapping[str, Any], key: str) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING or isinstance(value, bool):
+        return False
+    candidate: bool | None
+    candidate = None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"true", "yes", "1", "on"}:
+            candidate = True
+        elif normalized in {"false", "no", "0", "off"}:
+            candidate = False
+        else:
+            return False
+    elif isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+        candidate = bool(value)
+    else:
+        return False
+    if candidate is None:
+        return False
+    container[key] = candidate
+    return True
+
+
+
+
+_STRING_LIST_PATHS: set[tuple[str, ...]] = {
+    ("archival", "rsync", "ssh_options"),
+    ("notifications", "allowed_event_types"),
+    ("web_server", "lets_encrypt", "domains"),
+}
+
+_OPTIONAL_INT_PATHS: set[tuple[str, ...]] = {
+    ("adaptive_rms", "max_rms"),
+    ("notifications", "min_trigger_rms"),
+}
+
+
+def _default_is_string_list(default: Sequence[Any]) -> bool:
+    if not default:
+        return False
+    return all(isinstance(item, str) for item in default)
+
+
+def _normalize_optional_int_field(
+    container: MutableMapping[str, Any],
+    key: str,
+    *,
+    path: tuple[str, ...],
+) -> bool:
+    _ = path
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    if value is None:
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            if container[key] is not None:
+                container[key] = None
+                return True
+            return False
+        if stripped != value:
+            container[key] = stripped
+    return _normalize_int_field(container, key)
+
+
+def _sequence_template(default: Sequence[Any]) -> Mapping[str, Any] | None:
+    template: dict[str, Any] = {}
+    for item in default:
+        if isinstance(item, Mapping):
+            for child_key, child_value in item.items():
+                if child_key not in template:
+                    template[child_key] = child_value
+    if template:
+        return template
+    return None
+
+
+def _normalize_sequence_entry(
+    container: MutableMapping[str, Any],
+    key: str,
+    default: Sequence[Any],
+    path: tuple[str, ...],
+) -> bool:
+    if path in _STRING_LIST_PATHS or _default_is_string_list(default):
+        return _normalize_string_list(container, key)
+
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+
+    changed = False
+    if isinstance(value, str):
+        if path in _STRING_LIST_PATHS:
+            return _normalize_string_list(container, key)
+        return False
+
+    sequence_value = value
+    if not isinstance(sequence_value, MutableSequence):
+        if isinstance(sequence_value, Sequence):
+            converted = _convert_to_round_trip(sequence_value)
+            if isinstance(converted, MutableSequence):
+                container[key] = converted
+                sequence_value = converted
+                changed = True
+            else:
+                return changed
+        else:
+            return changed
+
+    template = _sequence_template(default)
+    if template is None:
+        return changed
+
+    for index, item in enumerate(list(sequence_value)):
+        if isinstance(item, MutableMapping):
+            if _normalize_against_defaults(item, template, path + (str(index),)):
+                changed = True
+        elif isinstance(item, Mapping):
+            converted_item = _convert_to_round_trip(item)
+            if isinstance(converted_item, MutableMapping):
+                sequence_value[index] = converted_item
+                changed = True
+                if _normalize_against_defaults(converted_item, template, path + (str(index),)):
+                    changed = True
+    return changed
+
+
+def _normalize_entry(
+    container: MutableMapping[str, Any],
+    key: str,
+    default: Any,
+    path: tuple[str, ...],
+) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    if key not in container:
+        return False
+
+    if isinstance(default, bool):
+        return _normalize_bool_field(container, key)
+    if isinstance(default, int) and not isinstance(default, bool):
+        return _normalize_int_field(container, key)
+    if isinstance(default, float):
+        return _normalize_float_field(container, key)
+    if default is None:
+        if path in _OPTIONAL_INT_PATHS:
+            return _normalize_optional_int_field(container, key, path=path)
+        return False
+    if isinstance(default, Mapping):
+        value = container.get(key)
+        changed = False
+        if isinstance(value, MutableMapping):
+            if _normalize_against_defaults(value, default, path):
+                changed = True
+        elif isinstance(value, Mapping):
+            converted = _convert_to_round_trip(value)
+            if isinstance(converted, MutableMapping):
+                container[key] = converted
+                changed = True
+                if _normalize_against_defaults(converted, default, path):
+                    changed = True
+        return changed
+    if isinstance(default, Sequence) and not isinstance(default, (str, bytes)):
+        return _normalize_sequence_entry(container, key, default, path)
+    return False
+
+
+def _normalize_against_defaults(
+    target: MutableMapping[str, Any],
+    defaults: Mapping[str, Any],
+    path: tuple[str, ...],
+) -> bool:
+    if not isinstance(target, MutableMapping):
+        return False
+
+    changed = False
+    for child_key, child_default in defaults.items():
+        if child_key not in target:
+            continue
+        if _normalize_entry(target, child_key, child_default, path + (child_key,)):
+            changed = True
+    return changed
+
+
+def _normalize_config_value_types(cfg: MutableMapping[str, Any]) -> bool:
+    if not isinstance(cfg, MutableMapping):
+        return False
+
+    defaults: Dict[str, Any] = {}
+    defaults.update(_DEFAULTS)
+    for section, section_defaults in _SECTION_FALLBACKS.items():
+        defaults.setdefault(section, section_defaults)
+
+    return _normalize_against_defaults(cfg, defaults, tuple())
+
+
+
+def _migrate_config_value_types(cfg: MutableMapping[str, Any]) -> bool:
+    return _normalize_config_value_types(cfg)
+
 def _migrate_archival_rsync_lists(cfg: MutableMapping[str, Any]) -> bool:
     archival = cfg.get("archival")
     if not isinstance(archival, MutableMapping):
@@ -1075,7 +1386,110 @@ def _seed_new_config_sections(
     return changed
 
 
+def _migrate_segmenter_numeric_types(cfg: MutableMapping[str, Any]) -> bool:
+    segmenter = cfg.get("segmenter")
+    changed = False
+
+    target: MutableMapping[str, Any] | None
+    if isinstance(segmenter, MutableMapping):
+        target = segmenter
+    elif isinstance(segmenter, Mapping):
+        converted = _convert_to_round_trip(segmenter)
+        if isinstance(converted, MutableMapping):
+            cfg["segmenter"] = converted
+            target = converted
+            changed = True
+        else:
+            target = None
+    else:
+        target = None
+
+    if target is None:
+        return changed
+
+    int_fields: dict[str, tuple[int, int]] = {
+        "pre_pad_ms": (0, 60_000),
+        "post_pad_ms": (0, 120_000),
+        "rms_threshold": (0, 10_000),
+        "keep_window_frames": (1, 2_000),
+        "start_consecutive": (1, 2_000),
+        "keep_consecutive": (1, 2_000),
+        "flush_threshold_bytes": (4_096, 4 * 1024 * 1024),
+        "max_queue_frames": (16, 4_096),
+        "filter_chain_metrics_window": (1, 10_000),
+        "max_pending_encodes": (0, 1_000),
+    }
+    for key, bounds in int_fields.items():
+        if _normalize_int_field(target, key, min_value=bounds[0], max_value=bounds[1]):
+            changed = True
+
+    float_fields: dict[str, tuple[float, float]] = {
+        "motion_release_padding_minutes": (0.0, 30.0),
+        "min_clip_seconds": (0.0, 600.0),
+        "autosplit_interval_minutes": (0.0, 24 * 60.0),
+        "filter_chain_avg_budget_ms": (0.0, 100.0),
+        "filter_chain_peak_budget_ms": (0.0, 250.0),
+        "filter_chain_log_throttle_sec": (0.0, 600.0),
+    }
+    for key, bounds in float_fields.items():
+        if _normalize_float_field(target, key, min_value=bounds[0], max_value=bounds[1]):
+            changed = True
+
+    for key in (
+        "use_rnnoise",
+        "use_noisereduce",
+        "denoise_before_vad",
+        "auto_record_motion_override",
+        "streaming_encode",
+    ):
+        if _normalize_bool_field(target, key):
+            changed = True
+
+    parallel = target.get("parallel_encode")
+    parallel_map: MutableMapping[str, Any] | None
+    if isinstance(parallel, MutableMapping):
+        parallel_map = parallel
+    elif isinstance(parallel, Mapping):
+        converted_parallel = _convert_to_round_trip(parallel)
+        if isinstance(converted_parallel, MutableMapping):
+            target["parallel_encode"] = converted_parallel
+            parallel_map = converted_parallel
+            changed = True
+        else:
+            parallel_map = None
+    else:
+        parallel_map = None
+
+    if parallel_map is not None:
+        if _normalize_bool_field(parallel_map, "enabled"):
+            changed = True
+
+        parallel_float_fields: dict[str, tuple[float, float]] = {
+            "load_avg_per_cpu": (0.0, 10.0),
+            "min_event_seconds": (0.0, 3_600.0),
+            "cpu_check_interval_sec": (0.0, 3_600.0),
+            "offline_load_avg_per_cpu": (0.0, 10.0),
+            "offline_cpu_check_interval_sec": (0.0, 3_600.0),
+            "live_waveform_update_interval_sec": (0.05, 60.0),
+        }
+        for key, bounds in parallel_float_fields.items():
+            if _normalize_float_field(parallel_map, key, min_value=bounds[0], max_value=bounds[1]):
+                changed = True
+
+        parallel_int_fields: dict[str, tuple[int, int]] = {
+            "offline_max_workers": (0, 32),
+            "live_waveform_buckets": (1, 16_384),
+        }
+        for key, bounds in parallel_int_fields.items():
+            if _normalize_int_field(parallel_map, key, min_value=bounds[0], max_value=bounds[1]):
+                changed = True
+
+    return changed
+
+
 _CONFIG_MIGRATIONS: tuple[tuple[str, _ConfigMigration], ...] = (
+    ("20241018_normalize_config_value_types", _migrate_config_value_types),
+    ("20241014_normalize_segmenter_numeric_types", _migrate_segmenter_numeric_types),
     ("20241005_normalize_archival_rsync_lists", _migrate_archival_rsync_lists),
 )
 
@@ -1249,6 +1663,10 @@ def update_audio_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("audio", settings, merge=True)
 
 
+def update_paths_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("paths", settings, merge=True)
+
+
 def update_segmenter_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("segmenter", settings, merge=True)
 
@@ -1279,3 +1697,7 @@ def update_dashboard_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 def update_web_server_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return _persist_settings_section("web_server", settings, merge=True)
+
+
+def update_notifications_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return _persist_settings_section("notifications", settings, merge=True)
