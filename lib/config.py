@@ -1073,6 +1073,187 @@ def _normalize_bool_field(container: MutableMapping[str, Any], key: str) -> bool
     return True
 
 
+
+
+_STRING_LIST_PATHS: set[tuple[str, ...]] = {
+    ("archival", "rsync", "ssh_options"),
+    ("notifications", "allowed_event_types"),
+    ("web_server", "lets_encrypt", "domains"),
+}
+
+_OPTIONAL_INT_PATHS: set[tuple[str, ...]] = {
+    ("adaptive_rms", "max_rms"),
+    ("notifications", "min_trigger_rms"),
+}
+
+
+def _default_is_string_list(default: Sequence[Any]) -> bool:
+    if not default:
+        return False
+    return all(isinstance(item, str) for item in default)
+
+
+def _normalize_optional_int_field(
+    container: MutableMapping[str, Any],
+    key: str,
+    *,
+    path: tuple[str, ...],
+) -> bool:
+    _ = path
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    if value is None:
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            if container[key] is not None:
+                container[key] = None
+                return True
+            return False
+        if stripped != value:
+            container[key] = stripped
+    return _normalize_int_field(container, key)
+
+
+def _sequence_template(default: Sequence[Any]) -> Mapping[str, Any] | None:
+    template: dict[str, Any] = {}
+    for item in default:
+        if isinstance(item, Mapping):
+            for child_key, child_value in item.items():
+                if child_key not in template:
+                    template[child_key] = child_value
+    if template:
+        return template
+    return None
+
+
+def _normalize_sequence_entry(
+    container: MutableMapping[str, Any],
+    key: str,
+    default: Sequence[Any],
+    path: tuple[str, ...],
+) -> bool:
+    if path in _STRING_LIST_PATHS or _default_is_string_list(default):
+        return _normalize_string_list(container, key)
+
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+
+    changed = False
+    if isinstance(value, str):
+        if path in _STRING_LIST_PATHS:
+            return _normalize_string_list(container, key)
+        return False
+
+    sequence_value = value
+    if not isinstance(sequence_value, MutableSequence):
+        if isinstance(sequence_value, Sequence):
+            converted = _convert_to_round_trip(sequence_value)
+            if isinstance(converted, MutableSequence):
+                container[key] = converted
+                sequence_value = converted
+                changed = True
+            else:
+                return changed
+        else:
+            return changed
+
+    template = _sequence_template(default)
+    if template is None:
+        return changed
+
+    for index, item in enumerate(list(sequence_value)):
+        if isinstance(item, MutableMapping):
+            if _normalize_against_defaults(item, template, path + (str(index),)):
+                changed = True
+        elif isinstance(item, Mapping):
+            converted_item = _convert_to_round_trip(item)
+            if isinstance(converted_item, MutableMapping):
+                sequence_value[index] = converted_item
+                changed = True
+                if _normalize_against_defaults(converted_item, template, path + (str(index),)):
+                    changed = True
+    return changed
+
+
+def _normalize_entry(
+    container: MutableMapping[str, Any],
+    key: str,
+    default: Any,
+    path: tuple[str, ...],
+) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    if key not in container:
+        return False
+
+    if isinstance(default, bool):
+        return _normalize_bool_field(container, key)
+    if isinstance(default, int) and not isinstance(default, bool):
+        return _normalize_int_field(container, key)
+    if isinstance(default, float):
+        return _normalize_float_field(container, key)
+    if default is None:
+        if path in _OPTIONAL_INT_PATHS:
+            return _normalize_optional_int_field(container, key, path=path)
+        return False
+    if isinstance(default, Mapping):
+        value = container.get(key)
+        changed = False
+        if isinstance(value, MutableMapping):
+            if _normalize_against_defaults(value, default, path):
+                changed = True
+        elif isinstance(value, Mapping):
+            converted = _convert_to_round_trip(value)
+            if isinstance(converted, MutableMapping):
+                container[key] = converted
+                changed = True
+                if _normalize_against_defaults(converted, default, path):
+                    changed = True
+        return changed
+    if isinstance(default, Sequence) and not isinstance(default, (str, bytes)):
+        return _normalize_sequence_entry(container, key, default, path)
+    return False
+
+
+def _normalize_against_defaults(
+    target: MutableMapping[str, Any],
+    defaults: Mapping[str, Any],
+    path: tuple[str, ...],
+) -> bool:
+    if not isinstance(target, MutableMapping):
+        return False
+
+    changed = False
+    for child_key, child_default in defaults.items():
+        if child_key not in target:
+            continue
+        if _normalize_entry(target, child_key, child_default, path + (child_key,)):
+            changed = True
+    return changed
+
+
+def _normalize_config_value_types(cfg: MutableMapping[str, Any]) -> bool:
+    if not isinstance(cfg, MutableMapping):
+        return False
+
+    defaults: Dict[str, Any] = {}
+    defaults.update(_DEFAULTS)
+    for section, section_defaults in _SECTION_FALLBACKS.items():
+        defaults.setdefault(section, section_defaults)
+
+    return _normalize_against_defaults(cfg, defaults, tuple())
+
+
+
+def _migrate_config_value_types(cfg: MutableMapping[str, Any]) -> bool:
+    return _normalize_config_value_types(cfg)
+
 def _migrate_archival_rsync_lists(cfg: MutableMapping[str, Any]) -> bool:
     archival = cfg.get("archival")
     if not isinstance(archival, MutableMapping):
@@ -1307,6 +1488,7 @@ def _migrate_segmenter_numeric_types(cfg: MutableMapping[str, Any]) -> bool:
 
 
 _CONFIG_MIGRATIONS: tuple[tuple[str, _ConfigMigration], ...] = (
+    ("20241018_normalize_config_value_types", _migrate_config_value_types),
     ("20241014_normalize_segmenter_numeric_types", _migrate_segmenter_numeric_types),
     ("20241005_normalize_archival_rsync_lists", _migrate_archival_rsync_lists),
 )
