@@ -16,6 +16,7 @@ from lib.hls_mux import HLSTee
 from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 from lib.audio_filter_chain import AudioFilterChain
+from lib.audio_utils import downmix_to_mono
 
 cfg = get_cfg()
 
@@ -42,10 +43,20 @@ LEGACY_HLS_EXTRA_ARGS = _collect_legacy_extra_args(STREAMING_CFG)
 FILTER_CHAIN_CFG = cfg.get("audio", {}).get("filter_chain")
 FILTER_CHAIN = AudioFilterChain.from_config(FILTER_CHAIN_CFG)
 AUDIO_FILTER_CHAIN_ENABLED = FILTER_CHAIN is not None
-SAMPLE_RATE = int(cfg["audio"]["sample_rate"])
-FRAME_MS = int(cfg["audio"]["frame_ms"])
-FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_MS / 1000)
+audio_cfg = cfg.get("audio", {})
+SAMPLE_RATE = int(audio_cfg.get("sample_rate", 48000))
+FRAME_MS = int(audio_cfg.get("frame_ms", 20))
+SAMPLE_WIDTH_BYTES = 2
+FRAME_SAMPLES = max(1, int(SAMPLE_RATE * FRAME_MS / 1000))
+FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH_BYTES
+try:
+    CAPTURE_CHANNELS = int(audio_cfg.get("channels", 1))
+except (TypeError, ValueError):
+    CAPTURE_CHANNELS = 1
+CAPTURE_CHANNELS = max(1, min(2, CAPTURE_CHANNELS))
+CAPTURE_FRAME_BYTES = FRAME_BYTES * CAPTURE_CHANNELS
 CHUNK_BYTES = 4096
+USB_RESET_WORKAROUND = bool(audio_cfg.get("usb_reset_workaround", True))
 STATE_POLL_INTERVAL = 1.0
 STREAM_MODE = str(STREAMING_CFG.get("mode", "hls")).strip().lower() or "hls"
 if STREAM_MODE not in {"hls", "webrtc"}:
@@ -58,11 +69,13 @@ MANUAL_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_record_state.
 MANUAL_POLL_INTERVAL = 0.5
 AUTO_RECORD_PATH = os.path.join(cfg["paths"]["tmp_dir"], "auto_record_state.json")
 AUTO_POLL_INTERVAL = 0.5
+MANUAL_STOP_PATH = os.path.join(cfg["paths"]["tmp_dir"], "manual_stop_request.json")
+STOP_POLL_INTERVAL = 0.5
 
 ARECORD_CMD = [
     "arecord",
     "-D", AUDIO_DEV,
-    "-c", "1",
+    "-c", str(CAPTURE_CHANNELS),
     "-f", "S16_LE",
     "-r", str(SAMPLE_RATE),
     "--buffer-size", "48000",
@@ -114,6 +127,35 @@ def _auto_record_snapshot(path: str) -> tuple[bool, float]:
     elif isinstance(data, bool):
         enabled = bool(data)
     return enabled, stat.st_mtime
+
+
+def _stop_request_snapshot(path: str) -> tuple[bool, float]:
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return False, 0.0
+    except OSError:
+        return False, 0.0
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False, stat.st_mtime
+    requested = False
+    if isinstance(data, dict):
+        requested = bool(data.get("requested", False))
+    elif isinstance(data, bool):
+        requested = bool(data)
+    return requested, stat.st_mtime
+
+
+def _clear_stop_request(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
 
 
 def _wait_for_encode_completion(job_ids: Iterable[int]) -> None:
@@ -420,8 +462,10 @@ def main():
     global p, stop_requested, split_requested
     stop_requested = False
     split_requested = False
-    print(f"[live] starting with device={AUDIO_DEV}", flush=True)
-    print(f"[live] streaming mode={STREAM_MODE}", flush=True)
+    print(
+        f"[live] starting stream (device={AUDIO_DEV}, mode={STREAM_MODE})",
+        flush=True,
+    )
 
     manual_record_enabled, manual_record_mtime = _manual_record_snapshot(MANUAL_RECORD_PATH)
     auto_record_enabled, auto_record_mtime = _auto_record_snapshot(AUTO_RECORD_PATH)
@@ -538,12 +582,15 @@ def main():
                         flush=True,
                     )
             buf = bytearray()
+            stereo_mismatch_logged = False
             frame_idx = 0
             last_frame_time = time.monotonic()
             next_state_poll = 0.0
             filter_chain_error_logged = False
             next_manual_poll = 0.0
             next_auto_poll = 0.0
+            next_stop_poll = 0.0
+            manual_stop_mtime = 0.0
 
             def flush_processed(frames: list[Tuple[bytes, Optional[str]]]) -> None:
                 nonlocal frame_idx, last_frame_time, filter_chain_error_logged
@@ -637,6 +684,29 @@ def main():
                                 flush=True,
                             )
 
+                if now >= next_stop_poll:
+                    next_stop_poll = now + STOP_POLL_INTERVAL
+                    requested, mtime = _stop_request_snapshot(MANUAL_STOP_PATH)
+                    if requested and mtime != manual_stop_mtime:
+                        manual_stop_mtime = mtime
+                        handled = False
+                        try:
+                            handled = rec.request_manual_stop()
+                        except Exception as exc:
+                            print(
+                                f"[live] WARN: failed to stop active capture: {exc!r}",
+                                flush=True,
+                            )
+                        if handled:
+                            print("[live] manual stop request handled", flush=True)
+                        else:
+                            print(
+                                "[live] manual stop requested but no active event",
+                                flush=True,
+                            )
+                        _clear_stop_request(MANUAL_STOP_PATH)
+                        manual_stop_mtime = 0.0
+
                 if STREAM_MODE == "hls" and now >= next_state_poll:
                     controller.refresh_from_state()
                     next_state_poll = now + STATE_POLL_INTERVAL
@@ -645,9 +715,25 @@ def main():
                     break
                 buf.extend(chunk)
 
-                while len(buf) >= FRAME_BYTES:
-                    frame = bytes(buf[:FRAME_BYTES])
-                    del buf[:FRAME_BYTES]
+                while len(buf) >= CAPTURE_FRAME_BYTES:
+                    capture_frame = bytes(buf[:CAPTURE_FRAME_BYTES])
+                    del buf[:CAPTURE_FRAME_BYTES]
+                    if CAPTURE_CHANNELS > 1:
+                        frame = downmix_to_mono(
+                            capture_frame, CAPTURE_CHANNELS, SAMPLE_WIDTH_BYTES
+                        )
+                        if len(frame) != FRAME_BYTES:
+                            if not stereo_mismatch_logged:
+                                print(
+                                    "[live] WARN: capture frame size mismatch after mono mixdown; dropping frame",
+                                    flush=True,
+                                )
+                                stereo_mismatch_logged = True
+                            continue
+                        if stereo_mismatch_logged:
+                            stereo_mismatch_logged = False
+                    else:
+                        frame = capture_frame
                     if filter_pipeline is not None:
                         try:
                             drained = filter_pipeline.push(frame)
@@ -796,15 +882,16 @@ def main():
 
             if not stop_requested:
                 print("[live] arecord ended or device unavailable; retrying in 3s...", flush=True)
-                if reset_usb():
-                    print("[live] USB device reset successful", flush=True)
+                if USB_RESET_WORKAROUND:
+                    if reset_usb():
+                        print("[live] USB device reset successful", flush=True)
                 time.sleep(3)
 
     if webrtc_writer is not None:
         webrtc_writer.close()
     if filter_pipeline is not None:
         filter_pipeline.close()
-    print("[live] clean shutdown complete", flush=True)
+    print("[live] shutdown complete", flush=True)
 
 if __name__ == "__main__":
     try:
