@@ -284,6 +284,9 @@ AUTO_RECORD_MOTION_OVERRIDE = bool(
     cfg["segmenter"].get("auto_record_motion_override", True)
 )
 
+RMS_TRIGGER_ENABLED = bool(cfg["segmenter"].get("enable_rms_trigger", True))
+VAD_TRIGGER_ENABLED = bool(cfg["segmenter"].get("enable_vad_trigger", True))
+
 STREAMING_ENCODE_ENABLED = bool(
     cfg["segmenter"].get("streaming_encode", False)
 )
@@ -2064,6 +2067,8 @@ class TimelineRecorder:
         self._manual_recording = False
         self._event_manual_recording = False
         self._manual_motion_released = False
+        self._rms_trigger_enabled = bool(RMS_TRIGGER_ENABLED)
+        self._vad_trigger_enabled = bool(VAD_TRIGGER_ENABLED)
         self._auto_recording_enabled = True
         self._motion_override_enabled = bool(AUTO_RECORD_MOTION_OVERRIDE)
         self._motion_override_event_active = False
@@ -2980,14 +2985,25 @@ class TimelineRecorder:
         self._record_filter_metrics(elapsed_ms)
 
         rms_val = rms(proc_for_analysis)
-        voiced = is_voice(proc_for_analysis)
+        voiced = (
+            is_voice(proc_for_analysis) if self._vad_trigger_enabled else False
+        )
         current_threshold = self._adaptive.threshold_linear
-        loud = rms_val > current_threshold
-        frame_active = loud  # primary trigger
+        loud = (
+            rms_val > current_threshold if self._rms_trigger_enabled else False
+        )
+        frame_active = loud
+        vad_triggered = False
+        if (
+            self._vad_trigger_enabled
+            and voiced
+            and not frame_active
+            and not self._rms_trigger_enabled
+        ):
+            frame_active = True
+            vad_triggered = True
         if self._manual_recording:
             frame_active = True
-            loud = True
-            voiced = True
         else:
             if self._motion_forced_active:
                 if self._auto_recording_enabled or self._motion_override_enabled:
@@ -3199,10 +3215,22 @@ class TimelineRecorder:
                     for frame_bytes in prebuf_bytes:
                         if not self._parallel_encoder.feed(frame_bytes):
                             self._parallel_encoder_drops += 1
+                trigger_components: list[str] = []
+                if loud:
+                    trigger_components.append("RMS")
+                elif self._vad_trigger_enabled and (vad_triggered or voiced):
+                    trigger_components.append("VAD")
+                if self._motion_forced_active:
+                    trigger_components.append("motion")
+                if self._manual_recording:
+                    trigger_components.append("manual")
+                if not trigger_components:
+                    trigger_components.append("unknown")
+                trigger_label = "+".join(trigger_components)
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
-                    f"(trigger={'RMS' if loud else 'VAD'}>{current_threshold} (rms={rms_val}))",
-                    flush=True
+                    f"(trigger={trigger_label} rms={rms_val} threshold={current_threshold})",
+                    flush=True,
                 )
                 event_status = {
                     "base_name": self.base_name,

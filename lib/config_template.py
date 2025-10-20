@@ -160,6 +160,12 @@ segmenter:
   # Set to false to require manual recording even if motion is detected.
   auto_record_motion_override: true
 
+  # Enable RMS-triggered recordings. When false, RMS levels are ignored and other triggers must start events.
+  enable_rms_trigger: true
+
+  # Enable voice activity detection as an automatic trigger. When false, VAD no longer starts or sustains events.
+  enable_vad_trigger: true
+
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.
   rms_threshold: 300

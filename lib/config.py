@@ -1440,6 +1440,8 @@ def _migrate_segmenter_numeric_types(cfg: MutableMapping[str, Any]) -> bool:
         "use_noisereduce",
         "denoise_before_vad",
         "auto_record_motion_override",
+        "enable_rms_trigger",
+        "enable_vad_trigger",
         "streaming_encode",
     ):
         if _normalize_bool_field(target, key):
