@@ -2881,6 +2881,29 @@ def test_capture_manual_record_invalid_payload(dashboard_env):
     asyncio.run(runner())
 
 
+def test_capture_stop_endpoint(dashboard_env):
+    async def runner():
+        stop_path = Path(os.environ["TMP_DIR"]) / "manual_stop_request.json"
+        if stop_path.exists():
+            stop_path.unlink()
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            resp = await client.post("/api/capture/stop")
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("ok") is True
+            data = json.loads(stop_path.read_text(encoding="utf-8"))
+            assert data.get("requested") is True
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
 def test_capture_auto_record_endpoint(dashboard_env):
     async def runner():
         auto_state_path = Path(os.environ["TMP_DIR"]) / "auto_record_state.json"
