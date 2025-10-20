@@ -101,6 +101,14 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
+
+def _quiet_noisy_dependencies(ice_level: int = logging.WARNING) -> None:
+    """Tone down overly chatty third-party loggers."""
+
+    for name in ("aioice", "aioice.ice", "aioice.stun"):
+        logging.getLogger(name).setLevel(ice_level)
+
+
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RAW_AUDIO_DIRNAME = ".original_wav"
 RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
@@ -880,9 +888,11 @@ def _audio_defaults() -> dict[str, Any]:
     return {
         "device": "",
         "sample_rate": 48000,
+        "channels": 1,
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "usb_reset_workaround": True,
         "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
         "calibration": {
             "auto_noise_profile": False,
@@ -1008,6 +1018,12 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         if isinstance(sr, (int, float)) and not isinstance(sr, bool):
             result["sample_rate"] = int(sr)
 
+        channels = raw.get("channels")
+        if isinstance(channels, (int, float)) and not isinstance(channels, bool):
+            candidate = int(channels)
+            if candidate in (1, 2):
+                result["channels"] = candidate
+
         frame = raw.get("frame_ms")
         if isinstance(frame, (int, float)) and not isinstance(frame, bool):
             result["frame_ms"] = int(frame)
@@ -1019,6 +1035,9 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         vad = raw.get("vad_aggressiveness")
         if isinstance(vad, (int, float)) and not isinstance(vad, bool):
             result["vad_aggressiveness"] = int(vad)
+
+        if "usb_reset_workaround" in raw:
+            result["usb_reset_workaround"] = _bool_from_any(raw.get("usb_reset_workaround"))
 
         filters = raw.get("filter_chain")
         if isinstance(filters, dict):
@@ -1573,6 +1592,17 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     if sample_rate is not None:
         normalized["sample_rate"] = sample_rate
 
+    raw_channels = payload.get("channels")
+    if raw_channels is not None:
+        channels = _coerce_int(
+            raw_channels,
+            "channels",
+            errors,
+            allowed={1, 2},
+        )
+        if channels is not None:
+            normalized["channels"] = channels
+
     frame_ms = _coerce_int(
         payload.get("frame_ms"),
         "frame_ms",
@@ -1595,6 +1625,9 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     )
     if vad is not None:
         normalized["vad_aggressiveness"] = vad
+
+    if "usb_reset_workaround" in payload:
+        normalized["usb_reset_workaround"] = _bool_from_any(payload.get("usb_reset_workaround"))
 
     filters_payload = payload.get("filter_chain")
     stages = normalized.get("filter_chain")
@@ -8173,6 +8206,7 @@ def start_web_streamer_in_thread(
         level=getattr(logging, log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    _quiet_noisy_dependencies()
     log = logging.getLogger("web_streamer")
 
     loop = asyncio.new_event_loop()
@@ -8236,6 +8270,7 @@ def cli_main():
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    _quiet_noisy_dependencies()
     log = logging.getLogger("web_streamer")
 
     apply_config_migrations(logger=log)

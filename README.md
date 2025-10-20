@@ -1,6 +1,6 @@
 # Tricorder
 
-Tricorder is an embedded audio event recorder designed for 24/7 capture on a Raspberry Pi Zero 2 W. It listens to a mono ALSA input, segments interesting activity with WebRTC VAD, encodes events to Opus, and serves them through an on-device dashboard and HLS stream.
+Tricorder is an embedded audio event recorder designed for 24/7 capture on a Raspberry Pi Zero 2 W. It listens to a mono or stereo ALSA input (stereo sources are mixed down before analysis), segments interesting activity with WebRTC VAD, encodes events to Opus, and serves them through an on-device dashboard and HLS stream.
 
 This project targets **single-purpose deployments** on low-power hardware. The runtime is pinned to Python&nbsp;3.10 via `requirements.txt` to ensure wheel availability for the Pi Zero 2&nbsp;W.
 
@@ -428,6 +428,7 @@ Environment variables override YAML values. Common overrides include:
 
 - `DEV=1` — enable verbose logging.
 - `AUDIO_DEV`, `GAIN` — audio input and software gain.
+- `AUDIO_CHANNELS`, `AUDIO_USB_RESET_WORKAROUND` — capture channel count and whether to reset USB audio devices between retries.
 - `REC_DIR`, `TMP_DIR`, `DROPBOX_DIR` — paths for recordings, tmpfs, and dropbox.
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
 - `ADAPTIVE_RMS_*` — detailed control of the adaptive RMS tracker.
@@ -435,9 +436,18 @@ Environment variables override YAML values. Common overrides include:
 - `TRICORDER_CONFIG_TEMPLATE` — optional absolute path to a commented template used to rehydrate inline guidance if the active
   YAML lost its comments.
 
+The systemd units now render these overrides into `/run/tricorder/runtime.env`
+at launch via `python -m lib.unit_runtime`. This keeps the recorder, web
+streamer, and dropbox ingest service in sync with `config.yaml` without
+hard-coding ALSA devices or directory paths in the unit files. The helper also
+ensures the configured tmp, recordings, dropbox, and ingest directories exist
+and maintains a compatibility symlink at `/apps/tricorder/dropbox` so the
+existing path unit continues to react to file drops even when the dropbox
+location is customized.
+
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
-- `audio` – device, sample rate, frame size, gain, VAD aggressiveness, optional filter chain for hum/rumble control.
+- `audio` – device, sample rate, channel count, frame size, gain, USB reset workaround toggle, VAD aggressiveness, optional filter chain for hum/rumble control.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.autosplit_interval_minutes` enforces a maximum continuous clip length (default 15 minutes) so encoder workloads stay bounded, `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in, and `segmenter.max_pending_encodes` bounds the in-memory encode queue so new jobs are deferred to disk whenever the encoder backlog grows, keeping the capture loop responsive.
 - `segmenter.motion_release_padding_minutes` keeps motion-forced recordings alive for the configured minutes after the motion integration clears, delaying the hand-off back to RMS/adaptive/VAD gating so conversation tails are not clipped.
@@ -479,7 +489,7 @@ audio:
 
 ## Tuning and utilities
 
-- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing. Use `--analyze-noise` to capture idle hum fingerprints and `--auto-filter` to print or persist `audio.filter_chain` notch filters.
+- `room_tuner.py` streams audio from the configured device, reports RMS + VAD stats, and suggests `segmenter.rms_threshold` based on ambient noise (see docstring for usage examples). `reset_usb()` integration allows recovery from flaky USB sound cards during testing; disable the `audio.usb_reset_workaround` toggle when using I2S or HAT microphones so retries simply wait for the device. Use `--analyze-noise` to capture idle hum fingerprints and `--auto-filter` to print or persist `audio.filter_chain` notch filters.
 - `clear_logs.sh` rotates `journalctl` and wipes recordings/tmpfs directories; useful before running end-to-end tests.
 
 ### Dashboard service controls
