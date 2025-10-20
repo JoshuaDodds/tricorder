@@ -928,6 +928,8 @@ def _segmenter_defaults() -> dict[str, Any]:
         "min_clip_seconds": 0.0,
         "autosplit_interval_minutes": 15.0,
         "auto_record_motion_override": True,
+        "enable_rms_trigger": True,
+        "enable_vad_trigger": True,
         "filter_chain_avg_budget_ms": 6.0,
         "filter_chain_peak_budget_ms": 15.0,
         "filter_chain_metrics_window": 50,
@@ -1233,6 +1235,14 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         motion_override = raw.get("auto_record_motion_override")
         if isinstance(motion_override, bool):
             result["auto_record_motion_override"] = motion_override
+
+        rms_trigger = raw.get("enable_rms_trigger")
+        if isinstance(rms_trigger, bool):
+            result["enable_rms_trigger"] = rms_trigger
+
+        vad_trigger = raw.get("enable_vad_trigger")
+        if isinstance(vad_trigger, bool):
+            result["enable_vad_trigger"] = vad_trigger
 
         for float_key, bounds in (
             ("filter_chain_avg_budget_ms", (0.0, 100.0)),
@@ -2032,6 +2042,16 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
     motion_override = payload.get("auto_record_motion_override")
     if motion_override is not None:
         normalized["auto_record_motion_override"] = _bool_from_any(motion_override)
+
+    if "enable_rms_trigger" in payload:
+        normalized["enable_rms_trigger"] = _bool_from_any(
+            payload.get("enable_rms_trigger")
+        )
+
+    if "enable_vad_trigger" in payload:
+        normalized["enable_vad_trigger"] = _bool_from_any(
+            payload.get("enable_vad_trigger")
+        )
 
     float_fields = {
         "filter_chain_avg_budget_ms": (0.0, 100.0),

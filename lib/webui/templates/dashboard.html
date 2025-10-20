@@ -1534,6 +1534,24 @@
                 <input id="segmenter-threshold" type="number" min="0" step="10" />
                 <p class="field-description">Linear RMS trigger level after gain. Dial in with <code>room_tuner.py</code>.</p>
               </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-rms-trigger" type="checkbox" />
+                  <label for="segmenter-rms-trigger">Enable RMS trigger</label>
+                </div>
+                <p class="field-description">
+                  Disable to ignore RMS thresholds and rely on other triggers (for example VAD or manual capture).
+                </p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-vad-trigger" type="checkbox" />
+                  <label for="segmenter-vad-trigger">Enable VAD trigger</label>
+                </div>
+                <p class="field-description">
+                  Turn off to stop voice activity detection from starting or extending automatic recordings.
+                </p>
+              </div>
               <div class="settings-field">
                 <label for="segmenter-keep-window">Keep window (frames)</label>
                 <input id="segmenter-keep-window" type="number" min="1" step="1" />

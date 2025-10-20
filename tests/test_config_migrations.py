@@ -135,6 +135,8 @@ segmenter:
   use_noisereduce: "no"
   denoise_before_vad: "0"
   auto_record_motion_override: "false"
+  enable_rms_trigger: "no"
+  enable_vad_trigger: "yes"
   streaming_encode: "1"
   parallel_encode:
     enabled: "false"
@@ -164,6 +166,8 @@ segmenter:
     assert segmenter["use_rnnoise"] is True
     assert segmenter["use_noisereduce"] is False
     assert segmenter["auto_record_motion_override"] is False
+    assert segmenter["enable_rms_trigger"] is False
+    assert segmenter["enable_vad_trigger"] is True
     assert segmenter["streaming_encode"] is True
     assert isinstance(segmenter["parallel_encode"], dict)
     assert segmenter["parallel_encode"]["enabled"] is False
