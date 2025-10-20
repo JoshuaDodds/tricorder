@@ -15,6 +15,7 @@ Environment variables override file values when present.
 from __future__ import annotations
 import copy
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -943,6 +944,135 @@ def _normalize_string_list(container: MutableMapping[str, Any], key: str) -> boo
     return True
 
 
+_MISSING = object()
+
+
+def _parse_int_like(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 10)
+        except ValueError:
+            try:
+                float_candidate = float(text)
+            except ValueError:
+                return None
+            if not math.isfinite(float_candidate) or not float_candidate.is_integer():
+                return None
+            return int(float_candidate)
+    return None
+
+
+def _parse_float_like(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        candidate = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            candidate = float(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(candidate):
+        return None
+    return candidate
+
+
+def _normalize_int_field(
+    container: MutableMapping[str, Any],
+    key: str,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    candidate = _parse_int_like(value)
+    if candidate is None:
+        return False
+    if min_value is not None and candidate < min_value:
+        candidate = min_value
+    if max_value is not None and candidate > max_value:
+        candidate = max_value
+    if candidate != value:
+        container[key] = candidate
+        return True
+    return False
+
+
+def _normalize_float_field(
+    container: MutableMapping[str, Any],
+    key: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+    candidate = _parse_float_like(value)
+    if candidate is None:
+        return False
+    if min_value is not None and candidate < min_value:
+        candidate = min_value
+    if max_value is not None and candidate > max_value:
+        candidate = max_value
+    if candidate != value:
+        container[key] = candidate
+        return True
+    return False
+
+
+def _normalize_bool_field(container: MutableMapping[str, Any], key: str) -> bool:
+    if not isinstance(container, MutableMapping):
+        return False
+    value = container.get(key, _MISSING)
+    if value is _MISSING or isinstance(value, bool):
+        return False
+    candidate: bool | None
+    candidate = None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"true", "yes", "1", "on"}:
+            candidate = True
+        elif normalized in {"false", "no", "0", "off"}:
+            candidate = False
+        else:
+            return False
+    elif isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+        candidate = bool(value)
+    else:
+        return False
+    if candidate is None:
+        return False
+    container[key] = candidate
+    return True
+
+
 def _migrate_archival_rsync_lists(cfg: MutableMapping[str, Any]) -> bool:
     archival = cfg.get("archival")
     if not isinstance(archival, MutableMapping):
@@ -1075,7 +1205,109 @@ def _seed_new_config_sections(
     return changed
 
 
+def _migrate_segmenter_numeric_types(cfg: MutableMapping[str, Any]) -> bool:
+    segmenter = cfg.get("segmenter")
+    changed = False
+
+    target: MutableMapping[str, Any] | None
+    if isinstance(segmenter, MutableMapping):
+        target = segmenter
+    elif isinstance(segmenter, Mapping):
+        converted = _convert_to_round_trip(segmenter)
+        if isinstance(converted, MutableMapping):
+            cfg["segmenter"] = converted
+            target = converted
+            changed = True
+        else:
+            target = None
+    else:
+        target = None
+
+    if target is None:
+        return changed
+
+    int_fields: dict[str, tuple[int, int]] = {
+        "pre_pad_ms": (0, 60_000),
+        "post_pad_ms": (0, 120_000),
+        "rms_threshold": (0, 10_000),
+        "keep_window_frames": (1, 2_000),
+        "start_consecutive": (1, 2_000),
+        "keep_consecutive": (1, 2_000),
+        "flush_threshold_bytes": (4_096, 4 * 1024 * 1024),
+        "max_queue_frames": (16, 4_096),
+        "filter_chain_metrics_window": (1, 10_000),
+        "max_pending_encodes": (0, 1_000),
+    }
+    for key, bounds in int_fields.items():
+        if _normalize_int_field(target, key, min_value=bounds[0], max_value=bounds[1]):
+            changed = True
+
+    float_fields: dict[str, tuple[float, float]] = {
+        "motion_release_padding_minutes": (0.0, 30.0),
+        "min_clip_seconds": (0.0, 600.0),
+        "autosplit_interval_minutes": (0.0, 24 * 60.0),
+        "filter_chain_avg_budget_ms": (0.0, 100.0),
+        "filter_chain_peak_budget_ms": (0.0, 250.0),
+        "filter_chain_log_throttle_sec": (0.0, 600.0),
+    }
+    for key, bounds in float_fields.items():
+        if _normalize_float_field(target, key, min_value=bounds[0], max_value=bounds[1]):
+            changed = True
+
+    for key in (
+        "use_rnnoise",
+        "use_noisereduce",
+        "denoise_before_vad",
+        "auto_record_motion_override",
+        "streaming_encode",
+    ):
+        if _normalize_bool_field(target, key):
+            changed = True
+
+    parallel = target.get("parallel_encode")
+    parallel_map: MutableMapping[str, Any] | None
+    if isinstance(parallel, MutableMapping):
+        parallel_map = parallel
+    elif isinstance(parallel, Mapping):
+        converted_parallel = _convert_to_round_trip(parallel)
+        if isinstance(converted_parallel, MutableMapping):
+            target["parallel_encode"] = converted_parallel
+            parallel_map = converted_parallel
+            changed = True
+        else:
+            parallel_map = None
+    else:
+        parallel_map = None
+
+    if parallel_map is not None:
+        if _normalize_bool_field(parallel_map, "enabled"):
+            changed = True
+
+        parallel_float_fields: dict[str, tuple[float, float]] = {
+            "load_avg_per_cpu": (0.0, 10.0),
+            "min_event_seconds": (0.0, 3_600.0),
+            "cpu_check_interval_sec": (0.0, 3_600.0),
+            "offline_load_avg_per_cpu": (0.0, 10.0),
+            "offline_cpu_check_interval_sec": (0.0, 3_600.0),
+            "live_waveform_update_interval_sec": (0.05, 60.0),
+        }
+        for key, bounds in parallel_float_fields.items():
+            if _normalize_float_field(parallel_map, key, min_value=bounds[0], max_value=bounds[1]):
+                changed = True
+
+        parallel_int_fields: dict[str, tuple[int, int]] = {
+            "offline_max_workers": (0, 32),
+            "live_waveform_buckets": (1, 16_384),
+        }
+        for key, bounds in parallel_int_fields.items():
+            if _normalize_int_field(parallel_map, key, min_value=bounds[0], max_value=bounds[1]):
+                changed = True
+
+    return changed
+
+
 _CONFIG_MIGRATIONS: tuple[tuple[str, _ConfigMigration], ...] = (
+    ("20241014_normalize_segmenter_numeric_types", _migrate_segmenter_numeric_types),
     ("20241005_normalize_archival_rsync_lists", _migrate_archival_rsync_lists),
 )
 
