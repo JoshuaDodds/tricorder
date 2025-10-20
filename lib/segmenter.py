@@ -2060,6 +2060,7 @@ class TimelineRecorder:
         self._ingest_hint_used = False
         self._encode_jobs: list[int] = []
         self._manual_split_requested = False
+        self._manual_stop_requested = False
         self._manual_recording = False
         self._event_manual_recording = False
         self._manual_motion_released = False
@@ -2957,6 +2958,16 @@ class TimelineRecorder:
             else:
                 self._manual_split_requested = False
 
+        if self._manual_stop_requested:
+            if self.active:
+                print("[segmenter] Manual stop requested; finalizing current event", flush=True)
+                self._manual_stop_requested = False
+                self._finalize_event(reason="manual stop")
+                self.prebuf.clear()
+                force_restart = False
+            else:
+                self._manual_stop_requested = False
+
         self._refresh_motion_state()
 
         start = time.perf_counter()
@@ -3262,6 +3273,13 @@ class TimelineRecorder:
             self._manual_split_requested = False
             return False
         self._manual_split_requested = True
+        return True
+
+    def request_manual_stop(self) -> bool:
+        if not self.active:
+            self._manual_stop_requested = False
+            return False
+        self._manual_stop_requested = True
         return True
 
     def _finalize_event(self, reason: str, wait_for_encode_start: bool = False):
@@ -3794,6 +3812,7 @@ class TimelineRecorder:
         self._ingest_hint = None
         self._ingest_hint_used = True
         self._manual_split_requested = False
+        self._manual_stop_requested = False
         self._event_manual_recording = False
         self._manual_motion_released = False
         self._motion_override_event_active = False

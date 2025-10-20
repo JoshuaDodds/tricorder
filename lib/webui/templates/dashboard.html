@@ -96,6 +96,15 @@
                     Audio input &amp; gain
                   </button>
                   <button
+                    id="recorder-menu-paths"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="paths"
+                  >
+                    Storage paths
+                  </button>
+                  <button
                     id="recorder-menu-segmenter"
                     class="menu-item recorder-menu-item"
                     type="button"
@@ -139,6 +148,15 @@
                     data-recorder-section="logging"
                   >
                     Logging &amp; diagnostics
+                  </button>
+                  <button
+                    id="recorder-menu-notifications"
+                    class="menu-item recorder-menu-item"
+                    type="button"
+                    role="menuitem"
+                    data-recorder-section="notifications"
+                  >
+                    Notifications
                   </button>
                   <button
                     id="recorder-menu-streaming"
@@ -1170,6 +1188,16 @@
                 </p>
               </div>
               <div class="settings-field">
+                <label for="audio-channels">Channels</label>
+                <select id="audio-channels">
+                  <option value="1">Mono (1 channel)</option>
+                  <option value="2">Stereo (2 channels)</option>
+                </select>
+                <p class="field-description">
+                  Stereo sources are mixed down to mono before detection to keep the pipeline compatible with single-channel processing.
+                </p>
+              </div>
+              <div class="settings-field">
                 <label for="audio-frame-ms">Frame duration</label>
                 <select id="audio-frame-ms">
                   <option value="10">10&nbsp;ms</option>
@@ -1197,6 +1225,15 @@
                 </select>
                 <p class="field-description">
                   Controls the WebRTC voice detector sensitivity. Higher values reject more noise but may miss quiet speech.
+                </p>
+              </div>
+              <div class="settings-field">
+                <div class="field-control">
+                  <input id="audio-usb-reset" type="checkbox" />
+                  <label for="audio-usb-reset">USB reset workaround (legacy mode)</label>
+                </div>
+                <p class="field-description">
+                  Leave enabled for USB microphones. Disable for I2S or HAT capture cards to skip resetting the USB controller during retries.
                 </p>
               </div>
               <h4 class="settings-subheading">Filter chain</h4>
@@ -1411,6 +1448,59 @@
 
           <section
             class="settings-section recorder-section"
+            data-section-key="paths"
+            aria-labelledby="recorder-paths-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-paths-title" class="settings-section-title">Storage paths</h3>
+              <p class="settings-section-description">
+                Update writable directories and encoding script locations used by the recorder and ingest pipeline.
+              </p>
+            </div>
+            <form id="paths-form" class="settings-subform" novalidate>
+              <div class="settings-field">
+                <label for="paths-tmp-dir">Temporary directory</label>
+                <input id="paths-tmp-dir" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Scratch space for intermediate WAVs and working files. Prefer a tmpfs mount to minimize SD wear.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="paths-recordings-dir">Recordings directory</label>
+                <input id="paths-recordings-dir" type="text" autocomplete="off" />
+                <p class="field-description">Destination for finalized Opus recordings. Ensure ample free space and rotation.</p>
+              </div>
+              <div class="settings-field">
+                <label for="paths-dropbox-dir">Dropbox directory</label>
+                <input id="paths-dropbox-dir" type="text" autocomplete="off" />
+                <p class="field-description">Folder monitored for externally provided audio files to ingest automatically.</p>
+              </div>
+              <div class="settings-field">
+                <label for="paths-ingest-dir">Ingest work directory</label>
+                <input id="paths-ingest-dir" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Per-run staging area used while normalizing dropbox files before they enter the recordings library.
+                </p>
+              </div>
+              <div class="settings-field">
+                <label for="paths-encoder-script">Encoder script path</label>
+                <input id="paths-encoder-script" type="text" autocomplete="off" />
+                <p class="field-description">
+                  Script invoked to encode and archive recordings. Must accept <code>&lt;tmp_wav_path&gt; &lt;base_name&gt;</code> arguments.
+                </p>
+              </div>
+              <div class="settings-section-footer">
+                <div id="paths-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="paths-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="paths-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
             data-section-key="segmenter"
             aria-labelledby="recorder-segmenter-title"
           >
@@ -1460,6 +1550,18 @@
                 <p class="field-description">Active frames needed within the window to continue an in-progress recording.</p>
               </div>
               <div class="settings-field">
+                <label for="segmenter-autosplit-interval">Autosplit interval (min)</label>
+                <input id="segmenter-autosplit-interval" type="number" min="0" step="0.5" />
+                <p class="field-description">Force a new file after this many minutes of continuous recording (0 disables autosplit).</p>
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-auto-record-motion" type="checkbox" />
+                  <label for="segmenter-auto-record-motion">Allow motion to override manual stop</label>
+                </div>
+                <p class="field-description">Keep automatic recordings running whenever the motion pipeline is active.</p>
+              </div>
+              <div class="settings-field">
                 <label for="segmenter-flush-bytes">Flush threshold (bytes)</label>
                 <input id="segmenter-flush-bytes" type="number" min="4096" step="1024" />
                 <p class="field-description">Controls how often buffered WAV data is flushed to disk.</p>
@@ -1469,12 +1571,105 @@
                   <input id="segmenter-max-queue" type="number" min="16" step="16" />
                   <p class="field-description">Upper bound on pending audio frames before applying backpressure.</p>
                 </div>
-                <div class="settings-field">
-                  <label for="segmenter-min-clip-seconds">Minimum clip length (s)</label>
-                  <input id="segmenter-min-clip-seconds" type="number" min="0" step="0.1" />
-                  <p class="field-description">Discard final Opus files shorter than this duration before filters or archival.</p>
+              <div class="settings-field">
+                <label for="segmenter-min-clip-seconds">Minimum clip length (s)</label>
+                <input id="segmenter-min-clip-seconds" type="number" min="0" step="0.1" />
+                <p class="field-description">Discard final Opus files shorter than this duration before filters or archival.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-max-pending">Max pending encodes</label>
+                <input id="segmenter-max-pending" type="number" min="0" max="1000" step="1" />
+                <p class="field-description">Limit how many background encode jobs queue before new work is deferred.</p>
+              </div>
+              <h4 class="settings-subheading">Filter chain budgets</h4>
+              <p class="settings-subheading-description">
+                Control how aggressively the capture filter chain can use CPU time before warnings are emitted.
+              </p>
+              <div class="settings-field">
+                <label for="segmenter-filter-avg">Average budget (ms)</label>
+                <input id="segmenter-filter-avg" type="number" min="0" step="0.1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-filter-peak">Peak budget (ms)</label>
+                <input id="segmenter-filter-peak" type="number" min="0" step="0.1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-filter-window">Metrics window (frames)</label>
+                <input id="segmenter-filter-window" type="number" min="1" max="10000" step="1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-filter-log-throttle">Warning throttle (s)</label>
+                <input id="segmenter-filter-log-throttle" type="number" min="0" step="0.1" />
+              </div>
+              <h4 class="settings-subheading">Streaming encode</h4>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-streaming-encode" type="checkbox" />
+                  <label for="segmenter-streaming-encode">Enable streaming encoder</label>
                 </div>
-                <div class="settings-field checkbox-field">
+                <p class="field-description">Write a <code>.partial.opus</code> file while recording so live dashboards can follow along.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-streaming-container">Streaming container</label>
+                <select id="segmenter-streaming-container">
+                  <option value="opus">Opus</option>
+                  <option value="webm">WebM</option>
+                </select>
+              </div>
+              <h4 class="settings-subheading">Parallel encode</h4>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="segmenter-parallel-enabled" type="checkbox" />
+                  <label for="segmenter-parallel-enabled">Enable background encoder</label>
+                </div>
+                <p class="field-description">Pre-encode audio while recording to reduce post-processing latency when resources allow.</p>
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-load">Start when load ≤ (1m avg per CPU)</label>
+                <input id="segmenter-parallel-load" type="number" min="0" step="0.05" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-min-seconds">Minimum event length (s)</label>
+                <input id="segmenter-parallel-min-seconds" type="number" min="0" step="0.1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-cpu-interval">CPU check interval (s)</label>
+                <input id="segmenter-parallel-cpu-interval" type="number" min="0" step="0.1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-max-workers">Max offline workers</label>
+                <input id="segmenter-parallel-max-workers" type="number" min="0" max="32" step="1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-offline-load">Offline start load ≤ (1m avg per CPU)</label>
+                <input id="segmenter-parallel-offline-load" type="number" min="0" step="0.05" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-offline-interval">Offline CPU check interval (s)</label>
+                <input id="segmenter-parallel-offline-interval" type="number" min="0" step="0.1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-buckets">Live waveform buckets</label>
+                <input id="segmenter-parallel-buckets" type="number" min="1" max="16384" step="1" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-parallel-update-interval">Waveform refresh interval (s)</label>
+                <input id="segmenter-parallel-update-interval" type="number" min="0.05" step="0.05" />
+              </div>
+              <h4 class="settings-subheading">Event tags</h4>
+              <div class="settings-field">
+                <label for="segmenter-event-tag-human">Human label</label>
+                <input id="segmenter-event-tag-human" type="text" autocomplete="off" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-event-tag-other">Other label</label>
+                <input id="segmenter-event-tag-other" type="text" autocomplete="off" />
+              </div>
+              <div class="settings-field">
+                <label for="segmenter-event-tag-both">Both label</label>
+                <input id="segmenter-event-tag-both" type="text" autocomplete="off" />
+              </div>
+              <div class="settings-field checkbox-field">
                 <div class="field-control">
                   <input id="segmenter-use-rnnoise" type="checkbox" />
                   <label for="segmenter-use-rnnoise">Enable RNNoise denoising</label>
@@ -1792,6 +1987,115 @@
                 <div class="button-row">
                   <button id="logging-reset" class="ghost-button" type="button" disabled>Reset</button>
                   <button id="logging-save" class="primary-button" type="submit" disabled>Save changes</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="settings-section recorder-section"
+            data-section-key="notifications"
+            aria-labelledby="recorder-notifications-title"
+          >
+            <div class="settings-section-header">
+              <h3 id="recorder-notifications-title" class="settings-section-title">Notifications</h3>
+              <p class="settings-section-description">
+                Send webhook calls or emails when recordings finish so downstream systems can react in real time.
+              </p>
+            </div>
+            <form id="notifications-form" class="settings-subform" novalidate>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="notifications-enabled" type="checkbox" />
+                  <label for="notifications-enabled">Enable event notifications</label>
+                </div>
+                <p class="field-description">Toggle all notification channels without losing configuration.</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-allowed-types">Event types</label>
+                <textarea id="notifications-allowed-types" rows="3"></textarea>
+                <p class="field-description">One label per line (e.g. <code>Human</code>, <code>Both</code>). Leave blank to notify for every clip.</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-min-trigger">Minimum trigger RMS</label>
+                <input id="notifications-min-trigger" type="number" min="0" step="10" />
+                <p class="field-description">Only send alerts when the recording’s trigger RMS meets or exceeds this value (0 disables the filter).</p>
+              </div>
+
+              <h4 class="settings-subheading">Webhook delivery</h4>
+              <div class="settings-field">
+                <label for="notifications-webhook-url">Webhook URL</label>
+                <input id="notifications-webhook-url" type="text" autocomplete="off" />
+                <p class="field-description">Endpoint that receives JSON metadata when a recording finalizes.</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-webhook-method">HTTP method</label>
+                <input id="notifications-webhook-method" type="text" autocomplete="off" />
+                <p class="field-description">Defaults to POST. Most receivers expect POST or PUT.</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-webhook-headers">Headers</label>
+                <textarea id="notifications-webhook-headers" rows="3"></textarea>
+                <p class="field-description">Optional request headers (<code>Header: Value</code> per line).</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-webhook-timeout">Request timeout (s)</label>
+                <input id="notifications-webhook-timeout" type="number" min="0" step="0.1" />
+                <p class="field-description">Abort webhook calls if the server does not respond within this window.</p>
+              </div>
+
+              <h4 class="settings-subheading">Email delivery</h4>
+              <div class="settings-field">
+                <label for="notifications-email-host">SMTP host</label>
+                <input id="notifications-email-host" type="text" autocomplete="off" />
+                <p class="field-description">Leave blank to disable email notifications.</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-port">SMTP port</label>
+                <input id="notifications-email-port" type="number" min="1" max="65535" step="1" />
+              </div>
+              <div class="settings-field checkbox-field">
+                <div class="field-control">
+                  <input id="notifications-email-tls" type="checkbox" />
+                  <label for="notifications-email-tls">Use STARTTLS</label>
+                </div>
+                <div class="field-control">
+                  <input id="notifications-email-ssl" type="checkbox" />
+                  <label for="notifications-email-ssl">Use implicit SSL</label>
+                </div>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-username">Username</label>
+                <input id="notifications-email-username" type="text" autocomplete="off" />
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-password">Password</label>
+                <input id="notifications-email-password" type="password" autocomplete="off" />
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-from">From address</label>
+                <input id="notifications-email-from" type="email" autocomplete="off" />
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-to">Recipients</label>
+                <textarea id="notifications-email-to" rows="3"></textarea>
+                <p class="field-description">One email address per line.</p>
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-subject">Subject template</label>
+                <input id="notifications-email-subject" type="text" autocomplete="off" />
+              </div>
+              <div class="settings-field">
+                <label for="notifications-email-body">Body template</label>
+                <textarea id="notifications-email-body" rows="6"></textarea>
+                <p class="field-description">Template rendered with recording metadata. Supports Python <code>str.format</code> fields.</p>
+              </div>
+
+              <div class="settings-section-footer">
+                <div id="notifications-status" class="form-status" role="status" aria-live="polite" aria-hidden="true"></div>
+                <div class="button-row">
+                  <button id="notifications-reset" class="ghost-button" type="button" disabled>Reset</button>
+                  <button id="notifications-save" class="primary-button" type="submit" disabled>Save changes</button>
                 </div>
               </div>
             </form>
@@ -2127,16 +2431,25 @@
                   Choose how files are sent off the recorder for archival storage.
                 </p>
               </div>
-              <div class="settings-field checkbox-field">
-                <div class="field-control">
-                  <input id="archival-include-waveforms" type="checkbox" />
-                  <label for="archival-include-waveforms">Include waveform previews</label>
-                </div>
-                <p class="field-description">
-                  Upload waveform JSON sidecars along with audio files for richer previews.
-                </p>
+            <div class="settings-field checkbox-field">
+              <div class="field-control">
+                <input id="archival-include-waveforms" type="checkbox" />
+                <label for="archival-include-waveforms">Include waveform previews</label>
               </div>
-            </section>
+              <p class="field-description">
+                Upload waveform JSON sidecars along with audio files for richer previews.
+              </p>
+            </div>
+            <div class="settings-field checkbox-field">
+              <div class="field-control">
+                <input id="archival-include-transcripts" type="checkbox" />
+                <label for="archival-include-transcripts">Include transcript sidecars</label>
+              </div>
+              <p class="field-description">
+                Upload transcript JSON sidecars with audio when transcription is enabled.
+              </p>
+            </div>
+          </section>
 
             <section
               id="archival-network-share-section"

@@ -101,6 +101,14 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
 
+
+def _quiet_noisy_dependencies(ice_level: int = logging.WARNING) -> None:
+    """Tone down overly chatty third-party loggers."""
+
+    for name in ("aioice", "aioice.ice", "aioice.stun"):
+        logging.getLogger(name).setLevel(ice_level)
+
+
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RAW_AUDIO_DIRNAME = ".original_wav"
 RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
@@ -880,9 +888,11 @@ def _audio_defaults() -> dict[str, Any]:
     return {
         "device": "",
         "sample_rate": 48000,
+        "channels": 1,
         "frame_ms": 20,
         "gain": 2.5,
         "vad_aggressiveness": 3,
+        "usb_reset_workaround": True,
         "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
         "calibration": {
             "auto_noise_profile": False,
@@ -916,6 +926,75 @@ def _segmenter_defaults() -> dict[str, Any]:
         "flush_threshold_bytes": 128 * 1024,
         "max_queue_frames": 512,
         "min_clip_seconds": 0.0,
+        "autosplit_interval_minutes": 15.0,
+        "auto_record_motion_override": True,
+        "filter_chain_avg_budget_ms": 6.0,
+        "filter_chain_peak_budget_ms": 15.0,
+        "filter_chain_metrics_window": 50,
+        "filter_chain_log_throttle_sec": 30.0,
+        "streaming_encode": False,
+        "streaming_encode_container": "opus",
+        "parallel_encode": {
+            "enabled": True,
+            "load_avg_per_cpu": 0.75,
+            "min_event_seconds": 1.0,
+            "cpu_check_interval_sec": 1.0,
+            "offline_max_workers": 2,
+            "offline_load_avg_per_cpu": 0.75,
+            "offline_cpu_check_interval_sec": 1.0,
+            "live_waveform_buckets": 1024,
+            "live_waveform_update_interval_sec": 1.0,
+        },
+        "max_pending_encodes": 8,
+        "event_tags": {
+            "human": "Human",
+            "other": "Other",
+            "both": "Both",
+        },
+    }
+
+
+def _paths_defaults() -> dict[str, Any]:
+    return {
+        "tmp_dir": "/apps/tricorder/tmp",
+        "recordings_dir": "/apps/tricorder/recordings",
+        "dropbox_dir": "/apps/tricorder/dropbox",
+        "ingest_work_dir": "/apps/tricorder/tmp/ingest",
+        "encoder_script": "/apps/tricorder/bin/encode_and_store.sh",
+    }
+
+
+def _notifications_defaults() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "allowed_event_types": [],
+        "min_trigger_rms": None,
+        "webhook": {
+            "url": "",
+            "method": "POST",
+            "headers": {},
+            "timeout_sec": 5.0,
+        },
+        "email": {
+            "smtp_host": "",
+            "smtp_port": 587,
+            "use_tls": True,
+            "use_ssl": False,
+            "username": "",
+            "password": "",
+            "from": "",
+            "to": [],
+            "subject_template": "Tricorder event: {etype} (RMS {trigger_rms})",
+            "body_template": (
+                "Event {base_name} completed on {host}.\n"
+                "Type: {etype}\n"
+                "Trigger RMS: {trigger_rms}\n"
+                "Average RMS: {avg_rms}\n"
+                "Duration: {duration_seconds}s\n"
+                "Start: {started_at}\n"
+                "Reason: {end_reason}"
+            ),
+        },
     }
 
 
@@ -1008,6 +1087,12 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         if isinstance(sr, (int, float)) and not isinstance(sr, bool):
             result["sample_rate"] = int(sr)
 
+        channels = raw.get("channels")
+        if isinstance(channels, (int, float)) and not isinstance(channels, bool):
+            candidate = int(channels)
+            if candidate in (1, 2):
+                result["channels"] = candidate
+
         frame = raw.get("frame_ms")
         if isinstance(frame, (int, float)) and not isinstance(frame, bool):
             result["frame_ms"] = int(frame)
@@ -1019,6 +1104,9 @@ def _canonical_audio_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         vad = raw.get("vad_aggressiveness")
         if isinstance(vad, (int, float)) and not isinstance(vad, bool):
             result["vad_aggressiveness"] = int(vad)
+
+        if "usb_reset_workaround" in raw:
+            result["usb_reset_workaround"] = _bool_from_any(raw.get("usb_reset_workaround"))
 
         filters = raw.get("filter_chain")
         if isinstance(filters, dict):
@@ -1120,26 +1208,198 @@ def _canonical_segmenter_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         if isinstance(min_clip, (int, float)) and not isinstance(min_clip, bool):
             candidate = float(min_clip)
             if math.isfinite(candidate):
-                if candidate < 0.0:
-                    candidate = 0.0
-                if candidate > 600.0:
-                    candidate = 600.0
+                candidate = max(0.0, min(600.0, candidate))
                 result["min_clip_seconds"] = candidate
 
         padding_minutes = raw.get("motion_release_padding_minutes")
         if isinstance(padding_minutes, (int, float)) and not isinstance(padding_minutes, bool):
             candidate = float(padding_minutes)
             if math.isfinite(candidate):
-                if candidate < 0.0:
-                    candidate = 0.0
-                if candidate > 30.0:
-                    candidate = 30.0
+                candidate = max(0.0, min(30.0, candidate))
                 result["motion_release_padding_minutes"] = candidate
+
+        autosplit = raw.get("autosplit_interval_minutes")
+        if isinstance(autosplit, (int, float)) and not isinstance(autosplit, bool):
+            candidate = float(autosplit)
+            if math.isfinite(candidate):
+                candidate = max(0.0, min(24 * 60.0, candidate))
+                result["autosplit_interval_minutes"] = candidate
 
         for key in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
             value = raw.get(key)
             if isinstance(value, bool):
                 result[key] = value
+
+        motion_override = raw.get("auto_record_motion_override")
+        if isinstance(motion_override, bool):
+            result["auto_record_motion_override"] = motion_override
+
+        for float_key, bounds in (
+            ("filter_chain_avg_budget_ms", (0.0, 100.0)),
+            ("filter_chain_peak_budget_ms", (0.0, 250.0)),
+            ("filter_chain_log_throttle_sec", (0.0, 600.0)),
+        ):
+            value = raw.get(float_key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                candidate = float(value)
+                if math.isfinite(candidate):
+                    minimum, maximum = bounds
+                    result[float_key] = max(minimum, min(maximum, candidate))
+
+        metrics_window = raw.get("filter_chain_metrics_window")
+        if isinstance(metrics_window, (int, float)) and not isinstance(metrics_window, bool):
+            candidate = int(metrics_window)
+            result["filter_chain_metrics_window"] = max(1, min(10_000, candidate))
+
+        streaming_encode = raw.get("streaming_encode")
+        if isinstance(streaming_encode, bool):
+            result["streaming_encode"] = streaming_encode
+
+        container = raw.get("streaming_encode_container")
+        if isinstance(container, str):
+            normalized = container.strip().lower()
+            if normalized in {"opus", "webm"}:
+                result["streaming_encode_container"] = normalized
+
+        max_pending = raw.get("max_pending_encodes")
+        if isinstance(max_pending, (int, float)) and not isinstance(max_pending, bool):
+            candidate = int(max_pending)
+            result["max_pending_encodes"] = max(0, min(1000, candidate))
+
+        parallel = raw.get("parallel_encode")
+        target_parallel = result.get("parallel_encode")
+        if not isinstance(target_parallel, dict):
+            target_parallel = {}
+            result["parallel_encode"] = target_parallel
+        if isinstance(parallel, dict):
+            enabled = parallel.get("enabled")
+            if isinstance(enabled, bool):
+                target_parallel["enabled"] = enabled
+
+            for float_key, bounds in (
+                ("load_avg_per_cpu", (0.0, 10.0)),
+                ("min_event_seconds", (0.0, 3600.0)),
+                ("cpu_check_interval_sec", (0.0, 3600.0)),
+                ("offline_load_avg_per_cpu", (0.0, 10.0)),
+                ("offline_cpu_check_interval_sec", (0.0, 3600.0)),
+                ("live_waveform_update_interval_sec", (0.05, 60.0)),
+            ):
+                value = parallel.get(float_key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    candidate = float(value)
+                    if math.isfinite(candidate):
+                        minimum, maximum = bounds
+                        target_parallel[float_key] = max(minimum, min(maximum, candidate))
+
+            for int_key, bounds in (
+                ("offline_max_workers", (0, 32)),
+                ("live_waveform_buckets", (1, 16384)),
+            ):
+                value = parallel.get(int_key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    candidate = int(value)
+                    minimum, maximum = bounds
+                    target_parallel[int_key] = max(minimum, min(maximum, candidate))
+
+        event_tags = raw.get("event_tags")
+        target_tags = result.get("event_tags")
+        if not isinstance(target_tags, dict):
+            target_tags = {}
+            result["event_tags"] = target_tags
+        if isinstance(event_tags, dict):
+            for key, value in event_tags.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    trimmed_key = key.strip()
+                    if trimmed_key:
+                        target_tags[trimmed_key] = value.strip()
+    return result
+
+
+def _canonical_paths_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _paths_defaults()
+    raw = cfg.get("paths", {})
+    if isinstance(raw, dict):
+        for key in ("tmp_dir", "recordings_dir", "dropbox_dir", "ingest_work_dir", "encoder_script"):
+            value = raw.get(key)
+            if isinstance(value, str):
+                trimmed = value.strip()
+                result[key] = trimmed
+    return result
+
+
+def _canonical_notifications_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = _notifications_defaults()
+    raw = cfg.get("notifications", {})
+    if not isinstance(raw, dict):
+        return result
+
+    enabled = raw.get("enabled")
+    if isinstance(enabled, bool):
+        result["enabled"] = enabled
+
+    allowed_types = _string_list_from_config(raw.get("allowed_event_types"), default=[])
+    result["allowed_event_types"] = allowed_types
+
+    min_trigger = raw.get("min_trigger_rms")
+    if isinstance(min_trigger, (int, float)) and not isinstance(min_trigger, bool):
+        candidate = int(min_trigger)
+        result["min_trigger_rms"] = candidate if candidate > 0 else 0
+    elif min_trigger is None:
+        result["min_trigger_rms"] = None
+
+    webhook = raw.get("webhook")
+    target_webhook = result.get("webhook", {})
+    if isinstance(webhook, dict):
+        url = webhook.get("url")
+        if isinstance(url, str):
+            target_webhook["url"] = url.strip()
+
+        method = webhook.get("method")
+        if isinstance(method, str):
+            candidate = method.strip().upper()
+            if candidate:
+                target_webhook["method"] = candidate
+
+        headers = webhook.get("headers")
+        if isinstance(headers, dict):
+            normalized_headers: dict[str, str] = {}
+            for key, value in headers.items():
+                if not isinstance(key, str):
+                    continue
+                if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                    normalized_headers[key.strip()] = str(value).strip()
+            target_webhook["headers"] = {k: v for k, v in normalized_headers.items() if k}
+        elif headers is None:
+            target_webhook["headers"] = {}
+
+        timeout = webhook.get("timeout_sec")
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+            candidate = float(timeout)
+            if math.isfinite(candidate):
+                target_webhook["timeout_sec"] = max(0.0, min(300.0, candidate))
+
+    email = raw.get("email")
+    target_email = result.get("email", {})
+    if isinstance(email, dict):
+        for key in ("smtp_host", "username", "password", "from", "subject_template", "body_template"):
+            value = email.get(key)
+            if isinstance(value, str):
+                target_email[key] = value.strip()
+
+        smtp_port = email.get("smtp_port")
+        if isinstance(smtp_port, (int, float)) and not isinstance(smtp_port, bool):
+            candidate = int(smtp_port)
+            if 0 < candidate <= 65535:
+                target_email["smtp_port"] = candidate
+
+        for bool_key in ("use_tls", "use_ssl"):
+            value = email.get(bool_key)
+            if isinstance(value, bool):
+                target_email[bool_key] = value
+
+        recipients = _string_list_from_config(email.get("to"), default=[])
+        target_email["to"] = recipients
+
     return result
 
 
@@ -1573,6 +1833,17 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     if sample_rate is not None:
         normalized["sample_rate"] = sample_rate
 
+    raw_channels = payload.get("channels")
+    if raw_channels is not None:
+        channels = _coerce_int(
+            raw_channels,
+            "channels",
+            errors,
+            allowed={1, 2},
+        )
+        if channels is not None:
+            normalized["channels"] = channels
+
     frame_ms = _coerce_int(
         payload.get("frame_ms"),
         "frame_ms",
@@ -1595,6 +1866,9 @@ def _normalize_audio_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
     )
     if vad is not None:
         normalized["vad_aggressiveness"] = vad
+
+    if "usb_reset_workaround" in payload:
+        normalized["usb_reset_workaround"] = _bool_from_any(payload.get("usb_reset_workaround"))
 
     filters_payload = payload.get("filter_chain")
     stages = normalized.get("filter_chain")
@@ -1712,6 +1986,8 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
         "keep_consecutive": (1, 2000),
         "flush_threshold_bytes": (4096, 4 * 1024 * 1024),
         "max_queue_frames": (16, 4096),
+        "filter_chain_metrics_window": (1, 10_000),
+        "max_pending_encodes": (0, 1000),
     }
 
     for field, bounds in int_fields.items():
@@ -1740,8 +2016,251 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
     if motion_padding is not None:
         normalized["motion_release_padding_minutes"] = motion_padding
 
+    autosplit = _coerce_float(
+        payload.get("autosplit_interval_minutes"),
+        "autosplit_interval_minutes",
+        errors,
+        min_value=0.0,
+        max_value=24 * 60.0,
+    )
+    if autosplit is not None:
+        normalized["autosplit_interval_minutes"] = autosplit
+
     for field in ("use_rnnoise", "use_noisereduce", "denoise_before_vad"):
         normalized[field] = _bool_from_any(payload.get(field))
+
+    motion_override = payload.get("auto_record_motion_override")
+    if motion_override is not None:
+        normalized["auto_record_motion_override"] = _bool_from_any(motion_override)
+
+    float_fields = {
+        "filter_chain_avg_budget_ms": (0.0, 100.0),
+        "filter_chain_peak_budget_ms": (0.0, 250.0),
+        "filter_chain_log_throttle_sec": (0.0, 600.0),
+    }
+    for field, bounds in float_fields.items():
+        candidate = _coerce_float(payload.get(field), field, errors, min_value=bounds[0], max_value=bounds[1])
+        if candidate is not None:
+            normalized[field] = candidate
+
+    streaming_encode = payload.get("streaming_encode")
+    if streaming_encode is not None:
+        normalized["streaming_encode"] = _bool_from_any(streaming_encode)
+
+    container = payload.get("streaming_encode_container")
+    if container is not None:
+        if isinstance(container, str) and container.strip().lower() in {"opus", "webm"}:
+            normalized["streaming_encode_container"] = container.strip().lower()
+        else:
+            errors.append("streaming_encode_container must be one of: opus, webm")
+
+    parallel_payload = payload.get("parallel_encode")
+    if parallel_payload is not None:
+        if isinstance(parallel_payload, dict):
+            normalized_parallel = normalized.get("parallel_encode")
+            if not isinstance(normalized_parallel, dict):
+                normalized_parallel = {}
+                normalized["parallel_encode"] = normalized_parallel
+
+            normalized_parallel["enabled"] = _bool_from_any(parallel_payload.get("enabled"))
+
+            parallel_float_fields = {
+                "load_avg_per_cpu": (0.0, 10.0),
+                "min_event_seconds": (0.0, 3600.0),
+                "cpu_check_interval_sec": (0.0, 3600.0),
+                "offline_load_avg_per_cpu": (0.0, 10.0),
+                "offline_cpu_check_interval_sec": (0.0, 3600.0),
+                "live_waveform_update_interval_sec": (0.05, 60.0),
+            }
+            for field, bounds in parallel_float_fields.items():
+                candidate = _coerce_float(
+                    parallel_payload.get(field),
+                    f"parallel_encode.{field}",
+                    errors,
+                    min_value=bounds[0],
+                    max_value=bounds[1],
+                )
+                if candidate is not None:
+                    normalized_parallel[field] = candidate
+
+            parallel_int_fields = {
+                "offline_max_workers": (0, 32),
+                "live_waveform_buckets": (1, 16384),
+            }
+            for field, bounds in parallel_int_fields.items():
+                candidate = _coerce_int(
+                    parallel_payload.get(field),
+                    f"parallel_encode.{field}",
+                    errors,
+                    min_value=bounds[0],
+                    max_value=bounds[1],
+                )
+                if candidate is not None:
+                    normalized_parallel[field] = candidate
+        else:
+            errors.append("parallel_encode must be an object")
+
+    event_tags_payload = payload.get("event_tags")
+    if event_tags_payload is not None:
+        if isinstance(event_tags_payload, dict):
+            normalized_tags: dict[str, str] = {}
+            for key, value in event_tags_payload.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    errors.append("event_tags entries must map strings to strings")
+                    normalized_tags = {}
+                    break
+                trimmed_key = key.strip()
+                if not trimmed_key:
+                    errors.append("event_tags keys must not be empty")
+                    normalized_tags = {}
+                    break
+                normalized_tags[trimmed_key] = value.strip()
+            if normalized_tags:
+                normalized["event_tags"] = normalized_tags
+        else:
+            errors.append("event_tags must be an object")
+
+    return normalized, errors
+
+
+def _normalize_paths_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _paths_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    for key in ("tmp_dir", "recordings_dir", "dropbox_dir", "ingest_work_dir", "encoder_script"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            normalized[key] = value.strip()
+        else:
+            errors.append(f"{key} must be a string")
+
+    return normalized, errors
+
+
+def _normalize_notifications_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    normalized = _notifications_defaults()
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return normalized, ["Request body must be a JSON object"]
+
+    normalized["enabled"] = _bool_from_any(payload.get("enabled"))
+
+    allowed = payload.get("allowed_event_types")
+    if allowed is None:
+        normalized["allowed_event_types"] = []
+    else:
+        allowed_list = _string_list_from_config(allowed, default=None)
+        if allowed_list is None:
+            errors.append("allowed_event_types must be an array or newline-delimited string")
+        else:
+            normalized["allowed_event_types"] = allowed_list
+
+    raw_min_trigger = payload.get("min_trigger_rms")
+    if raw_min_trigger is None or (isinstance(raw_min_trigger, str) and not raw_min_trigger.strip()):
+        normalized["min_trigger_rms"] = None
+    else:
+        min_trigger = _coerce_int(
+            raw_min_trigger,
+            "min_trigger_rms",
+            errors,
+            min_value=0,
+            max_value=32767,
+        )
+        if min_trigger is not None:
+            normalized["min_trigger_rms"] = min_trigger
+
+    webhook_payload = payload.get("webhook")
+    if webhook_payload is None:
+        webhook_payload = {}
+    if isinstance(webhook_payload, dict):
+        target = normalized.get("webhook", {})
+        url = webhook_payload.get("url")
+        if url is not None:
+            if isinstance(url, str):
+                target["url"] = url.strip()
+            else:
+                errors.append("webhook.url must be a string")
+
+        method = webhook_payload.get("method")
+        if method is not None:
+            if isinstance(method, str) and method.strip():
+                target["method"] = method.strip().upper()
+            else:
+                errors.append("webhook.method must be a non-empty string")
+
+        headers_payload = webhook_payload.get("headers")
+        if headers_payload is None:
+            target["headers"] = {}
+        elif isinstance(headers_payload, dict):
+            normalized_headers: dict[str, str] = {}
+            for key, value in headers_payload.items():
+                if not isinstance(key, str):
+                    errors.append("webhook.headers keys must be strings")
+                    normalized_headers = {}
+                    break
+                if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                    normalized_headers[key.strip()] = str(value).strip()
+                else:
+                    errors.append("webhook.headers values must be strings or numbers")
+                    normalized_headers = {}
+                    break
+            target["headers"] = {k: v for k, v in normalized_headers.items() if k}
+        else:
+            errors.append("webhook.headers must be an object")
+
+        timeout = webhook_payload.get("timeout_sec")
+        if timeout is not None:
+            timeout_value = _coerce_float(timeout, "webhook.timeout_sec", errors, min_value=0.0, max_value=300.0)
+            if timeout_value is not None:
+                target["timeout_sec"] = timeout_value
+    else:
+        errors.append("webhook must be an object")
+
+    email_payload = payload.get("email")
+    if email_payload is None:
+        email_payload = {}
+    if isinstance(email_payload, dict):
+        target_email = normalized.get("email", {})
+        for field in ("smtp_host", "username", "password", "from", "subject_template", "body_template"):
+            value = email_payload.get(field)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                target_email[field] = value.strip()
+            else:
+                errors.append(f"email.{field} must be a string")
+
+        smtp_port = email_payload.get("smtp_port")
+        if smtp_port is not None:
+            port_value = _coerce_int(smtp_port, "email.smtp_port", errors, min_value=1, max_value=65535)
+            if port_value is not None:
+                target_email["smtp_port"] = port_value
+
+        for field in ("use_tls", "use_ssl"):
+            value = email_payload.get(field)
+            if value is not None:
+                if isinstance(value, bool):
+                    target_email[field] = value
+                else:
+                    errors.append(f"email.{field} must be a boolean")
+
+        recipients = email_payload.get("to")
+        if recipients is None:
+            target_email["to"] = []
+        else:
+            parsed = _string_list_from_config(recipients, default=None)
+            if parsed is None:
+                errors.append("email.to must be an array or newline-delimited string")
+            else:
+                target_email["to"] = parsed
+    else:
+        errors.append("email must be an object")
 
     return normalized, errors
 
@@ -2240,9 +2759,11 @@ from lib.config import (
     update_adaptive_rms_settings,
     update_archival_settings,
     update_audio_settings,
+    update_paths_settings,
     update_dashboard_settings,
     update_ingest_settings,
     update_logging_settings,
+    update_notifications_settings,
     update_segmenter_settings,
     update_streaming_settings,
     update_transcription_settings,
@@ -4517,6 +5038,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     )
     auto_record_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), "auto_record_state.json"
+    )
+    manual_stop_request_path = os.path.join(
+        cfg["paths"].get("tmp_dir", tmp_root), "manual_stop_request.json"
     )
     motion_state_path = os.path.join(
         cfg["paths"].get("tmp_dir", tmp_root), MOTION_STATE_FILENAME
@@ -7003,6 +7527,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         "streaming": [recorder_unit, web_streamer_unit],
         "dashboard": [web_streamer_unit],
         "web_server": [web_streamer_unit],
+        "paths": [recorder_unit, "dropbox.path", "dropbox.service", web_streamer_unit],
+        "notifications": [recorder_unit],
     }
 
     async def _settings_get(
@@ -7066,6 +7592,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             normalize=_normalize_audio_payload,
             update_func=update_audio_settings,
             canonical_fn=_canonical_audio_settings,
+        )
+
+    async def config_paths_get(request: web.Request) -> web.Response:
+        return await _settings_get("paths", _canonical_paths_settings)
+
+    async def config_paths_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="paths",
+            section_label="paths",
+            normalize=_normalize_paths_payload,
+            update_func=update_paths_settings,
+            canonical_fn=_canonical_paths_settings,
         )
 
     async def config_segmenter_get(request: web.Request) -> web.Response:
@@ -7135,6 +7674,19 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             normalize=_normalize_logging_payload,
             update_func=update_logging_settings,
             canonical_fn=_canonical_logging_settings,
+        )
+
+    async def config_notifications_get(request: web.Request) -> web.Response:
+        return await _settings_get("notifications", _canonical_notifications_settings)
+
+    async def config_notifications_update(request: web.Request) -> web.Response:
+        return await _settings_update(
+            request,
+            section="notifications",
+            section_label="notifications",
+            normalize=_normalize_notifications_payload,
+            update_func=update_notifications_settings,
+            canonical_fn=_canonical_notifications_settings,
         )
 
     async def config_streaming_get(request: web.Request) -> web.Response:
@@ -7806,6 +8358,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         return web.json_response({"ok": True, "enabled": bool(enabled)})
 
+    async def capture_stop(_: web.Request) -> web.Response:
+        try:
+            os.makedirs(os.path.dirname(manual_stop_request_path), exist_ok=True)
+            with open(manual_stop_request_path, "w", encoding="utf-8") as handle:
+                json.dump({"requested": True, "updated_at": time.time()}, handle)
+                handle.write("\n")
+        except OSError as exc:
+            return web.json_response(
+                {"ok": False, "error": f"Failed to request capture stop: {exc}"},
+                status=500,
+            )
+
+        return web.json_response({"ok": True})
+
     # --- Control/Stats API ---
     async def hls_start(request: web.Request) -> web.Response:
         session_id = request.rel_url.query.get("session")
@@ -7929,6 +8495,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/config/archival", config_archival_update)
     app.router.add_get("/api/config/audio", config_audio_get)
     app.router.add_post("/api/config/audio", config_audio_update)
+    app.router.add_get("/api/config/paths", config_paths_get)
+    app.router.add_post("/api/config/paths", config_paths_update)
     app.router.add_get("/api/config/segmenter", config_segmenter_get)
     app.router.add_post("/api/config/segmenter", config_segmenter_update)
     app.router.add_get("/api/config/adaptive-rms", config_adaptive_rms_get)
@@ -7940,6 +8508,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_get("/api/transcription/models", transcription_models_get)
     app.router.add_get("/api/config/logging", config_logging_get)
     app.router.add_post("/api/config/logging", config_logging_update)
+    app.router.add_get("/api/config/notifications", config_notifications_get)
+    app.router.add_post("/api/config/notifications", config_notifications_update)
     app.router.add_get("/api/config/streaming", config_streaming_get)
     app.router.add_post("/api/config/streaming", config_streaming_update)
     app.router.add_get("/api/config/dashboard", config_dashboard_get)
@@ -7954,6 +8524,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     app.router.add_post("/api/capture/split", capture_split)
     app.router.add_post("/api/capture/auto-record", capture_auto_record)
     app.router.add_post("/api/capture/manual-record", capture_manual_record)
+    app.router.add_post("/api/capture/stop", capture_stop)
 
     if stream_mode == "hls":
         app.router.add_get("/hls/start", hls_start)
@@ -8155,6 +8726,7 @@ def start_web_streamer_in_thread(
         level=getattr(logging, log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    _quiet_noisy_dependencies()
     log = logging.getLogger("web_streamer")
 
     loop = asyncio.new_event_loop()
@@ -8218,6 +8790,7 @@ def cli_main():
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    _quiet_noisy_dependencies()
     log = logging.getLogger("web_streamer")
 
     apply_config_migrations(logger=log)
