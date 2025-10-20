@@ -310,7 +310,10 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
         env_device = os.environ["AUDIO_DEV"].strip()
         if env_device:
             audio_section = cfg.setdefault("audio", {})
-            audio_section["device"] = env_device
+            current_device = audio_section.get("device")
+            default_device = _DEFAULTS.get("audio", {}).get("device")
+            if not current_device or current_device == default_device:
+                audio_section["device"] = env_device
     if "GAIN" in os.environ:
         try:
             cfg.setdefault("audio", {})["gain"] = float(os.environ["GAIN"])
