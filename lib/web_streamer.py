@@ -2144,13 +2144,16 @@ def _normalize_segmenter_payload(payload: Any) -> tuple[dict[str, Any], list[str
 
 
 def _normalize_paths_payload(payload: Any) -> tuple[dict[str, Any], list[str]]:
-    normalized = _paths_defaults()
     errors: list[str] = []
 
     if not isinstance(payload, dict):
-        return normalized, ["Request body must be a JSON object"]
+        return _paths_defaults(), ["Request body must be a JSON object"]
+
+    normalized: dict[str, Any] = {}
 
     for key in ("tmp_dir", "recordings_dir", "dropbox_dir", "ingest_work_dir", "encoder_script"):
+        if key not in payload:
+            continue
         value = payload.get(key)
         if value is None:
             continue
