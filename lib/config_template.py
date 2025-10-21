@@ -20,6 +20,10 @@ audio:
   # Sample rate in Hz. Valid: 16000, 32000, 48000. Default is 48000 for best VAD and Opus quality.
   sample_rate: 48000
 
+  # Capture channel count. Use 1 for mono microphones or 2 for stereo HATs.
+  # Frames are downmixed to mono before detection when more than one channel is provided.
+  channels: 1
+
   # Frame size in milliseconds. Valid: 10, 20, 30. Default 20ms (WebRTC VAD friendly).
   frame_ms: 20
 
@@ -27,6 +31,9 @@ audio:
   # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
   gain: 2.5
 
+  # Attempt to reset the USB controller between retries when using USB microphones.
+  # Disable for I2S or HAT capture cards so retries wait for the device without toggling USB power.
+  usb_reset_workaround: true
 
   # Unified live/recording filter chain. Configure filter presets through the
   # dashboard; legacy streaming.extra_ffmpeg_args values are ignored. Start with
@@ -152,6 +159,12 @@ segmenter:
   # When the dashboard disables automatic recordings, motion can still force events when this is true.
   # Set to false to require manual recording even if motion is detected.
   auto_record_motion_override: true
+
+  # Enable RMS-triggered recordings. When false, RMS levels are ignored and other triggers must start events.
+  enable_rms_trigger: true
+
+  # Enable voice activity detection as an automatic trigger. When false, VAD no longer starts or sustains events.
+  enable_vad_trigger: true
 
   # Primary RMS trigger threshold (linear audioop RMS units at given gain). Tune with room_tuner.py.
   # Typical: 200–1200 depending on mic and environment.

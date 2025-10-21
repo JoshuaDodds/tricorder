@@ -508,6 +508,44 @@ def test_manual_stop_resumes_motion_when_still_active(monkeypatch, tmp_path):
         segmenter.TimelineRecorder.event_counters = original_counters
 
 
+def test_request_manual_stop_finalizes_active_event(monkeypatch, tmp_path):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+
+    original_counters = segmenter.TimelineRecorder.event_counters
+    segmenter.TimelineRecorder.event_counters = collections.defaultdict(int)
+
+    rec = TimelineRecorder()
+
+    try:
+        rec.ingest(make_frame(4000), 0)
+
+        assert rec.active is True
+        assert rec.request_manual_stop() is True
+
+        rec.ingest(make_frame(0), 1)
+
+        assert rec.active is False
+        assert rec.request_manual_stop() is False
+    finally:
+        rec.flush(5)
+        segmenter.TimelineRecorder.event_counters = original_counters
+
+
 def test_motion_payload_includes_offsets(monkeypatch, tmp_path):
     tmp_dir = tmp_path / "tmp"
     rec_dir = tmp_path / "rec"

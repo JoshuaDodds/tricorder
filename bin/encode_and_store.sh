@@ -37,10 +37,17 @@ run_python_module() {
   local module="$1"
   shift
   if [[ -z "$PYTHON_BIN" ]]; then
-    echo "[encode] python interpreter not available for $module" | systemd-cat -t tricorder
+    log_journal "[encode] python interpreter not available for $module"
     return 1
   fi
   "$PYTHON_BIN" -m "$module" "$@"
+}
+
+log_journal() {
+  local message="$1"
+  if ! systemd-cat -t tricorder <<<"$message"; then
+    printf '%s\n' "$message" >&2
+  fi
 }
 
 clip_too_short() {
@@ -54,7 +61,7 @@ clip_too_short() {
   fi
   if ! command -v ffprobe >/dev/null 2>&1; then
     if [[ "$FFPROBE_WARNED" -eq 0 ]]; then
-      echo "[encode] ffprobe unavailable; cannot enforce min clip seconds" | systemd-cat -t tricorder
+      log_journal "[encode] ffprobe unavailable; cannot enforce min clip seconds"
       FFPROBE_WARNED=1
     fi
     return 1
@@ -82,7 +89,7 @@ discard_short_clip() {
   if [[ -n "$MIN_CLIP_SECONDS" ]]; then
     formatted_threshold=$(printf '%.3f' "$MIN_CLIP_SECONDS" 2>/dev/null || echo "$MIN_CLIP_SECONDS")
   fi
-  echo "[encode] Clip duration ${formatted_duration}s below minimum ${formatted_threshold}s; moving $target to recycle bin" | systemd-cat -t tricorder
+  log_journal "[encode] Clip duration ${formatted_duration}s below minimum ${formatted_threshold}s; moving $target to recycle bin"
 
   if [[ -n "$target" && -f "$target" ]]; then
     local recycle_args=(
@@ -109,12 +116,12 @@ discard_short_clip() {
     local recycle_entry=""
     if recycle_entry=$(run_python_module "${recycle_args[@]}"); then
       if [[ -n "$recycle_entry" ]]; then
-        echo "[encode] Short recording moved to recycle bin entry ${recycle_entry}" | systemd-cat -t tricorder
+        log_journal "[encode] Short recording moved to recycle bin entry ${recycle_entry}"
       else
-        echo "[encode] Short recording moved to recycle bin" | systemd-cat -t tricorder
+        log_journal "[encode] Short recording moved to recycle bin"
       fi
     else
-      echo "[encode] WARN: recycle bin move failed for $target; deleting artifacts" | systemd-cat -t tricorder
+      log_journal "[encode] WARN: recycle bin move failed for $target; deleting artifacts"
       rm -f "$target"
       rm -f "$waveform_file" "$transcript_file"
     fi
@@ -124,7 +131,7 @@ discard_short_clip() {
   fi
 
   rm -f "$in_wav"
-  echo "[encode] Short recording handling complete for $target" | systemd-cat -t tricorder
+  log_journal "[encode] Short recording handling complete for $target"
   exit 0
 }
 target_day="${ENCODER_TARGET_DAY:-}"
@@ -154,7 +161,7 @@ preserve_original_wav() {
 
   local dest_dir="${recordings_root}/${ORIGINAL_AUDIO_DIRNAME}/${day_component}"
   if ! mkdir -p "$dest_dir"; then
-    echo "[encode] WARN: unable to prepare original WAV directory $dest_dir" | systemd-cat -t tricorder
+    log_journal "[encode] WARN: unable to prepare original WAV directory $dest_dir"
     return 1
   fi
 
@@ -172,11 +179,11 @@ preserve_original_wav() {
 
   if mv -f "$source" "$candidate"; then
     ORIGINAL_REL_PATH="${ORIGINAL_AUDIO_DIRNAME}/${day_component}/$(basename "$candidate")"
-    echo "[encode] Preserved original WAV at ${candidate}" | systemd-cat -t tricorder
+    log_journal "[encode] Preserved original WAV at ${candidate}"
     return 0
   fi
 
-  echo "[encode] WARN: failed to preserve original WAV $source" | systemd-cat -t tricorder
+  log_journal "[encode] WARN: failed to preserve original WAV $source"
   return 1
 }
 
@@ -187,7 +194,7 @@ annotate_original_wav() {
     return
   fi
   if ! run_python_module lib.recording_metadata set_original_path "$waveform_path" "$relative_path"; then
-    echo "[encode] WARN: unable to update waveform metadata with original path" | systemd-cat -t tricorder
+    log_journal "[encode] WARN: unable to update waveform metadata with original path"
   fi
 }
 
@@ -243,7 +250,7 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
     discard_short_clip "$existing_opus"
   fi
   if [[ "${#FILTERS[@]}" -gt 0 ]]; then
-    echo "[encode] Streaming encoder provided $existing_opus; applying filters" | systemd-cat -t tricorder
+    log_journal "[encode] Streaming encoder provided $existing_opus; applying filters"
     temp_outdir="$(dirname "$existing_opus")"
     temp_filename="$(basename "$existing_opus")"
     temp_ext="${temp_filename##*.}"
@@ -261,17 +268,17 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
       -ac 1 -ar 48000 -sample_fmt s16 \
       -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
       "$temp_outfile"; then
-        echo "[encode] ffmpeg failed for $existing_opus" | systemd-cat -t tricorder
+        log_journal "[encode] ffmpeg failed for $existing_opus"
         rm -f "$temp_outfile"
         run_python_module lib.fault_handler encode_failure "$existing_opus" "$base"
         exit 1
     fi
     mv -f "$temp_outfile" "$existing_opus"
   else
-    echo "[encode] Streaming encoder provided $existing_opus; no filters requested" | systemd-cat -t tricorder
+    log_journal "[encode] Streaming encoder provided $existing_opus; no filters requested"
     if [[ "$reuse_waveform" -ne 1 ]]; then
       if ! run_python_module lib.waveform_cache "$in_wav" "$waveform_file"; then
-        echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
+        log_journal "[encode] waveform generation failed for $in_wav"
         rm -f "$in_wav"
         exit 1
       fi
@@ -280,16 +287,16 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
       echo "[encode] Reused waveform $waveform_file"
     fi
     if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; then
-      echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
+      log_journal "[encode] transcription failed for $base"
     fi
     if ! preserve_original_wav "$in_wav" "$day" "$base"; then
       rm -f "$in_wav"
     fi
     annotate_original_wav "$waveform_file" "$ORIGINAL_REL_PATH"
     if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
-      echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder
+      log_journal "[encode] archival upload failed for $outfile"
     fi
-    echo "[encoder] Stored $outfile" | systemd-cat -t tricorder
+    log_journal "[encoder] Stored $outfile"
     echo "[encode] Done"
     exit 0
   fi
@@ -300,7 +307,7 @@ else
     -ac 1 -ar 48000 -sample_fmt s16 \
     -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
     "$outfile"; then
-      echo "[encode] ffmpeg failed for $in_wav" | systemd-cat -t tricorder
+      log_journal "[encode] ffmpeg failed for $in_wav"
       run_python_module lib.fault_handler encode_failure "$in_wav" "$base"
       exit 1
   fi
@@ -313,7 +320,7 @@ if [[ "$reuse_waveform" -eq 1 ]]; then
   echo "[encode] Reused waveform $waveform_file"
 else
   if ! run_python_module lib.waveform_cache "$in_wav" "$waveform_file"; then
-    echo "[encode] waveform generation failed for $in_wav" | systemd-cat -t tricorder
+    log_journal "[encode] waveform generation failed for $in_wav"
     rm -f "$outfile"
     rm -f "$in_wav"
     exit 1
@@ -322,7 +329,7 @@ else
 fi
 
 if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; then
-  echo "[encode] transcription failed for $base" | systemd-cat -t tricorder
+  log_journal "[encode] transcription failed for $base"
 fi
 
 if ! preserve_original_wav "$in_wav" "$day" "$base"; then
@@ -332,8 +339,8 @@ fi
 annotate_original_wav "$waveform_file" "$ORIGINAL_REL_PATH"
 
 if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
-  echo "[encode] archival upload failed for $outfile" | systemd-cat -t tricorder
+  log_journal "[encode] archival upload failed for $outfile"
 fi
 
-echo "[encoder] Stored $outfile" | systemd-cat -t tricorder
+log_journal "[encoder] Stored $outfile"
 echo "[encode] Done"
