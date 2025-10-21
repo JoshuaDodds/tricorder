@@ -454,6 +454,83 @@ def test_recording_progress_includes_trigger_sources():
     assert result["derived"] == ["manual", "vad", "split", "motion"]
 
 
+def test_clipper_submit_includes_clip_name_field():
+    script = textwrap.dedent(
+        r"""
+        const modules = sandbox.__dashboardModules || {};
+        const clipperModule = modules["dashboard/modules/clipperController.js"] || {};
+        if (!clipperModule || typeof clipperModule.createClipperController !== "function") {
+          throw new Error("clipper controller module unavailable");
+        }
+
+        const fetchCalls = [];
+        const apiClient = {
+          fetch: (url, options = {}) => {
+            fetchCalls.push({ url, options });
+            return { ok: true, status: 200, json: () => ({ path: "20240105/custom.opus" }) };
+          },
+        };
+
+        const dom = {
+          clipperForm: { setAttribute: () => {} },
+          clipperNameInput: { value: "", disabled: false },
+          clipperStatus: { textContent: "", dataset: {}, setAttribute: () => {} },
+        };
+
+        const state = {
+          current: {
+            path: "20240105/source.opus",
+            duration_seconds: 12,
+            extension: "opus",
+            name: "source",
+          },
+          records: [],
+        };
+
+        const controller = clipperModule.createClipperController({
+          dom,
+          state,
+          clamp: (value, min, max) => Math.min(Math.max(value, min), max),
+          numericValue: (value, fallback = 0) => (typeof value === "number" ? value : fallback),
+          formatTimecode: (seconds) => String(seconds),
+          formatTimeSlug: (seconds) => String(seconds).replace(/\./g, "_"),
+          toFiniteOrNull: (value) => (typeof value === "number" && Number.isFinite(value) ? value : null),
+          isRecycleBinRecord: () => false,
+          fetchRecordings: async () => {},
+          apiClient,
+          apiPath: (path) => path,
+          getRecordStartSeconds: () => 1_700_000_000,
+          resumeAutoRefresh: () => {},
+          setPendingSelectionPath: () => {},
+          MIN_CLIP_DURATION_SECONDS: 0.05,
+          ensurePreviewSectionOrder: () => {},
+          updateClipSelectionRange: () => {},
+        });
+
+        controller.state.durationSeconds = 12;
+        controller.state.startSeconds = 1.5;
+        controller.state.endSeconds = 4.0;
+        controller.state.overwriteExisting = false;
+        dom.clipperNameInput.value = "custom-take";
+
+        controller.submitForm({ preventDefault: () => {} });
+
+        return fetchCalls.map((call) => ({
+          url: call.url,
+          body: call.options && call.options.body ? JSON.parse(call.options.body) : null,
+        }));
+        """
+    )
+
+    result = _run_dashboard_selection_script(script)
+    assert isinstance(result, list) and len(result) == 1
+    payload = result[0]["body"]
+    assert result[0]["url"] == "/api/recordings/clip"
+    assert payload["clip_name"] == "custom-take"
+    assert "name" not in payload
+    assert payload["allow_overwrite"] is False
+
+
 def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
     async def runner():
         day_dir = dashboard_env / "20240201"
