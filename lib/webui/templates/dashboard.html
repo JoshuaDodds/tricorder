@@ -821,6 +821,16 @@
                     >
                       Saved
                     </button>
+                    <button
+                      id="recordings-tab-recycle"
+                      class="recordings-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected="false"
+                      data-collection="recycle"
+                    >
+                      Recycle bin
+                    </button>
                   </div>
                 </div>
                 <button
@@ -842,7 +852,24 @@
                 <button id="rename-selected" class="ghost-button small" type="button" disabled>
                   Rename selected
                 </button>
-                <button id="open-recycle-bin" class="ghost-button small" type="button">Recycle bin</button>
+                <button
+                  id="restore-selected"
+                  class="primary-button small"
+                  type="button"
+                  hidden
+                  disabled
+                >
+                  Restore selected
+                </button>
+                <button
+                  id="purge-selected"
+                  class="danger-button small"
+                  type="button"
+                  hidden
+                  disabled
+                >
+                  Delete permanently
+                </button>
                 <button id="delete-selected" class="danger-button small" type="button" disabled>
                   Move to recycle bin
                 </button>
@@ -961,80 +988,6 @@
             <button id="rename-confirm" class="primary-button" type="submit">Rename</button>
           </div>
         </form>
-      </div>
-    </div>
-    <div
-      id="recycle-bin-modal"
-      class="recycle-bin-modal"
-      hidden
-      data-visible="false"
-      aria-hidden="true"
-    >
-      <div
-        id="recycle-bin-dialog"
-        class="recycle-bin-dialog card"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="recycle-bin-title"
-        aria-describedby="recycle-bin-description"
-        tabindex="-1"
-      >
-        <div class="card-header recycle-bin-header">
-          <div class="card-heading">
-            <h2 id="recycle-bin-title">Recycle bin</h2>
-            <p id="recycle-bin-description" class="card-subtitle">
-              Recently removed recordings are staged here until you restore them.
-            </p>
-          </div>
-          <div class="stat stat-counts recycle-bin-counts" role="status" aria-live="polite">
-            <div class="stat-count-row">
-              <span class="label">Recordings</span>
-              <span class="value" id="recycle-bin-total-count">0</span>
-            </div>
-            <div class="stat-count-row">
-              <span class="label">Selected</span>
-              <span class="value" id="recycle-bin-selected-count">0</span>
-            </div>
-          </div>
-          <div class="recycle-bin-header-actions">
-            <button id="recycle-bin-refresh" class="ghost-button small" type="button">Refresh</button>
-            <button id="recycle-bin-restore" class="primary-button small" type="button" disabled>
-              Restore selected
-            </button>
-            <button id="recycle-bin-purge" class="danger-button small" type="button" disabled>
-              Delete permanently
-            </button>
-            <button id="recycle-bin-close" class="ghost-button small" type="button">Close</button>
-          </div>
-        </div>
-        <div class="recycle-bin-body">
-          <div class="recycle-bin-list" role="region" aria-live="polite">
-            <div class="table-responsive recycle-bin-table-wrapper">
-              <table id="recycle-bin-table" class="recycle-bin-table">
-                <thead>
-                  <tr>
-                    <th class="checkbox-cell">
-                      <input
-                        type="checkbox"
-                        id="recycle-bin-toggle-all"
-                        aria-label="Select all recycled recordings"
-                      />
-                    </th>
-                    <th>Name</th>
-                    <th>Length</th>
-                    <th>Label</th>
-                    <th>Deleted</th>
-                    <th>Size</th>
-                  </tr>
-                </thead>
-                <tbody id="recycle-bin-tbody"></tbody>
-              </table>
-            </div>
-            <div id="recycle-bin-empty" class="recycle-bin-empty" hidden>
-              No recordings in the recycle bin.
-            </div>
-          </div>
-        </div>
       </div>
     </div>
     <div
