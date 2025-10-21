@@ -3,6 +3,7 @@ import os
 
 import json
 import subprocess
+import threading
 import textwrap
 import time
 from datetime import datetime, timezone
@@ -1924,6 +1925,9 @@ def test_recordings_clip_endpoint_creates_trimmed_file(dashboard_env):
             assert clip_file.stat().st_mtime == pytest.approx(expected_start, abs=0.5)
             waveform_payload = json.loads(clip_waveform.read_text())
             assert waveform_payload.get("duration_seconds")
+
+            partial_leftovers = list(day_dir.rglob("*.partial"))
+            assert not partial_leftovers
         finally:
             await client.close()
             await server.close()
@@ -2098,6 +2102,162 @@ def test_recordings_clip_rename_without_reencoding(dashboard_env):
             assert json.loads(renamed_waveform.read_text()).get("duration_seconds") == pytest.approx(
                 1.0, rel=0.01
             )
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_rename_rejects_unsupported_characters(dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240110"
+        day_dir.mkdir()
+
+        recording = day_dir / "valid.opus"
+        recording.write_bytes(b"data")
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "item": f"{day_dir.name}/{recording.name}",
+                "name": "bad:name",
+            }
+            resp = await client.post("/api/recordings/rename", json=payload)
+            assert resp.status == 400
+            assert recording.exists()
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_clip_cleans_partial_on_failure(monkeypatch, dashboard_env):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    async def runner():
+        day_dir = dashboard_env / "20240111"
+        day_dir.mkdir()
+
+        source = day_dir / "source.wav"
+        _create_silent_wav(source, duration=2.0)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=2.0)
+
+        failure_triggered = {"value": False}
+        original_replace = os.replace
+
+        def fake_replace(src, dst):
+            if isinstance(dst, Path) and str(dst).endswith(".waveform.json"):
+                failure_triggered["value"] = True
+                raise OSError("waveform failure")
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", fake_replace)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "source_path": f"{day_dir.name}/{source.name}",
+                "start_seconds": 0.0,
+                "end_seconds": 1.0,
+                "clip_name": "failure-test",
+            }
+            resp = await client.post("/api/recordings/clip", json=payload)
+            assert resp.status == 400
+            assert failure_triggered["value"]
+
+            clip_path = day_dir / "failure-test.opus"
+            assert not clip_path.exists()
+            assert not clip_path.with_suffix(clip_path.suffix + ".waveform.json").exists()
+            assert not list(day_dir.rglob("*.partial"))
+        finally:
+            await client.close()
+            await server.close()
+
+    asyncio.run(runner())
+
+
+def test_recordings_clip_long_running_does_not_block_dashboard(monkeypatch, dashboard_env):
+    async def runner():
+        day_dir = dashboard_env / "20240112"
+        day_dir.mkdir()
+
+        source = day_dir / "long.wav"
+        _create_silent_wav(source, duration=30.0)
+        _write_waveform_stub(source.with_suffix(source.suffix + ".waveform.json"), duration=30.0)
+
+        start_event = threading.Event()
+        release_event = threading.Event()
+
+        def fake_run(cmd, check=False, *_, **__):
+            dest = cmd[-1] if cmd else ""
+            dest_path = Path(dest)
+            if dest_path.name == "clip.wav":
+                dest_path.write_bytes(b"decoded")
+                return subprocess.CompletedProcess(cmd, 0)
+            if dest_path.name == "clip.opus":
+                start_event.set()
+                if not release_event.wait(timeout=5):
+                    raise RuntimeError("clip encoding did not release in time")
+                dest_path.write_bytes(b"encoded")
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        def fake_generate_waveform(_, dest, **__):
+            Path(dest).write_text(json.dumps({"duration_seconds": 1.0}))
+
+        monkeypatch.setattr(web_streamer.subprocess, "run", fake_run)
+        monkeypatch.setattr(web_streamer, "generate_waveform", fake_generate_waveform)
+
+        app = web_streamer.build_app()
+        client, server = await _start_client(app)
+
+        try:
+            payload = {
+                "source_path": f"{day_dir.name}/{source.name}",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "clip_name": "long-test",
+            }
+
+            clip_task = asyncio.create_task(
+                client.post("/api/recordings/clip", json=payload)
+            )
+
+            try:
+                for _ in range(50):
+                    if start_event.is_set():
+                        break
+                    await asyncio.sleep(0.05)
+                assert start_event.is_set(), "clip encode thread did not start"
+
+                response = await asyncio.wait_for(
+                    client.get("/api/recordings"),
+                    timeout=1.0,
+                )
+                assert response.status == 200
+                await response.json()
+                assert not clip_task.done()
+            finally:
+                release_event.set()
+
+            clip_response = await clip_task
+            assert clip_response.status == 200
+            clip_payload = await clip_response.json()
+            assert clip_payload.get("path") == f"{day_dir.name}/long-test.opus"
+
+            final_path = day_dir / "long-test.opus"
+            assert final_path.exists()
+            assert final_path.read_bytes() == b"encoded"
         finally:
             await client.close()
             await server.close()

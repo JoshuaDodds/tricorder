@@ -71,6 +71,7 @@ DEFAULT_RECORDINGS_LIMIT = 200
 # threads).
 # WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
 WEB_STREAMER_EXECUTOR_MAX_WORKERS = 1  # hardcoded to 1 for this project to save RAM
+CLIP_EXECUTOR_MAX_WORKERS = 1  # serialize long-running clip jobs off the main executor
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
@@ -3746,6 +3747,10 @@ SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLConte
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
 )
+CLIP_EXECUTOR_KEY: AppKey[ThreadPoolExecutor] = web.AppKey(
+    "clip_executor",
+    ThreadPoolExecutor,
+)
 
 _TIMEZONE_ABBREVIATION_OFFSETS: dict[str, int] = {
     "UTC": 0,
@@ -4224,6 +4229,11 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         middlewares.append(_cors_middleware)
 
     app = web.Application(middlewares=middlewares)
+    clip_executor = ThreadPoolExecutor(
+        max_workers=CLIP_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="web_streamer_clip",
+    )
+    app[CLIP_EXECUTOR_KEY] = clip_executor
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
     if lets_encrypt_manager is not None:
         app[LETS_ENCRYPT_MANAGER_KEY] = lets_encrypt_manager
@@ -4721,6 +4731,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         final_path = target_dir / f"{base_name}.opus"
         final_waveform = final_path.with_suffix(final_path.suffix + ".waveform.json")
+        final_path_partial = final_path.with_suffix(final_path.suffix + ".partial")
+        final_waveform_partial = final_waveform.with_suffix(
+            final_waveform.suffix + ".partial"
+        )
 
         if final_path.exists() and not allow_overwrite:
             raise ClipError("clip already exists")
@@ -4867,6 +4881,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         except OSError as exc:
             raise ClipError("unable to create destination directory") from exc
 
+        for stale_candidate in (final_path_partial, final_waveform_partial):
+            try:
+                if stale_candidate.exists():
+                    if stale_candidate.is_file():
+                        stale_candidate.unlink()
+                    elif stale_candidate.is_dir():
+                        shutil.rmtree(stale_candidate, ignore_errors=True)
+            except OSError:
+                pass
+
         try:
             tmp_dir = tempfile.TemporaryDirectory(prefix="clip_", dir=tmp_root)
         except Exception as exc:  # pragma: no cover - tempdir failures are unexpected
@@ -4954,9 +4978,36 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 undo_token = _prepare_clip_backup(final_path, final_waveform, rel_path)
 
             try:
-                shutil.move(str(tmp_opus), str(final_path))
-                shutil.move(str(tmp_waveform), str(final_waveform))
+                shutil.move(str(tmp_opus), str(final_path_partial))
+                shutil.move(str(tmp_waveform), str(final_waveform_partial))
             except Exception as exc:
+                raise ClipError("unable to store generated clip") from exc
+
+            try:
+                os.replace(final_path_partial, final_path)
+            except Exception as exc:
+                try:
+                    if final_path_partial.exists():
+                        final_path_partial.unlink()
+                except OSError:
+                    pass
+                raise ClipError("unable to store generated clip") from exc
+
+            try:
+                os.replace(final_waveform_partial, final_waveform)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                try:
+                    os.replace(final_path, final_path_partial)
+                except Exception:
+                    pass
+                for cleanup_candidate in (final_path_partial, final_waveform_partial):
+                    try:
+                        if cleanup_candidate.exists():
+                            cleanup_candidate.unlink()
+                    except OSError:
+                        pass
                 raise ClipError("unable to store generated clip") from exc
 
         clip_start_epoch = None
@@ -5682,12 +5733,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     async def _stop_recordings_event_bridge(_: web.Application) -> None:
         await recordings_event_bridge.stop()
 
+    async def _shutdown_clip_executor(_: web.Application) -> None:
+        clip_executor.shutdown(wait=False, cancel_futures=True)
+
     app.on_startup.append(_start_capture_status_bridge)
     app.on_startup.append(_start_recordings_event_bridge)
     app.on_cleanup.append(_stop_capture_status_bridge)
     app.on_cleanup.append(_stop_recordings_event_bridge)
     app.on_cleanup.append(_stop_health_broadcaster)
     app.on_cleanup.append(_cleanup_event_bus)
+    app.on_cleanup.append(_shutdown_clip_executor)
 
     def _motion_state_snapshot(*, include_events: bool = True) -> dict[str, object]:
         state = load_motion_state(motion_state_path)
@@ -7134,6 +7189,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if name_component != new_name:
             raise web.HTTPBadRequest(reason="name cannot contain path separators")
 
+        if clip_safe_pattern.sub("_", name_component) != name_component:
+            raise web.HTTPBadRequest(reason="name contains unsupported characters")
+
         extension_override = None
         extension_value = data.get("extension")
         if isinstance(extension_value, str):
@@ -7364,10 +7422,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         )
 
         loop = asyncio.get_running_loop()
+        clip_executor = request.app.get(CLIP_EXECUTOR_KEY)
+        executor = clip_executor if isinstance(clip_executor, ThreadPoolExecutor) else None
         try:
             allow_overwrite = _to_bool(data.get("allow_overwrite"), True)
             payload = await loop.run_in_executor(
-                None,
+                executor,
                 functools.partial(
                     _create_clip_sync,
                     source_path,
