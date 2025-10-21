@@ -1920,6 +1920,7 @@ class AdaptiveRmsController:
         now = time.monotonic()
         if clear_buffer:
             self._buffer.clear()
+        self._last_release_candidate = None
         self._voiced_fallback_active = False
         self._voiced_fallback_logged = False
         self._last_buffer_extend = now
