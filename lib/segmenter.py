@@ -1837,6 +1837,7 @@ class AdaptiveRmsController:
         self._last_p95: float | None = None
         self._last_candidate: float | None = None
         self._last_release: float | None = None
+        self._last_release_candidate: float | None = None
         self._last_observation: AdaptiveRmsObservation | None = None
         initial_norm = max(0.0, min(initial_linear_threshold / self._NORM, 1.0))
         if self.enabled:
@@ -1879,6 +1880,16 @@ class AdaptiveRmsController:
     def last_release(self) -> float | None:
         return self._last_release
 
+    @property
+    def last_release_threshold_linear(self) -> int | None:
+        candidate = self._last_release_candidate
+        if candidate is None:
+            return None
+        threshold = int(round(candidate * self._NORM))
+        if self._max_threshold_linear is not None:
+            threshold = min(threshold, self._max_threshold_linear)
+        return threshold
+
     def pop_observation(self) -> AdaptiveRmsObservation | None:
         observation, self._last_observation = self._last_observation, None
         return observation
@@ -1890,20 +1901,20 @@ class AdaptiveRmsController:
 
     def resume_updates(self, *, clear_buffer: bool = False) -> None:
         self._updates_paused = False
+        now = time.monotonic()
         if clear_buffer:
             self._buffer.clear()
         self._voiced_fallback_active = False
         self._voiced_fallback_logged = False
-        self._last_buffer_extend = time.monotonic()
+        self._last_buffer_extend = now
+        self._last_update = now - self.update_interval
 
     def observe(self, rms_value: int, voiced: bool, *, capturing: bool = False) -> bool:
         if not self.enabled:
             self._last_observation = None
             return False
 
-        if self._updates_paused:
-            self._last_observation = None
-            return False
+        updates_allowed = not self._updates_paused
 
         norm = max(0.0, min(rms_value / self._NORM, 1.0))
         now = time.monotonic()
@@ -1959,6 +1970,7 @@ class AdaptiveRmsController:
             self.max_thresh_norm,
             max(self.min_thresh_norm, release_val * self.margin),
         )
+        self._last_release_candidate = candidate_release
         if (
             # Require both gates to move upward before raising the threshold.
             # This avoids ping-ponging when the long-tail release sample still
@@ -1982,8 +1994,10 @@ class AdaptiveRmsController:
             delta = abs(candidate - self._current_norm)
             should_update = (delta / self._current_norm) >= self.hysteresis_tolerance
 
-        if should_update:
+        updated = False
+        if should_update and updates_allowed:
             self._current_norm = min(candidate, self.max_thresh_norm)
+            updated = True
         final_threshold = int(round(self._current_norm * self._NORM))
         previous_threshold = int(round(previous_norm * self._NORM))
         candidate_threshold = int(round(candidate * self._NORM))
@@ -1993,7 +2007,7 @@ class AdaptiveRmsController:
             candidate_threshold = min(candidate_threshold, self._max_threshold_linear)
         self._last_observation = AdaptiveRmsObservation(
             timestamp=time.time(),
-            updated=bool(should_update),
+            updated=updated,
             threshold_linear=final_threshold,
             previous_threshold_linear=previous_threshold,
             candidate_threshold_linear=candidate_threshold,
@@ -2023,6 +2037,10 @@ class TimelineRecorder:
         self.recent_active = collections.deque(maxlen=KEEP_WINDOW)
         self.consec_active = 0
         self.consec_inactive = 0
+
+        self._event_release_threshold: int | None = None
+        self._event_release_candidate: int | None = None
+        self._event_release_quiet_frames: int = 0
 
         self.last_log = time.monotonic()
 
@@ -3007,8 +3025,11 @@ class TimelineRecorder:
             is_voice(proc_for_analysis) if self._vad_trigger_enabled else False
         )
         current_threshold = self._adaptive.threshold_linear
+        detection_threshold = current_threshold
+        if self.active and self._event_release_threshold is not None:
+            detection_threshold = max(detection_threshold, self._event_release_threshold)
         loud = (
-            rms_val > current_threshold if self._rms_trigger_enabled else False
+            rms_val > detection_threshold if self._rms_trigger_enabled else False
         )
         frame_active = loud
         vad_triggered = False
@@ -3054,6 +3075,41 @@ class TimelineRecorder:
             if threshold_changed:
                 self._emit_threshold_update()
 
+        if self.active:
+            release_threshold = self._adaptive.last_release_threshold_linear
+            if release_threshold is not None:
+                release_threshold = max(release_threshold, current_threshold)
+                max_linear = self._adaptive.max_threshold_linear
+                if max_linear is not None:
+                    release_threshold = min(release_threshold, max_linear)
+                if rms_val <= release_threshold:
+                    self._event_release_quiet_frames += 1
+                    if (
+                        self._event_release_candidate is None
+                        or release_threshold > self._event_release_candidate
+                    ):
+                        self._event_release_candidate = release_threshold
+                else:
+                    self._event_release_quiet_frames = 0
+                    self._event_release_candidate = None
+                if (
+                    self._event_release_quiet_frames >= KEEP_CONSECUTIVE
+                    and self._event_release_candidate is not None
+                ):
+                    promoted = max(
+                        detection_threshold,
+                        self._event_release_candidate,
+                    )
+                    if max_linear is not None:
+                        promoted = min(promoted, max_linear)
+                    if (
+                        self._event_release_threshold is None
+                        or promoted > self._event_release_threshold
+                    ):
+                        self._event_release_threshold = promoted
+                    self._event_release_quiet_frames = 0
+                    self._event_release_candidate = None
+
         self._maybe_update_live_metrics(rms_val)
 
         # once per-second debug (only if DEV enabled)
@@ -3079,7 +3135,7 @@ class TimelineRecorder:
             # Right text block with fixed width, including a percent that can reach 100.0
             # Use 6.1f so '100.0%' fits without pushing columns
             right_text = (
-                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d} thr={current_threshold:4d}  "
+                f"RMS cur={rms_val:4d} avg={win_avg:4d} peak={win_peak:4d} thr={detection_threshold:4d}  "
                 f"VAD voiced={voiced_ratio * 100:6.1f}%  |  "
             )
             right_block = right_text.ljust(RIGHT_TEXT_WIDTH)
@@ -3210,6 +3266,9 @@ class TimelineRecorder:
 
                 self.active = True
                 self._adaptive.pause_updates()
+                self._event_release_threshold = detection_threshold
+                self._event_release_candidate = None
+                self._event_release_quiet_frames = 0
                 self._event_manual_recording = self._manual_recording
                 self._motion_override_event_active = bool(
                     self._motion_override_enabled
@@ -3248,7 +3307,7 @@ class TimelineRecorder:
                 trigger_label = "+".join(trigger_components)
                 print(
                     f"[segmenter] Event started at frame ~{max(0, idx - PRE_PAD_FRAMES)} "
-                    f"(trigger={trigger_label} rms={rms_val} threshold={current_threshold})",
+                    f"(trigger={trigger_label} rms={rms_val} threshold={detection_threshold})",
                     flush=True,
                 )
                 event_status = {
@@ -3848,6 +3907,9 @@ class TimelineRecorder:
         self.sum_rms = 0
         self.saw_voiced = False
         self.saw_loud = False
+        self._event_release_threshold = None
+        self._event_release_candidate = None
+        self._event_release_quiet_frames = 0
         self.base_name = None
         self.tmp_wav_path = None
         self.writer_queue_drops = 0
