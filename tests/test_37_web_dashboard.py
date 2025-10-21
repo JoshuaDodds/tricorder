@@ -2267,6 +2267,8 @@ def test_delete_recording(dashboard_env):
             assert item["started_epoch"] == pytest.approx(start_epoch)
             assert item["started_at"].startswith("2024-01-03T05:06:07")
             assert item["start_epoch"] != item["deleted_at_epoch"]
+            assert item.get("day") == "20240103"
+            assert item.get("raw_audio_available") is False
 
             resp = await client.get(f"/recycle-bin/{entry_id}")
             assert resp.status == 200

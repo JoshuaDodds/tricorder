@@ -153,9 +153,11 @@ Chunk size: 1500 lines with ±10 overlap
   - **deleteRecordings** — services (function)
   - **fetchRecycleBin** — services (function)
   - **findNextSelectionPath** — services (function)
+  - **purgeRecycleBinEntries** — services (function)
   - **purgeRecycleBinSelection** — services (function)
   - **renameRecording** — services (function)
   - **requestRecordDeletion** — services (function)
+  - **requestSelectionDeletion** — services (function)
   - **restoreRecycleBinSelection** — services (function)
 
 ## Chunk 8 (10431–11534) — processed

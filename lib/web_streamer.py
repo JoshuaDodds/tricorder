@@ -3411,6 +3411,12 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     else:
         original_rel = stored_name
 
+    day_component = ""
+    if original_rel:
+        day_candidate = str(original_rel).split("/", 1)[0]
+        if day_candidate and day_candidate.isdigit() and len(day_candidate) == 8:
+            day_component = day_candidate
+
     deleted_iso = metadata.get("deleted_at")
     if not isinstance(deleted_iso, str):
         deleted_iso = ""
@@ -3508,6 +3514,12 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     if raw_audio_path and not _is_safe_relative_path(raw_audio_path):
         raw_audio_path = ""
 
+    raw_audio_bin_path: Path | None = None
+    if raw_audio_name:
+        candidate = entry_dir / raw_audio_name
+        if candidate.is_file():
+            raw_audio_bin_path = candidate
+
     reason_raw = metadata.get("reason")
     if isinstance(reason_raw, str):
         reason_value = reason_raw.strip()
@@ -3524,6 +3536,7 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "waveform_name": waveform_name,
         "transcript_name": transcript_name,
         "original_path": original_rel,
+        "day": day_component,
         "deleted_at": deleted_iso,
         "deleted_at_epoch": deleted_epoch,
         "size_bytes": size_bytes,
@@ -3533,6 +3546,8 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "started_at": started_at_value,
         "raw_audio_name": raw_audio_name,
         "raw_audio_path": raw_audio_path,
+        "raw_audio_bin_path": raw_audio_bin_path,
+        "raw_audio_available": raw_audio_bin_path is not None,
         "reason": reason_value,
         "motion_trigger_offset_seconds": motion_trigger_offset,
         "motion_release_offset_seconds": motion_release_offset,
@@ -6591,12 +6606,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 if isinstance(raw_reason, str):
                     reason_value = raw_reason.strip()
 
+                raw_audio_available = bool(data.get("raw_audio_bin_path"))
+                raw_audio_name = str(data.get("raw_audio_name") or "")
                 entries.append(
                     {
                         "id": entry_id,
                         "name": name,
                         "extension": extension,
                         "original_path": original_rel,
+                        "day": str(data.get("day", "")),
                         "deleted_at": str(data.get("deleted_at", "")),
                         "deleted_at_epoch": deleted_epoch_value,
                         "start_epoch": start_epoch_value,
@@ -6633,6 +6651,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         ),
                         "restorable": restorable,
                         "waveform_available": bool(data.get("waveform_name")),
+                        "raw_audio_available": raw_audio_available,
+                        "raw_audio_name": raw_audio_name,
                         "reason": reason_value,
                     }
                 )
@@ -7016,9 +7036,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if not isinstance(audio_path, Path) or not audio_path.is_file():
             raise web.HTTPNotFound()
 
-        response = web.FileResponse(audio_path)
-        disposition = "attachment" if request.rel_url.query.get("download") == "1" else "inline"
-        response.headers["Content-Disposition"] = f'{disposition}; filename="{audio_path.name}"'
+        serve_raw = request.rel_url.query.get("raw") == "1"
+        download_flag = request.rel_url.query.get("download") == "1"
+
+        target_path = audio_path
+        if serve_raw:
+            raw_candidate = data.get("raw_audio_bin_path")
+            if isinstance(raw_candidate, Path) and raw_candidate.is_file():
+                target_path = raw_candidate
+            else:
+                raise web.HTTPNotFound()
+
+        response = web.FileResponse(target_path)
+        disposition = "attachment" if download_flag else "inline"
+        response.headers["Content-Disposition"] = f'{disposition}; filename="{target_path.name}"'
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 

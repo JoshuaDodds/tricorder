@@ -1414,6 +1414,19 @@ async def test_recycle_bin_restore_reinstates_raw_audio(
     entry_raw_path = entry_dir / raw_path.name
     assert entry_raw_path.exists()
 
+    list_response = await client.get("/api/recycle-bin")
+    assert list_response.status == 200
+    listing = await list_response.json()
+    assert listing["total"] == 1
+    listing_item = listing["items"][0]
+    assert listing_item.get("raw_audio_available") is True
+    assert listing_item.get("raw_audio_name") == "sample.wav"
+    assert listing_item.get("day") == "20240101"
+
+    raw_preview = await client.get(f"/recycle-bin/{entry_dir.name}?raw=1")
+    assert raw_preview.status == 200
+    assert await raw_preview.read() == b"raw"
+
     bus = dashboard_events.get_event_bus()
     assert bus is not None
 
@@ -1576,6 +1589,10 @@ async def test_recycle_bin_list_includes_duration_and_reason(
 
     manual_entry = reasons["manual"]
     auto_entry = reasons["short_clip"]
+
+    assert manual_entry.get("day") == ""
+    assert manual_entry.get("raw_audio_available") is False
+    assert auto_entry.get("raw_audio_available") is False
 
     assert pytest.approx(manual_entry.get("duration_seconds"), rel=1e-3) == 2.5
     assert pytest.approx(auto_entry.get("duration_seconds"), rel=1e-3) == 1.25

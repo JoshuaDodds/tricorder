@@ -3447,8 +3447,7 @@ body[data-theme="light"] .record-in-progress {
   #recordings-table tbody tr .cell-duration,
   #recordings-table tbody tr .cell-size,
   #recordings-table tbody tr .cell-day,
-  #recordings-table tbody tr .cell-updated,
-  #recordings-table tbody tr .cell-type {
+  #recordings-table tbody tr .cell-updated {
     display: none;
   }
 
