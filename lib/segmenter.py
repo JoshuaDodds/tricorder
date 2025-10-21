@@ -1844,6 +1844,7 @@ class AdaptiveRmsController:
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
         self.debug = bool(debug)
+        self._updates_paused = False
 
     @property
     def threshold_linear(self) -> int:
@@ -1882,8 +1883,25 @@ class AdaptiveRmsController:
         observation, self._last_observation = self._last_observation, None
         return observation
 
+    def pause_updates(self) -> None:
+        if not self.enabled:
+            return
+        self._updates_paused = True
+
+    def resume_updates(self, *, clear_buffer: bool = False) -> None:
+        self._updates_paused = False
+        if clear_buffer:
+            self._buffer.clear()
+        self._voiced_fallback_active = False
+        self._voiced_fallback_logged = False
+        self._last_buffer_extend = time.monotonic()
+
     def observe(self, rms_value: int, voiced: bool, *, capturing: bool = False) -> bool:
         if not self.enabled:
+            self._last_observation = None
+            return False
+
+        if self._updates_paused:
             self._last_observation = None
             return False
 
@@ -3191,6 +3209,7 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
+                self._adaptive.pause_updates()
                 self._event_manual_recording = self._manual_recording
                 self._motion_override_event_active = bool(
                     self._motion_override_enabled
@@ -3769,6 +3788,7 @@ class TimelineRecorder:
         self._parallel_day_dir = None
 
     def _reset_event_state(self):
+        self._adaptive.resume_updates(clear_buffer=True)
         if self._streaming_encoder:
             result: StreamingEncoderResult | None = None
             try:
