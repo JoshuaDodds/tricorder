@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lib.segmenter import TimelineRecorder, FRAME_BYTES
+from lib.segmenter import TimelineRecorder, FRAME_BYTES, _reason_indicates_split
 from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
 import lib.segmenter as segmenter
 
@@ -39,6 +39,28 @@ def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
         wav_file.setframerate(segmenter.SAMPLE_RATE)
         sample_bytes = sample.to_bytes(2, "little", signed=True)
         wav_file.writeframes(sample_bytes * frames)
+
+
+def test_reason_indicates_split_tokens():
+    positive = [
+        "Manual split",
+        "autosplit limit reached",
+        "Shutdown requested",
+        "no active input for 200ms",
+        "USB reset detected",
+    ]
+    for reason in positive:
+        assert _reason_indicates_split(reason) is True
+
+    negative = [
+        "manual stop",
+        "auto recording disabled",
+        "motion ended",
+        "",
+        None,
+    ]
+    for reason in negative:
+        assert _reason_indicates_split(reason) is False
 
 
 def test_event_trigger_and_flush(tmp_path, monkeypatch):
@@ -1716,6 +1738,96 @@ def test_adaptive_rms_pauses_updates_during_active_capture(monkeypatch, tmp_path
         fake_time[0] += 0.05
 
     assert rec.active is False
+    assert rec._adaptive.threshold_linear == initial_threshold
+
+    rec.audio_q.put(None)
+    rec.writer.join(timeout=1)
+
+
+def test_adaptive_pause_promotes_release_threshold(monkeypatch, tmp_path):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    def perf_counter():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+    monkeypatch.setattr(segmenter.time, "perf_counter", perf_counter)
+
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "enabled", True)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "update_interval_sec", 0.01)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "window_sec", 0.02)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "hysteresis_tolerance", 0.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "margin", 1.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "voiced_hold_sec", 0.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "release_percentile", 0.5)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "min_thresh", 0.0)
+
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 2)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 2)
+    monkeypatch.setattr(segmenter, "POST_PAD", 40, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 2, raising=False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 0, raising=False)
+    monkeypatch.setattr(segmenter, "STATIC_RMS_THRESH", 300)
+    monkeypatch.setitem(segmenter.cfg["segmenter"], "rms_threshold", 300)
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(segmenter, "_normalized_load", lambda: 0.0)
+    monkeypatch.setattr(segmenter, "is_voice", lambda *_: False)
+
+    class DummyWaveform:
+        def __init__(self, *_, **__):
+            pass
+
+        def add_frame(self, *_):
+            pass
+
+        def close(self):  # pragma: no cover - exercised indirectly
+            pass
+
+    monkeypatch.setattr(segmenter, "LiveWaveformWriter", DummyWaveform)
+
+    rec = TimelineRecorder()
+    initial_threshold = rec._adaptive.threshold_linear
+    assert initial_threshold == 300
+
+    loud_frame = make_frame(1200)
+    settling_frame = make_frame(360)
+    assert read_sample(settling_frame) > initial_threshold
+
+    rec.ingest(loud_frame, 0)
+    fake_time[0] += 0.02
+    assert rec.active is True
+
+    # Feed frames whose RMS stays above the original trigger but below the
+    # adaptive release suggestion so the escape hatch must promote the hold
+    # threshold for the recording to end.
+    for idx in range(1, 8):
+        rec.ingest(settling_frame, idx)
+        fake_time[0] += 0.05
+        if not rec.active:
+            break
+
+    assert rec.active is False
+    # All sustaining frames remained above the initial threshold so the
+    # adaptive release promotion must have triggered.
+    assert settling_frame != make_frame(initial_threshold)
     assert rec._adaptive.threshold_linear == initial_threshold
 
     rec.audio_q.put(None)

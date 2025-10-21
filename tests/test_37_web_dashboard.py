@@ -100,6 +100,7 @@ def _run_dashboard_selection_script(
     indented_script = textwrap.indent(script, "        ")
     overrides = json.dumps(elements or {})
     template = """
+        process.env.DASHBOARD_KEEP_MODULES = "1";
         const path = require("path");
         const {{ loadDashboard }} = require(path.join(process.cwd(), "tests", "helpers", "dashboard_node_env.js"));
         const overrides = {overrides};
@@ -260,7 +261,7 @@ def test_recordings_listing_filters(dashboard_env, monkeypatch):
 
 def test_render_records_adds_trigger_badges_and_pills():
     script = textwrap.dedent(
-        """
+        r"""
         const table = sandbox.window.document.querySelector('#recordings-table tbody');
         sandbox.window.document.__setMockElement('toggle-all', {
           checked: false,
@@ -405,6 +406,51 @@ def test_render_records_adds_trigger_badges_and_pills():
 
     assert auto["badges"] == []
     assert all(pill["role"] not in {"manual-trigger", "split-trigger", "rmsvad-trigger"} for pill in auto["pills"])
+
+
+def test_recording_progress_includes_trigger_sources():
+    script = textwrap.dedent(
+        r"""
+        const modules = sandbox.__dashboardModules || {};
+        const normalizers = modules["dashboard/normalizers.js"] || {};
+        const progress = modules["dashboard/utils/recordingProgress.js"] || {};
+
+        const normalizeRecordingProgressRecord = progress.normalizeRecordingProgressRecord;
+        const deriveInProgressRecord = progress.deriveInProgressRecord;
+
+        const normalized = normalizeRecordingProgressRecord({
+          path: "20250102/live.partial.opus",
+          name: "Live partial",
+          trigger_sources: ["Manual", "split", "Motion", "manual"],
+          size_bytes: 1024,
+          duration_seconds: 12,
+          modified: 1_700_000_000,
+        });
+        const derived = deriveInProgressRecord({
+          capturing: true,
+          trigger_sources: ["Motion"],
+          event_duration_seconds: 4,
+          event_size_bytes: 2048,
+          streaming_container_format: "opus",
+          event: {
+            in_progress: true,
+            partial_recording_rel_path: "20250102/live.partial.opus",
+            started_epoch: 1_700_000_000,
+            base_name: "Live partial",
+            streaming_container_format: "opus",
+            trigger_sources: ["Manual", "vad", "Split"],
+          },
+        });
+        return {
+          normalized: normalized ? normalized.trigger_sources : null,
+          derived: derived ? derived.trigger_sources : null,
+        };
+        """
+    )
+
+    result = _run_dashboard_selection_script(script)
+    assert result["normalized"] == ["manual", "split", "motion"]
+    assert result["derived"] == ["manual", "vad", "split", "motion"]
 
 
 def test_recordings_include_motion_offsets(dashboard_env, monkeypatch):
