@@ -5289,6 +5289,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             "inProgress": True,
         }
 
+        trigger_candidates: list[str] = []
+        raw_event_triggers = event_payload.get("trigger_sources") if isinstance(event_payload, dict) else None
+        if isinstance(raw_event_triggers, list):
+            trigger_candidates.extend(raw_event_triggers)
+        raw_status_triggers = status.get("trigger_sources") if isinstance(status, dict) else None
+        if isinstance(raw_status_triggers, list):
+            trigger_candidates.extend(raw_status_triggers)
+        progress["trigger_sources"] = _normalize_trigger_sources(trigger_candidates)
+
         return progress
 
     def _read_capture_status() -> dict[str, object]:

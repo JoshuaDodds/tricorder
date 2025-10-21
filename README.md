@@ -4,6 +4,9 @@ Tricorder is an embedded audio event recorder designed for 24/7 capture on a Ras
 
 This project targets **single-purpose deployments** on low-power hardware. The runtime is pinned to Python&nbsp;3.10 via `requirements.txt` to ensure wheel availability for the Pi Zero 2&nbsp;W.
 
+<!-- DASHBOARD_SCREENSHOT_START -->
+<!-- DASHBOARD_SCREENSHOT_END -->
+
 ---
 
 ## Highlights

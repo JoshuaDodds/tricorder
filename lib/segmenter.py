@@ -57,6 +57,22 @@ FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
 
+_SPLIT_REASON_TOKENS = (
+    "split",
+    "shutdown",
+    "no active input",
+    "usb reset",
+)
+
+
+def _reason_indicates_split(reason: str | None) -> bool:
+    if not reason:
+        return False
+    normalized = reason.strip().lower()
+    if not normalized:
+        return False
+    return any(token in normalized for token in _SPLIT_REASON_TOKENS)
+
 @dataclass(frozen=True)
 class RecorderIngestHint:
     timestamp: str
@@ -3294,14 +3310,19 @@ class TimelineRecorder:
                         if not self._parallel_encoder.feed(frame_bytes):
                             self._parallel_encoder_drops += 1
                 trigger_components: list[str] = []
+                active_triggers: set[str] = set()
                 if loud:
                     trigger_components.append("RMS")
+                    active_triggers.add("rms")
                 elif self._vad_trigger_enabled and (vad_triggered or voiced):
                     trigger_components.append("VAD")
+                    active_triggers.add("vad")
                 if self._motion_forced_active:
                     trigger_components.append("motion")
+                    active_triggers.add("motion")
                 if self._manual_recording:
                     trigger_components.append("manual")
+                    active_triggers.add("manual")
                 if not trigger_components:
                     trigger_components.append("unknown")
                 trigger_label = "+".join(trigger_components)
@@ -3316,6 +3337,8 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
+                if active_triggers:
+                    event_status["trigger_sources"] = sorted(active_triggers)
                 duration_hint = self.frames_written * (FRAME_MS / 1000.0)
                 event_status.update(
                     self._current_motion_event_payload(
@@ -3673,8 +3696,7 @@ class TimelineRecorder:
         trigger_sources: set[str] = set()
         if manual_event:
             trigger_sources.add("manual")
-        normalized_reason = (reason or "").strip().lower()
-        if normalized_reason and "split" in normalized_reason:
+        if _reason_indicates_split(reason):
             trigger_sources.add("split")
         motion_fields = (
             "motion_trigger_offset_seconds",

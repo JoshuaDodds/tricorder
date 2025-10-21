@@ -3,6 +3,12 @@ const path = require("path");
 const vm = require("vm");
 const { URLSearchParams } = require("url");
 
+const KEEP_MODULES = String(process.env.DASHBOARD_KEEP_MODULES || "").toLowerCase() in {
+  true: true,
+  1: true,
+  yes: true,
+};
+
 function createMockElement() {
   const childList = [];
   const element = {
@@ -1036,7 +1042,9 @@ async function loadDashboard() {
     sandbox.isMotionTriggeredEvent = recorderSettingsHelpers.isMotionTriggeredEvent;
   }
 
-  delete sandbox.__dashboardModules;
+  if (!KEEP_MODULES) {
+    delete sandbox.__dashboardModules;
+  }
   if (globalThis.__DASHBOARD_ELEMENT_OVERRIDES) {
     delete globalThis.__DASHBOARD_ELEMENT_OVERRIDES;
   }
