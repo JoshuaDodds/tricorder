@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lib.segmenter import TimelineRecorder, FRAME_BYTES
+from lib.segmenter import TimelineRecorder, FRAME_BYTES, _reason_indicates_split
 from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
 import lib.segmenter as segmenter
 
@@ -39,6 +39,28 @@ def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
         wav_file.setframerate(segmenter.SAMPLE_RATE)
         sample_bytes = sample.to_bytes(2, "little", signed=True)
         wav_file.writeframes(sample_bytes * frames)
+
+
+def test_reason_indicates_split_tokens():
+    positive = [
+        "Manual split",
+        "autosplit limit reached",
+        "Shutdown requested",
+        "no active input for 200ms",
+        "USB reset detected",
+    ]
+    for reason in positive:
+        assert _reason_indicates_split(reason) is True
+
+    negative = [
+        "manual stop",
+        "auto recording disabled",
+        "motion ended",
+        "",
+        None,
+    ]
+    for reason in negative:
+        assert _reason_indicates_split(reason) is False
 
 
 def test_event_trigger_and_flush(tmp_path, monkeypatch):
