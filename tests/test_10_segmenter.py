@@ -1640,7 +1640,7 @@ def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
     assert len(unique_thresholds) == len(observation_logs)
 
 
-def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp_path):
+def test_adaptive_rms_pauses_updates_during_active_capture(monkeypatch, tmp_path):
     fake_time = [0.0]
 
     def monotonic():
@@ -1697,16 +1697,162 @@ def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp
     rec = TimelineRecorder()
     initial_threshold = rec._adaptive.threshold_linear
 
-    frame = make_frame(1200)
-    for idx in range(25):
-        rec.ingest(frame, idx)
-        fake_time[0] += 0.02
+    loud_frame = make_frame(1200)
+    quiet_frame = make_frame(10)
 
-    assert rec._adaptive.threshold_linear > initial_threshold
+    rec.ingest(loud_frame, 0)
+    fake_time[0] += 0.02
+
+    assert rec.active is True
+    assert rec._adaptive.threshold_linear == initial_threshold
+
+    for idx in range(1, 6):
+        rec.ingest(loud_frame, idx)
+        fake_time[0] += 0.02
+        assert rec._adaptive.threshold_linear == initial_threshold
+
+    for idx in range(6, 10):
+        rec.ingest(quiet_frame, idx)
+        fake_time[0] += 0.05
+
     assert rec.active is False
+    assert rec._adaptive.threshold_linear == initial_threshold
 
     rec.audio_q.put(None)
     rec.writer.join(timeout=1)
+
+
+def test_adaptive_pause_promotes_release_threshold(monkeypatch, tmp_path):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    def perf_counter():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+    monkeypatch.setattr(segmenter.time, "perf_counter", perf_counter)
+
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "enabled", True)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "update_interval_sec", 0.01)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "window_sec", 0.02)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "hysteresis_tolerance", 0.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "margin", 1.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "voiced_hold_sec", 0.0)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "release_percentile", 0.5)
+    monkeypatch.setitem(segmenter.cfg["adaptive_rms"], "min_thresh", 0.0)
+
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", os.path.join(str(tmp_dir), "parallel"))
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 2)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 2)
+    monkeypatch.setattr(segmenter, "POST_PAD", 40, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 2, raising=False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_MIN_FRAMES", 0, raising=False)
+    monkeypatch.setattr(segmenter, "STATIC_RMS_THRESH", 300)
+    monkeypatch.setitem(segmenter.cfg["segmenter"], "rms_threshold", 300)
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(segmenter, "_normalized_load", lambda: 0.0)
+    monkeypatch.setattr(segmenter, "is_voice", lambda *_: False)
+
+    class DummyWaveform:
+        def __init__(self, *_, **__):
+            pass
+
+        def add_frame(self, *_):
+            pass
+
+        def close(self):  # pragma: no cover - exercised indirectly
+            pass
+
+    monkeypatch.setattr(segmenter, "LiveWaveformWriter", DummyWaveform)
+
+    rec = TimelineRecorder()
+    initial_threshold = rec._adaptive.threshold_linear
+    assert initial_threshold == 300
+
+    loud_frame = make_frame(1200)
+    settling_frame = make_frame(360)
+    assert read_sample(settling_frame) > initial_threshold
+
+    rec.ingest(loud_frame, 0)
+    fake_time[0] += 0.02
+    assert rec.active is True
+
+    # Feed frames whose RMS stays above the original trigger but below the
+    # adaptive release suggestion so the escape hatch must promote the hold
+    # threshold for the recording to end.
+    for idx in range(1, 8):
+        rec.ingest(settling_frame, idx)
+        fake_time[0] += 0.05
+        if not rec.active:
+            break
+
+    assert rec.active is False
+    # All sustaining frames remained above the initial threshold so the
+    # adaptive release promotion must have triggered.
+    assert settling_frame != make_frame(initial_threshold)
+    assert rec._adaptive.threshold_linear == initial_threshold
+
+    rec.audio_q.put(None)
+    rec.writer.join(timeout=1)
+
+
+def test_adaptive_rms_resumes_after_pause(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+
+    controller = segmenter.AdaptiveRmsController(
+        frame_ms=10,
+        initial_linear_threshold=200,
+        cfg_section={
+            "enabled": True,
+            "update_interval_sec": 0.01,
+            "window_sec": 0.02,
+            "hysteresis_tolerance": 0.0,
+            "margin": 1.1,
+            "voiced_hold_sec": 0.0,
+        },
+    )
+
+    baseline = controller.threshold_linear
+
+    controller.pause_updates()
+    for _ in range(5):
+        fake_time[0] += 0.02
+        controller.observe(1200, voiced=False, capturing=True)
+
+    assert controller.threshold_linear == baseline
+
+    controller.resume_updates(clear_buffer=True)
+
+    for _ in range(5):
+        fake_time[0] += 0.02
+        controller.observe(1200, voiced=False, capturing=False)
+
+    assert controller.threshold_linear > baseline
 
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)
