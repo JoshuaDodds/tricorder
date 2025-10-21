@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lib.segmenter import TimelineRecorder, FRAME_BYTES
+from lib.segmenter import TimelineRecorder, FRAME_BYTES, _reason_indicates_split
 from lib.motion_state import MOTION_STATE_FILENAME, store_motion_state
 import lib.segmenter as segmenter
 
@@ -39,6 +39,28 @@ def _write_constant_wav(path: Path, sample: int, frames: int) -> None:
         wav_file.setframerate(segmenter.SAMPLE_RATE)
         sample_bytes = sample.to_bytes(2, "little", signed=True)
         wav_file.writeframes(sample_bytes * frames)
+
+
+def test_reason_indicates_split_tokens():
+    positive = [
+        "Manual split",
+        "autosplit limit reached",
+        "Shutdown requested",
+        "no active input for 200ms",
+        "USB reset detected",
+    ]
+    for reason in positive:
+        assert _reason_indicates_split(reason) is True
+
+    negative = [
+        "manual stop",
+        "auto recording disabled",
+        "motion ended",
+        "",
+        None,
+    ]
+    for reason in negative:
+        assert _reason_indicates_split(reason) is False
 
 
 def test_event_trigger_and_flush(tmp_path, monkeypatch):
@@ -1640,7 +1662,7 @@ def test_adaptive_rms_logs_and_status_update(monkeypatch, tmp_path):
     assert len(unique_thresholds) == len(observation_logs)
 
 
-def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp_path):
+def test_adaptive_rms_pauses_updates_during_active_capture(monkeypatch, tmp_path):
     fake_time = [0.0]
 
     def monotonic():
@@ -1697,16 +1719,72 @@ def test_adaptive_rms_updates_with_voiced_frames_during_capture(monkeypatch, tmp
     rec = TimelineRecorder()
     initial_threshold = rec._adaptive.threshold_linear
 
-    frame = make_frame(1200)
-    for idx in range(25):
-        rec.ingest(frame, idx)
-        fake_time[0] += 0.02
+    loud_frame = make_frame(1200)
+    quiet_frame = make_frame(10)
 
-    assert rec._adaptive.threshold_linear > initial_threshold
+    rec.ingest(loud_frame, 0)
+    fake_time[0] += 0.02
+
+    assert rec.active is True
+    assert rec._adaptive.threshold_linear == initial_threshold
+
+    for idx in range(1, 6):
+        rec.ingest(loud_frame, idx)
+        fake_time[0] += 0.02
+        assert rec._adaptive.threshold_linear == initial_threshold
+
+    for idx in range(6, 10):
+        rec.ingest(quiet_frame, idx)
+        fake_time[0] += 0.05
+
     assert rec.active is False
+    assert rec._adaptive.threshold_linear == initial_threshold
 
     rec.audio_q.put(None)
     rec.writer.join(timeout=1)
+
+
+def test_adaptive_rms_resumes_after_pause(monkeypatch):
+    fake_time = [0.0]
+
+    def monotonic():
+        return fake_time[0]
+
+    def wall():
+        return fake_time[0]
+
+    monkeypatch.setattr(segmenter.time, "monotonic", monotonic)
+    monkeypatch.setattr(segmenter.time, "time", wall)
+
+    controller = segmenter.AdaptiveRmsController(
+        frame_ms=10,
+        initial_linear_threshold=200,
+        cfg_section={
+            "enabled": True,
+            "update_interval_sec": 0.01,
+            "window_sec": 0.02,
+            "hysteresis_tolerance": 0.0,
+            "margin": 1.1,
+            "voiced_hold_sec": 0.0,
+        },
+    )
+
+    baseline = controller.threshold_linear
+
+    controller.pause_updates()
+    for _ in range(5):
+        fake_time[0] += 0.02
+        controller.observe(1200, voiced=False, capturing=True)
+
+    assert controller.threshold_linear == baseline
+
+    controller.resume_updates(clear_buffer=True)
+
+    for _ in range(5):
+        fake_time[0] += 0.02
+        controller.observe(1200, voiced=False, capturing=False)
+
+    assert controller.threshold_linear > baseline
 
 def test_rms_matches_constant_signal():
     buf = make_frame(1200)

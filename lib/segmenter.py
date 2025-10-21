@@ -57,6 +57,22 @@ FRAME_SAMPLES = FRAME_BYTES // SAMPLE_WIDTH
 INT16_MAX = 2 ** 15 - 1
 INT16_MIN = -2 ** 15
 
+_SPLIT_REASON_TOKENS = (
+    "split",
+    "shutdown",
+    "no active input",
+    "usb reset",
+)
+
+
+def _reason_indicates_split(reason: str | None) -> bool:
+    if not reason:
+        return False
+    normalized = reason.strip().lower()
+    if not normalized:
+        return False
+    return any(token in normalized for token in _SPLIT_REASON_TOKENS)
+
 @dataclass(frozen=True)
 class RecorderIngestHint:
     timestamp: str
@@ -1844,6 +1860,7 @@ class AdaptiveRmsController:
             initial_norm = max(self.min_thresh_norm, initial_norm)
         self._current_norm = initial_norm
         self.debug = bool(debug)
+        self._updates_paused = False
 
     @property
     def threshold_linear(self) -> int:
@@ -1882,8 +1899,25 @@ class AdaptiveRmsController:
         observation, self._last_observation = self._last_observation, None
         return observation
 
+    def pause_updates(self) -> None:
+        if not self.enabled:
+            return
+        self._updates_paused = True
+
+    def resume_updates(self, *, clear_buffer: bool = False) -> None:
+        self._updates_paused = False
+        if clear_buffer:
+            self._buffer.clear()
+        self._voiced_fallback_active = False
+        self._voiced_fallback_logged = False
+        self._last_buffer_extend = time.monotonic()
+
     def observe(self, rms_value: int, voiced: bool, *, capturing: bool = False) -> bool:
         if not self.enabled:
+            self._last_observation = None
+            return False
+
+        if self._updates_paused:
             self._last_observation = None
             return False
 
@@ -3191,6 +3225,7 @@ class TimelineRecorder:
                 self.prebuf.clear()
 
                 self.active = True
+                self._adaptive.pause_updates()
                 self._event_manual_recording = self._manual_recording
                 self._motion_override_event_active = bool(
                     self._motion_override_enabled
@@ -3216,14 +3251,19 @@ class TimelineRecorder:
                         if not self._parallel_encoder.feed(frame_bytes):
                             self._parallel_encoder_drops += 1
                 trigger_components: list[str] = []
+                active_triggers: set[str] = set()
                 if loud:
                     trigger_components.append("RMS")
+                    active_triggers.add("rms")
                 elif self._vad_trigger_enabled and (vad_triggered or voiced):
                     trigger_components.append("VAD")
+                    active_triggers.add("vad")
                 if self._motion_forced_active:
                     trigger_components.append("motion")
+                    active_triggers.add("motion")
                 if self._manual_recording:
                     trigger_components.append("manual")
+                    active_triggers.add("manual")
                 if not trigger_components:
                     trigger_components.append("unknown")
                 trigger_label = "+".join(trigger_components)
@@ -3238,6 +3278,8 @@ class TimelineRecorder:
                     "started_epoch": self.event_started_epoch,
                     "trigger_rms": self.trigger_rms,
                 }
+                if active_triggers:
+                    event_status["trigger_sources"] = sorted(active_triggers)
                 duration_hint = self.frames_written * (FRAME_MS / 1000.0)
                 event_status.update(
                     self._current_motion_event_payload(
@@ -3595,8 +3637,7 @@ class TimelineRecorder:
         trigger_sources: set[str] = set()
         if manual_event:
             trigger_sources.add("manual")
-        normalized_reason = (reason or "").strip().lower()
-        if normalized_reason and "split" in normalized_reason:
+        if _reason_indicates_split(reason):
             trigger_sources.add("split")
         motion_fields = (
             "motion_trigger_offset_seconds",
@@ -3769,6 +3810,7 @@ class TimelineRecorder:
         self._parallel_day_dir = None
 
     def _reset_event_state(self):
+        self._adaptive.resume_updates(clear_buffer=True)
         if self._streaming_encoder:
             result: StreamingEncoderResult | None = None
             try:
