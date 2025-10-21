@@ -8,7 +8,7 @@ on:
 
 jobs:
   snapshot:
-    if: github.event.pull_request.head.ref == 'staging'
+    if: github.event.pull_request.head.ref == 'staging' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
