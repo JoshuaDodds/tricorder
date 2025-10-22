@@ -252,7 +252,11 @@ def _capture_screenshot(url: str, output: Path, *, debug_dir: Path | None = None
                     _log(f"browser saw response {response.status} for {response.url}")
 
             page.on("response", _maybe_log_response)
-            page.goto(url, wait_until="networkidle")
+            page.goto(url, wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle", timeout=5_000)
+            except PlaywrightTimeoutError:
+                _log("dashboard did not reach network idle; continuing after DOM content load")
             row = _wait_for_recording_row(page, total_timeout_ms=45_000, debug_dir=debug_dir)
             row.click()
             page.wait_for_timeout(500)
@@ -279,8 +283,9 @@ def _refresh_readme(readme_path: Path, image_path: Path, captured_at: dt.datetim
     relative = image_path.as_posix()
     snippet = (
         f"{PLACEHOLDER_START}\n"
-        f"![Tricorder dashboard preview]({relative})\n"
-        f"<sub>Captured {captured_at.replace(microsecond=0, tzinfo=dt.timezone.utc).isoformat()}</sub>\n"
+        f"> Generate a fresh dashboard preview by running `python ci/staging_dashboard_snapshot.py --output {relative} --readme {readme_path.name}`.\n"
+        f"> The image is saved to `{relative}` for local reference and is not checked into git.\n"
+        f"<sub>Last updated {captured_at.replace(microsecond=0, tzinfo=dt.timezone.utc).isoformat()} when the snapshot workflow completed.</sub>\n"
         f"{PLACEHOLDER_END}"
     )
     if PLACEHOLDER_START in content and PLACEHOLDER_END in content:

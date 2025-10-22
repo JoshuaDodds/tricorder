@@ -94,3 +94,4 @@ ENV/
 /updater.env
 .ci_env/
 notes/
+docs/images/staging-dashboard.png
