@@ -827,6 +827,18 @@
           "type": "function"
         },
         {
+          "name": "purgeRecycleBinEntries",
+          "category": "services",
+          "destination": "dashboard/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
+          "name": "requestSelectionDeletion",
+          "category": "services",
+          "destination": "dashboard/services/recycleBinService.js",
+          "type": "function"
+        },
+        {
           "name": "findNextSelectionPath",
           "category": "services",
           "destination": "dashboard/services/recycleBinService.js",
