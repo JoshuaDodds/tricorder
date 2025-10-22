@@ -138,6 +138,31 @@ def _wait_for_healthz(url: str, *, timeout: float = 30.0) -> None:
     raise RuntimeError(f"web_streamer did not become healthy within {timeout} seconds")
 
 
+def _wait_for_recordings_payload(url: str, *, timeout: float = 60.0) -> dict:
+    """Poll the recordings API until it returns at least one item."""
+
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with contextlib.closing(urllib.request.urlopen(url, timeout=5.0)) as response:
+                payload = json.load(response)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:  # pragma: no cover - network and JSON edge cases
+            last_error = exc
+            payload = None
+        else:
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if isinstance(items, list) and items:
+                return payload
+        time.sleep(1.0)
+
+    error_detail = f" (last error: {last_error})" if last_error is not None else ""
+    raise RuntimeError(
+        "recordings API did not return any items within"
+        f" {timeout:.0f} seconds{error_detail}"
+    )
+
+
 def _wait_for_recording_row(page, *, total_timeout_ms: int = 30_000):
     """Wait until at least one recording row is rendered on the dashboard."""
 
@@ -228,6 +253,7 @@ def run(output: Path, readme_path: Path, *, host: str = "127.0.0.1", port: int =
     captured_at = dt.datetime.utcnow()
     try:
         _wait_for_healthz(f"http://{host}:{port}/healthz")
+        _wait_for_recordings_payload(f"http://{host}:{port}/api/recordings?limit=1")
         _capture_screenshot(f"http://{host}:{port}/dashboard", output)
     except PlaywrightError as exc:  # pragma: no cover - surfaced to CI logs
         raise RuntimeError(f"Playwright failed to capture dashboard screenshot: {exc}") from exc
