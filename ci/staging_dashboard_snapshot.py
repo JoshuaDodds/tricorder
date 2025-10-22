@@ -98,7 +98,16 @@ def _build_waveform(wav_path: Path, opus_path: Path, *, started_epoch: float) ->
     return waveform_path
 
 
-def _prepare_config(template: Path, destination: Path, recordings_dir: Path, tmp_dir: Path, dropbox_dir: Path) -> None:
+def _prepare_config(
+    template: Path,
+    destination: Path,
+    recordings_dir: Path,
+    tmp_dir: Path,
+    dropbox_dir: Path,
+    *,
+    dashboard_base_url: str,
+    stream_mode: str = "webrtc",
+) -> None:
     with template.open("r", encoding="utf-8") as handle:
         cfg = yaml.safe_load(handle)
     cfg.setdefault("paths", {})
@@ -106,6 +115,10 @@ def _prepare_config(template: Path, destination: Path, recordings_dir: Path, tmp
     cfg["paths"]["tmp_dir"] = str(tmp_dir)
     cfg["paths"]["dropbox_dir"] = str(dropbox_dir)
     cfg["paths"]["ingest_work_dir"] = str(tmp_dir / "ingest")
+    streaming_cfg = cfg.setdefault("streaming", {})
+    streaming_cfg["mode"] = stream_mode
+    dashboard_cfg = cfg.setdefault("dashboard", {})
+    dashboard_cfg["api_base"] = dashboard_base_url
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(cfg, handle, sort_keys=False)
@@ -238,7 +251,15 @@ def run(output: Path, readme_path: Path, *, host: str = "127.0.0.1", port: int =
         path.mkdir(parents=True, exist_ok=True)
 
     config_path = config_root / "ci-config.yaml"
-    _prepare_config(repo_root / "config.yaml", config_path, recordings_dir, tmp_dir, dropbox_dir)
+    dashboard_base_url = f"http://{host}:{port}"
+    _prepare_config(
+        repo_root / "config.yaml",
+        config_path,
+        recordings_dir,
+        tmp_dir,
+        dropbox_dir,
+        dashboard_base_url=dashboard_base_url,
+    )
 
     os.environ.setdefault("TRICORDER_CONFIG", str(config_path))
     os.environ.setdefault("REC_DIR", str(recordings_dir))
