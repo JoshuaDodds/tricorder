@@ -357,6 +357,9 @@ POST_PAD = int(cfg["segmenter"]["post_pad_ms"])
 PRE_PAD_FRAMES = PRE_PAD // FRAME_MS
 POST_PAD_FRAMES = POST_PAD // FRAME_MS
 
+FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
+_CONFIG_MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
+
 # thresholds
 STATIC_RMS_THRESH = int(cfg["segmenter"]["rms_threshold"])
 vad = webrtcvad.Vad(int(cfg["audio"]["vad_aggressiveness"]))
@@ -367,6 +370,38 @@ KEEP_CONSECUTIVE = int(cfg["segmenter"]["keep_consecutive"])
 
 # window sizes
 KEEP_WINDOW = int(cfg["segmenter"]["keep_window_frames"])
+
+
+_QUEUE_WARNING_EMITTED = False
+
+
+def _compute_writer_queue_limits() -> tuple[int, int]:
+    required_tail = max(KEEP_CONSECUTIVE, POST_PAD_FRAMES, 1)
+    min_required = max(1, PRE_PAD_FRAMES + required_tail)
+    configured = max(1, _CONFIG_MAX_QUEUE_FRAMES)
+    return min_required, max(configured, min_required)
+
+
+def _apply_queue_limit_bounds() -> None:
+    global MIN_WRITER_QUEUE_FRAMES
+    global MAX_QUEUE_FRAMES
+    global _QUEUE_WARNING_EMITTED
+
+    MIN_WRITER_QUEUE_FRAMES, MAX_QUEUE_FRAMES = _compute_writer_queue_limits()
+    if MAX_QUEUE_FRAMES > _CONFIG_MAX_QUEUE_FRAMES and not _QUEUE_WARNING_EMITTED:
+        print(
+            "[segmenter] WARN: increasing writer queue to"
+            f" {MAX_QUEUE_FRAMES} frames to cover pre/post padding",
+            flush=True,
+        )
+        _QUEUE_WARNING_EMITTED = True
+
+
+def _refresh_queue_limits_for_tests() -> None:
+    _apply_queue_limit_bounds()
+
+
+_apply_queue_limit_bounds()
 
 # Mic Digital Gain
 GAIN = float(cfg["audio"]["gain"])
@@ -422,9 +457,6 @@ else:
         1, int(round((_AUTOSPLIT_LIMIT_SECONDS * 1000.0) / FRAME_MS))
     )
 
-# buffered writes
-FLUSH_THRESHOLD = int(cfg["segmenter"]["flush_threshold_bytes"])
-MAX_QUEUE_FRAMES = int(cfg["segmenter"]["max_queue_frames"])
 MAX_PENDING_ENCODE_JOBS = max(
     1, int(cfg["segmenter"].get("max_pending_encodes", 8))
 )
@@ -2047,7 +2079,9 @@ class TimelineRecorder:
         status_mode: str = "live",
         recording_source: str = "live",
     ):
-        self.prebuf = collections.deque(maxlen=PRE_PAD_FRAMES)
+        # Always buffer at least the current frame so trigger events never
+        # drop their first chunk when pre-roll is disabled (PRE_PAD=0).
+        self.prebuf = collections.deque(maxlen=max(1, PRE_PAD_FRAMES))
         self.active = False
         self.post_count = 0
 
