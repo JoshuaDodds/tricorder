@@ -147,7 +147,7 @@ def _wait_for_recordings_payload(url: str, *, timeout: float = 60.0) -> dict:
         try:
             with contextlib.closing(urllib.request.urlopen(url, timeout=5.0)) as response:
                 payload = json.load(response)
-        except Exception as exc:  # pragma: no cover - network and JSON edge cases
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:  # pragma: no cover - network and JSON edge cases
             last_error = exc
             payload = None
         else:
