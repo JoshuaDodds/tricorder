@@ -21,6 +21,10 @@ import yaml
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from lib.waveform_cache import generate_waveform
 from lib.web_streamer import start_web_streamer_in_thread
 
