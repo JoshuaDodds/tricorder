@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +138,53 @@ def _wait_for_healthz(url: str, *, timeout: float = 30.0) -> None:
     raise RuntimeError(f"web_streamer did not become healthy within {timeout} seconds")
 
 
+def _wait_for_recordings_payload(url: str, *, timeout: float = 60.0) -> dict:
+    """Poll the recordings API until it returns at least one item."""
+
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with contextlib.closing(urllib.request.urlopen(url, timeout=5.0)) as response:
+                payload = json.load(response)
+        except Exception as exc:  # pragma: no cover - network and JSON edge cases
+            last_error = exc
+            payload = None
+        else:
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if isinstance(items, list) and items:
+                return payload
+        time.sleep(1.0)
+
+    error_detail = f" (last error: {last_error})" if last_error is not None else ""
+    raise RuntimeError(
+        "recordings API did not return any items within"
+        f" {timeout:.0f} seconds{error_detail}"
+    )
+
+
+def _wait_for_recording_row(page, *, total_timeout_ms: int = 30_000):
+    """Wait until at least one recording row is rendered on the dashboard."""
+
+    deadline = time.monotonic() + (total_timeout_ms / 1000.0)
+    attempts = 0
+    while time.monotonic() < deadline:
+        remaining_ms = int(max((deadline - time.monotonic()) * 1000, 500))
+        try:
+            page.wait_for_function(
+                "() => document.querySelectorAll('table#recordings-table tbody tr').length > 0",
+                timeout=remaining_ms,
+            )
+            return page.locator("table#recordings-table tbody tr").first
+        except PlaywrightTimeoutError:
+            attempts += 1
+            # Refresh once to give the client a chance to recover from slow API calls.
+            page.reload(wait_until="networkidle")
+    raise PlaywrightTimeoutError(
+        f"recordings table did not populate within {total_timeout_ms / 1000:.0f} seconds after {attempts + 1} attempts"
+    )
+
+
 def _capture_screenshot(url: str, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
@@ -144,8 +192,7 @@ def _capture_screenshot(url: str, output: Path) -> None:
         try:
             page = browser.new_page(viewport={"width": 1600, "height": 900})
             page.goto(url, wait_until="networkidle")
-            page.wait_for_selector("table#recordings-table tbody tr", timeout=10_000)
-            row = page.locator("table#recordings-table tbody tr").first
+            row = _wait_for_recording_row(page, total_timeout_ms=45_000)
             row.click()
             page.wait_for_timeout(500)
             toggle = page.locator("#clipper-toggle")
@@ -206,6 +253,7 @@ def run(output: Path, readme_path: Path, *, host: str = "127.0.0.1", port: int =
     captured_at = dt.datetime.utcnow()
     try:
         _wait_for_healthz(f"http://{host}:{port}/healthz")
+        _wait_for_recordings_payload(f"http://{host}:{port}/api/recordings?limit=1")
         _capture_screenshot(f"http://{host}:{port}/dashboard", output)
     except PlaywrightError as exc:  # pragma: no cover - surfaced to CI logs
         raise RuntimeError(f"Playwright failed to capture dashboard screenshot: {exc}") from exc
