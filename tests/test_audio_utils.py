@@ -9,21 +9,24 @@ def _pcm16(values):
     return struct.pack("<" + "h" * len(values), *values)
 
 
-def test_downmix_to_mono_stereo_average():
+def test_downmix_to_mono_stereo_power_weighted():
     left = [1000, -1000, 500]
     right = [3000, -3000, -500]
     stereo = b"".join(
         struct.pack("<hh", l, r) for l, r in zip(left, right, strict=True)
     )
     mixed = downmix_to_mono(stereo, channels=2, sample_width=2)
-    expected = _pcm16([2000, -2000, 0])
+    # The new implementation weights channels by short-term RMS power so the
+    # louder right channel dominates the mix.
+    expected = _pcm16([2779, -2781, -392])
     assert mixed == expected
 
 
 def test_downmix_to_mono_trims_partial_frames():
     stereo = _pcm16([100, 200, 300, 400]) + b"\x01"
     mixed = downmix_to_mono(stereo, channels=2, sample_width=2)
-    assert mixed == _pcm16([150, 350])
+    # RMS weighting skews the mix toward the hotter second channel.
+    assert mixed == _pcm16([166, 366])
 
 
 def test_downmix_to_mono_invalid_width():
