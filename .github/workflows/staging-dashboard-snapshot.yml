@@ -42,7 +42,8 @@ jobs:
           pip install playwright
 
       - name: Install Playwright browsers
-        uses: microsoft/playwright-github-action@v1
+        run: |
+          playwright install --with-deps
 
       - name: Generate dashboard screenshot
         run: |
