@@ -3506,6 +3506,8 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         raw_audio_name = raw_audio_name_raw.strip()
     else:
         raw_audio_name = ""
+    if raw_audio_name and Path(raw_audio_name).name != raw_audio_name:
+        raw_audio_name = ""
 
     raw_audio_path_raw = metadata.get("raw_audio_path")
     if isinstance(raw_audio_path_raw, str):
@@ -3517,9 +3519,19 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
 
     raw_audio_bin_path: Path | None = None
     if raw_audio_name:
-        candidate = entry_dir / raw_audio_name
-        if candidate.is_file():
-            raw_audio_bin_path = candidate
+        try:
+            entry_dir_resolved = entry_dir.resolve()
+            candidate = (entry_dir / raw_audio_name).resolve()
+        except (OSError, RuntimeError):
+            pass
+        else:
+            try:
+                candidate.relative_to(entry_dir_resolved)
+            except ValueError:
+                pass
+            else:
+                if candidate.is_file():
+                    raw_audio_bin_path = candidate
 
     reason_raw = metadata.get("reason")
     if isinstance(reason_raw, str):
