@@ -891,7 +891,7 @@ def _audio_defaults() -> dict[str, Any]:
         "sample_rate": 48000,
         "channels": 1,
         "frame_ms": 20,
-        "gain": 2.5,
+        "gain": 1.0,
         "vad_aggressiveness": 3,
         "usb_reset_workaround": True,
         "filter_chain": copy.deepcopy(AUDIO_FILTER_DEFAULTS),
