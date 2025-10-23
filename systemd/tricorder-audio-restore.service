@@ -5,7 +5,7 @@ Wants=sound.target
 
 [Service]
 Type=oneshot
-ExecStart=/apps/tricorder/bin/restore_tricorder_audio.sh
+ExecStart=/apps/tricorder/bin/restore_alsa_settings.sh
 RemainAfterExit=yes
 
 [Install]

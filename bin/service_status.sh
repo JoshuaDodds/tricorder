@@ -9,6 +9,7 @@ RESET="\033[0m"
 
 UNITS=(
   voice-recorder.service
+  tricorder-audio-restore.service
   web-streamer.service
   # dropbox.service
   dropbox.path
