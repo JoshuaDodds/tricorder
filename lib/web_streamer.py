@@ -4416,6 +4416,38 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 pass
             shutil.rmtree(entry, ignore_errors=True)
 
+    def _allows_opus_stream_copy(source: Path) -> bool:
+        if source.suffix.lower() == ".opus":
+            return True
+
+        probe_cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ]
+
+        try:
+            result = subprocess.run(
+                probe_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return False
+        except subprocess.SubprocessError:
+            return False
+
+        codec_name = (result.stdout or "").strip().lower()
+        return codec_name == "opus"
+
     def _prepare_clip_backup(
         final_path: Path, final_waveform: Path, rel_path: Path
     ) -> str:
@@ -4937,7 +4969,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             except subprocess.SubprocessError as exc:
                 raise ClipError("ffmpeg failed while decoding source") from exc
 
-            stream_copy_allowed = resolved.suffix.lower() == ".opus"
+            stream_copy_allowed = _allows_opus_stream_copy(resolved)
 
             encode_cmd = [
                 "ffmpeg",
