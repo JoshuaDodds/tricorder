@@ -33,6 +33,11 @@ def test_install_script_runs(tmp_path):
     for d in ("bin", "lib", "recordings", "dropbox", "systemd", "tmp"):
         assert (base_dir / d).exists(), f"Missing {d} in {base_dir}"
 
+    baseline = repo_root / "asound.state"
+    assert (base_dir / "asound.state").exists(), "ALSA baseline should be installed"
+    assert (base_dir / "asound.state.default").exists(), "Default ALSA snapshot should be present"
+    assert (base_dir / "asound.state").read_bytes() == baseline.read_bytes()
+
 
 def test_install_skips_service_restart_for_web_only(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
