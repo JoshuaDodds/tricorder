@@ -71,4 +71,4 @@ jobs:
       - name: Push changes back to staging
         if: steps.commit.outputs.changed == 'true'
         run: |
-          git push origin HEAD:staging
+          git push --force-with-lease origin HEAD:staging
