@@ -284,8 +284,8 @@ def _refresh_readme(readme_path: Path, image_path: Path, captured_at: dt.datetim
     snippet = (
         f"{PLACEHOLDER_START}\n"
         f"> Generate a fresh dashboard preview by running `python ci/staging_dashboard_snapshot.py --output {relative} --readme {readme_path.name}`.\n"
-        f"> The image is saved to `{relative}` for local reference and is not checked into git.\n"
-        f"<sub>Last updated {captured_at.replace(microsecond=0, tzinfo=dt.timezone.utc).isoformat()} when the snapshot workflow completed.</sub>\n"
+        f"> The image is built and saved to `docs/images/staging-dashboard.png` for each pre-release built on the staging branch.\n"
+        f"<sub>Last updated {captured_at.replace(microsecond=0, tzinfo=dt.timezone.utc).isoformat()}</sub>\n"
         f"{PLACEHOLDER_END}"
     )
     if PLACEHOLDER_START in content and PLACEHOLDER_END in content:
