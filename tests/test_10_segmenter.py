@@ -77,6 +77,153 @@ def test_event_trigger_and_flush(tmp_path, monkeypatch):
     assert rec.base_name is None
 
 
+def test_zero_prepad_preserves_trigger_frame(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", str(tmp_dir / "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 0)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+    monkeypatch.setattr(segmenter, "NOTIFIER", None)
+    monkeypatch.setattr(segmenter, "_publish_recordings_event", lambda *a, **k: None)
+    monkeypatch.setattr(segmenter, "_schedule_recordings_refresh", lambda *a, **k: None)
+
+    class DummyEncodingStatus:
+        @staticmethod
+        def register_listener(_listener):  # pragma: no cover - behavior stub
+            return None
+
+        @staticmethod
+        def wait_for_start(_job_id, _timeout):
+            return True
+
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", DummyEncodingStatus())
+
+    captured: dict[str, str] = {}
+
+    def fake_enqueue(tmp_wav_path: str, final_base: str, **_kwargs):
+        captured["tmp_wav_path"] = tmp_wav_path
+        captured["final_base"] = final_base
+        return 123
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    rec = TimelineRecorder()
+    try:
+        rec.ingest(make_frame(1000), 0)
+        rec.ingest(make_frame(2000), 1)
+        rec.flush(2)
+    finally:  # Ensure background thread stops for test isolation
+        rec.writer._running = False
+        rec.writer.join(timeout=1.0)
+
+    wav_path = Path(captured["tmp_wav_path"])
+    assert wav_path.exists()
+
+    with wave.open(str(wav_path), "rb") as wav_file:
+        data = wav_file.readframes(wav_file.getnframes())
+
+    expected_first = read_sample(TimelineRecorder._apply_gain(make_frame(1000)))
+    expected_second = read_sample(TimelineRecorder._apply_gain(make_frame(2000)))
+    samples_per_frame = FRAME_BYTES // 2
+
+    assert read_sample(data, 0) == expected_first
+    assert read_sample(data, samples_per_frame) == expected_second
+
+
+def test_writer_queue_expands_with_large_prepad(monkeypatch):
+    monkeypatch.setattr(segmenter, "_CONFIG_MAX_QUEUE_FRAMES", 32, raising=False)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 120, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 5, raising=False)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 2, raising=False)
+    monkeypatch.setattr(segmenter, "MIN_WRITER_QUEUE_FRAMES", 1, raising=False)
+    monkeypatch.setattr(segmenter, "MAX_QUEUE_FRAMES", 1, raising=False)
+
+    segmenter._refresh_queue_limits_for_tests()
+
+    required_tail = max(segmenter.KEEP_CONSECUTIVE, segmenter.POST_PAD_FRAMES, 1)
+    assert segmenter.MIN_WRITER_QUEUE_FRAMES == segmenter.PRE_PAD_FRAMES + required_tail
+    assert segmenter.MAX_QUEUE_FRAMES == segmenter.MIN_WRITER_QUEUE_FRAMES
+
+
+def test_large_prepad_flushes_without_queue_drop(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", str(tmp_dir / "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1, raising=False)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1, raising=False)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1, raising=False)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 150, raising=False)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1, raising=False)
+    monkeypatch.setattr(segmenter, "NOTIFIER", None, raising=False)
+    monkeypatch.setattr(segmenter, "_publish_recordings_event", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(segmenter, "_schedule_recordings_refresh", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(segmenter, "_CONFIG_MAX_QUEUE_FRAMES", 64, raising=False)
+    monkeypatch.setattr(segmenter, "MIN_WRITER_QUEUE_FRAMES", 1, raising=False)
+    monkeypatch.setattr(segmenter, "MAX_QUEUE_FRAMES", 1, raising=False)
+
+    class DummyEncodingStatus:
+        @staticmethod
+        def register_listener(_listener):
+            return None
+
+        @staticmethod
+        def wait_for_start(_job_id, _timeout):
+            return True
+
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", DummyEncodingStatus(), raising=False)
+
+    captured: dict[str, str] = {}
+
+    def fake_enqueue(tmp_wav_path: str, final_base: str, **_kwargs):
+        captured["tmp_wav_path"] = tmp_wav_path
+        captured["final_base"] = final_base
+        return 321
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue, raising=False)
+
+    segmenter._refresh_queue_limits_for_tests()
+
+    rec = TimelineRecorder()
+    try:
+        quiet_frames = segmenter.PRE_PAD_FRAMES - 1
+        for idx in range(quiet_frames):
+            rec.ingest(make_frame(100), idx)
+        rec.ingest(make_frame(2000), quiet_frames)
+
+        assert rec.writer_queue_drops == 0
+        assert rec.audio_q.maxsize == segmenter.MAX_QUEUE_FRAMES
+
+        drop_count = rec.writer_queue_drops
+        rec.flush(quiet_frames + 1)
+        assert drop_count == 0
+    finally:
+        rec.writer._running = False
+        rec.writer.join(timeout=1.0)
+
+    wav_path = Path(captured["tmp_wav_path"])
+    assert wav_path.exists()
+
+    with wave.open(str(wav_path), "rb") as wav_file:
+        assert wav_file.getnframes() >= segmenter.PRE_PAD_FRAMES
 def test_flush_does_not_block_on_encode(monkeypatch):
     monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
     monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 5)

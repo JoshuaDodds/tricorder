@@ -71,6 +71,7 @@ DEFAULT_RECORDINGS_LIMIT = 200
 # threads).
 # WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
 WEB_STREAMER_EXECUTOR_MAX_WORKERS = 1  # hardcoded to 1 for this project to save RAM
+CLIP_EXECUTOR_MAX_WORKERS = 1  # serialize long-running clip jobs off the main executor
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
@@ -3411,6 +3412,12 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     else:
         original_rel = stored_name
 
+    day_component = ""
+    if original_rel:
+        day_candidate = str(original_rel).split("/", 1)[0]
+        if day_candidate and day_candidate.isdigit() and len(day_candidate) == 8:
+            day_component = day_candidate
+
     deleted_iso = metadata.get("deleted_at")
     if not isinstance(deleted_iso, str):
         deleted_iso = ""
@@ -3508,6 +3515,12 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
     if raw_audio_path and not _is_safe_relative_path(raw_audio_path):
         raw_audio_path = ""
 
+    raw_audio_bin_path: Path | None = None
+    if raw_audio_name:
+        candidate = entry_dir / raw_audio_name
+        if candidate.is_file():
+            raw_audio_bin_path = candidate
+
     reason_raw = metadata.get("reason")
     if isinstance(reason_raw, str):
         reason_value = reason_raw.strip()
@@ -3524,6 +3537,7 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "waveform_name": waveform_name,
         "transcript_name": transcript_name,
         "original_path": original_rel,
+        "day": day_component,
         "deleted_at": deleted_iso,
         "deleted_at_epoch": deleted_epoch,
         "size_bytes": size_bytes,
@@ -3533,6 +3547,8 @@ def _read_recycle_entry(entry_dir: Path) -> dict[str, object] | None:
         "started_at": started_at_value,
         "raw_audio_name": raw_audio_name,
         "raw_audio_path": raw_audio_path,
+        "raw_audio_bin_path": raw_audio_bin_path,
+        "raw_audio_available": raw_audio_bin_path is not None,
         "reason": reason_value,
         "motion_trigger_offset_seconds": motion_trigger_offset,
         "motion_release_offset_seconds": motion_release_offset,
@@ -3730,6 +3746,10 @@ RECORDINGS_EVENT_BRIDGE_KEY: AppKey[RecordingsEventBridge] = web.AppKey(
 SSL_CONTEXT_KEY: AppKey[ssl.SSLContext] = web.AppKey("ssl_context", ssl.SSLContext)
 LETS_ENCRYPT_TASK_KEY: AppKey[asyncio.Task | None] = web.AppKey(
     "lets_encrypt_task", asyncio.Task
+)
+CLIP_EXECUTOR_KEY: AppKey[ThreadPoolExecutor] = web.AppKey(
+    "clip_executor",
+    ThreadPoolExecutor,
 )
 
 _TIMEZONE_ABBREVIATION_OFFSETS: dict[str, int] = {
@@ -4209,6 +4229,11 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         middlewares.append(_cors_middleware)
 
     app = web.Application(middlewares=middlewares)
+    clip_executor = ThreadPoolExecutor(
+        max_workers=CLIP_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="web_streamer_clip",
+    )
+    app[CLIP_EXECUTOR_KEY] = clip_executor
     app[SHUTDOWN_EVENT_KEY] = asyncio.Event()
     if lets_encrypt_manager is not None:
         app[LETS_ENCRYPT_MANAGER_KEY] = lets_encrypt_manager
@@ -4706,6 +4731,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         final_path = target_dir / f"{base_name}.opus"
         final_waveform = final_path.with_suffix(final_path.suffix + ".waveform.json")
+        final_path_partial = final_path.with_suffix(final_path.suffix + ".partial")
+        final_waveform_partial = final_waveform.with_suffix(
+            final_waveform.suffix + ".partial"
+        )
 
         if final_path.exists() and not allow_overwrite:
             raise ClipError("clip already exists")
@@ -4852,6 +4881,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         except OSError as exc:
             raise ClipError("unable to create destination directory") from exc
 
+        for stale_candidate in (final_path_partial, final_waveform_partial):
+            try:
+                if stale_candidate.exists():
+                    if stale_candidate.is_file():
+                        stale_candidate.unlink()
+                    elif stale_candidate.is_dir():
+                        shutil.rmtree(stale_candidate, ignore_errors=True)
+            except OSError:
+                pass
+
         try:
             tmp_dir = tempfile.TemporaryDirectory(prefix="clip_", dir=tmp_root)
         except Exception as exc:  # pragma: no cover - tempdir failures are unexpected
@@ -4939,9 +4978,36 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 undo_token = _prepare_clip_backup(final_path, final_waveform, rel_path)
 
             try:
-                shutil.move(str(tmp_opus), str(final_path))
-                shutil.move(str(tmp_waveform), str(final_waveform))
+                shutil.move(str(tmp_opus), str(final_path_partial))
+                shutil.move(str(tmp_waveform), str(final_waveform_partial))
             except Exception as exc:
+                raise ClipError("unable to store generated clip") from exc
+
+            try:
+                os.replace(final_path_partial, final_path)
+            except Exception as exc:
+                try:
+                    if final_path_partial.exists():
+                        final_path_partial.unlink()
+                except OSError:
+                    pass
+                raise ClipError("unable to store generated clip") from exc
+
+            try:
+                os.replace(final_waveform_partial, final_waveform)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                try:
+                    os.replace(final_path, final_path_partial)
+                except Exception:
+                    pass
+                for cleanup_candidate in (final_path_partial, final_waveform_partial):
+                    try:
+                        if cleanup_candidate.exists():
+                            cleanup_candidate.unlink()
+                    except OSError:
+                        pass
                 raise ClipError("unable to store generated clip") from exc
 
         clip_start_epoch = None
@@ -5667,12 +5733,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
     async def _stop_recordings_event_bridge(_: web.Application) -> None:
         await recordings_event_bridge.stop()
 
+    async def _shutdown_clip_executor(_: web.Application) -> None:
+        clip_executor.shutdown(wait=False, cancel_futures=True)
+
     app.on_startup.append(_start_capture_status_bridge)
     app.on_startup.append(_start_recordings_event_bridge)
     app.on_cleanup.append(_stop_capture_status_bridge)
     app.on_cleanup.append(_stop_recordings_event_bridge)
     app.on_cleanup.append(_stop_health_broadcaster)
     app.on_cleanup.append(_cleanup_event_bus)
+    app.on_cleanup.append(_shutdown_clip_executor)
 
     def _motion_state_snapshot(*, include_events: bool = True) -> dict[str, object]:
         state = load_motion_state(motion_state_path)
@@ -6600,12 +6670,15 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 if isinstance(raw_reason, str):
                     reason_value = raw_reason.strip()
 
+                raw_audio_available = bool(data.get("raw_audio_bin_path"))
+                raw_audio_name = str(data.get("raw_audio_name") or "")
                 entries.append(
                     {
                         "id": entry_id,
                         "name": name,
                         "extension": extension,
                         "original_path": original_rel,
+                        "day": str(data.get("day", "")),
                         "deleted_at": str(data.get("deleted_at", "")),
                         "deleted_at_epoch": deleted_epoch_value,
                         "start_epoch": start_epoch_value,
@@ -6642,6 +6715,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         ),
                         "restorable": restorable,
                         "waveform_available": bool(data.get("waveform_name")),
+                        "raw_audio_available": raw_audio_available,
+                        "raw_audio_name": raw_audio_name,
                         "reason": reason_value,
                     }
                 )
@@ -7025,9 +7100,20 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         if not isinstance(audio_path, Path) or not audio_path.is_file():
             raise web.HTTPNotFound()
 
-        response = web.FileResponse(audio_path)
-        disposition = "attachment" if request.rel_url.query.get("download") == "1" else "inline"
-        response.headers["Content-Disposition"] = f'{disposition}; filename="{audio_path.name}"'
+        serve_raw = request.rel_url.query.get("raw") == "1"
+        download_flag = request.rel_url.query.get("download") == "1"
+
+        target_path = audio_path
+        if serve_raw:
+            raw_candidate = data.get("raw_audio_bin_path")
+            if isinstance(raw_candidate, Path) and raw_candidate.is_file():
+                target_path = raw_candidate
+            else:
+                raise web.HTTPNotFound()
+
+        response = web.FileResponse(target_path)
+        disposition = "attachment" if download_flag else "inline"
+        response.headers["Content-Disposition"] = f'{disposition}; filename="{target_path.name}"'
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -7102,6 +7188,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         name_component = Path(new_name).name
         if name_component != new_name:
             raise web.HTTPBadRequest(reason="name cannot contain path separators")
+
+        if clip_safe_pattern.sub("_", name_component) != name_component:
+            raise web.HTTPBadRequest(reason="name contains unsupported characters")
 
         extension_override = None
         extension_value = data.get("extension")
@@ -7333,10 +7422,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         )
 
         loop = asyncio.get_running_loop()
+        clip_executor = request.app.get(CLIP_EXECUTOR_KEY)
+        executor = clip_executor if isinstance(clip_executor, ThreadPoolExecutor) else None
         try:
             allow_overwrite = _to_bool(data.get("allow_overwrite"), True)
             payload = await loop.run_in_executor(
-                None,
+                executor,
                 functools.partial(
                     _create_clip_sync,
                     source_path,
