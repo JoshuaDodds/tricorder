@@ -14,7 +14,19 @@ fi
 
 if [[ -f "$STATE_FILE" ]]; then
     echo "[restore-alsa] Restoring ALSA state from $STATE_FILE"
-    /usr/sbin/alsactl --file "$STATE_FILE" restore 0
+
+    RESTORE_CARD="${ALSA_RESTORE_CARD:-}" 
+    if [[ -z "$RESTORE_CARD" ]]; then
+        RESTORE_CARD=$(awk '/^state\./ { sub(/^state\./, "", $1); gsub(/[{}]/, "", $1); print $1; exit }' "$STATE_FILE" || true)
+    fi
+
+    if [[ -n "${RESTORE_CARD:-}" ]]; then
+        echo "[restore-alsa] Applying snapshot to card '$RESTORE_CARD'"
+        /usr/sbin/alsactl --file "$STATE_FILE" restore "$RESTORE_CARD"
+    else
+        echo "[restore-alsa] Applying snapshot with autodetected card"
+        /usr/sbin/alsactl --file "$STATE_FILE" restore
+    fi
 else
     echo "[restore-alsa] Warning: $STATE_FILE not found; skipping restore"
 fi
