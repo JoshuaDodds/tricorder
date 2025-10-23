@@ -850,7 +850,7 @@ async function loadDashboard() {
     `  WAVEFORM_REFRESH_INTERVAL_MS = 3000,`,
     `  WAVEFORM_STORAGE_KEY = undefined,`,
     `  WAVEFORM_ZOOM_DEFAULT = 1,`,
-    `  WAVEFORM_ZOOM_MAX = 10,`,
+    `  WAVEFORM_ZOOM_MAX = 30,`,
     `  WAVEFORM_ZOOM_MIN = 1,`,
     `  WEBRTC_ICE_SERVERS = [],`,
     `  WEB_SERVER_ENDPOINT = undefined,`,
