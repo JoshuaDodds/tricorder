@@ -17,7 +17,7 @@ PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_i
 SITE=$VENV/lib/python$PY_VER/site-packages
 DEV_SENTINEL="$BASE/.dev-mode"
 
-UNITS=(voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder.target)
+UNITS=(voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder-audio-restore.service tricorder.target)
 
 say(){ echo "[Tricorder] $*"; }
 
@@ -353,6 +353,22 @@ chmod 755 "$BASE"/lib/* 2>/dev/null || true
 cp -f *.py "$BASE" 2>/dev/null || true
 chmod 755 "$BASE"/*.py 2>/dev/null || true
 
+if [[ -f asound.state ]]; then
+  baseline_dst="$BASE/asound.state.default"
+  cp -f asound.state "$baseline_dst" 2>/dev/null || true
+  chmod 644 "$baseline_dst" 2>/dev/null || true
+  if [[ ! -f "$BASE/asound.state" ]]; then
+    cp -f asound.state "$BASE/asound.state" 2>/dev/null || true
+    chmod 644 "$BASE/asound.state" 2>/dev/null || true
+    say "Installed ALSA baseline at $BASE/asound.state"
+  else
+    say "Keeping existing ALSA state at $BASE/asound.state"
+  fi
+  if [[ -n "$INSTALL_OWNER" ]]; then
+    chown "$INSTALL_OWNER":"$INSTALL_OWNER" "$baseline_dst" "$BASE/asound.state" 2>/dev/null || true
+  fi
+fi
+
 # Copy YAML configs but skip if already present
 for f in *.yaml; do
     target="$BASE/$f"
@@ -417,7 +433,7 @@ if [[ "${DEV:-0}" != "1" ]]; then
   rm -f "$DEV_SENTINEL"
   say "Enable, reload, and restart Systemd units"
   sudo systemctl daemon-reload
-  for unit in voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service tmpfs-guard.service tricorder-auto-update.service; do
+  for unit in voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service tmpfs-guard.service tricorder-auto-update.service tricorder-audio-restore.service; do
       sudo systemctl enable "$unit" || true
   done
   for timer in tmpfs-guard.timer tricorder-auto-update.timer; do
@@ -426,6 +442,7 @@ if [[ "${DEV:-0}" != "1" ]]; then
 
   sudo systemctl enable dropbox.path || true
   sudo systemctl enable tricorder.target || true
+  sudo systemctl start tricorder-audio-restore.service || true
   if [[ "$SKIP_NON_WEB_RESTARTS" != "1" ]]; then
     sudo systemctl restart tricorder.target || true
   fi
