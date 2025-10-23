@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply Tricorder ALSA configuration
+After=seeed-voicecard.service sound.target
+Wants=sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/apps/tricorder/bin/restore_tricorder_audio.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
