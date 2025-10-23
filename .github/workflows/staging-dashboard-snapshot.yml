@@ -1,7 +1,7 @@
 name: Refresh staging dashboard snapshot
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
     branches:
       - main
@@ -9,20 +9,21 @@ on:
 jobs:
   snapshot:
     if: >-
-      github.event.pull_request.head.ref == 'staging'
+      github.head_ref == 'staging'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: read
+      pull-requests: write
     env:
       PYTHONUNBUFFERED: "1"
+
     steps:
       - name: Checkout staging head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ github.head_ref }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -47,7 +48,9 @@ jobs:
 
       - name: Generate dashboard screenshot
         run: |
-          python ci/staging_dashboard_snapshot.py --output docs/images/staging-dashboard.png --readme README.md
+          python ci/staging_dashboard_snapshot.py \
+            --output docs/images/staging-dashboard.png \
+            --readme README.md
 
       - name: Upload screenshot artifact
         uses: actions/upload-artifact@v4
