@@ -148,6 +148,155 @@ def _run_dashboard_selection_script(
     return json.loads(output or "null")
 
 
+def test_clip_list_includes_stereo_download_option():
+    script = textwrap.dedent(
+        """
+        const registry =
+          (sandbox &&
+            (sandbox.__TRICORDER_COMPONENTS__ ||
+              (sandbox.window && sandbox.window.__TRICORDER_COMPONENTS__))) ||
+          globalThis.__TRICORDER_COMPONENTS__ ||
+          {};
+        const buildClipListRow = registry.buildClipListRow;
+        if (typeof buildClipListRow !== "function") {
+          throw new Error("Clip list component unavailable in sandbox");
+        }
+        const context = {
+          state: sandbox.window.TRICORDER_DASHBOARD_STATE,
+          resolveTriggerFlags: () => ({ manual: false, split: false, rmsVad: false }),
+          isMotionTriggeredEvent: () => false,
+          getRecordStartSeconds: () => 0,
+          formatDate: () => "2024-01-01",
+          formatDuration: () => "1s",
+          formatBytes: () => "1B",
+          ensureTriggerBadge: () => {},
+          recordAudioUrl: () => "processed-url",
+          recordRawAudioUrl: () => "raw-url",
+          recordHasRawAudio: (record) => Boolean(record && record.raw_audio_path),
+          getRawDownloadName: () => "recording-raw.wav",
+          getProcessedDownloadName: () => "recording.opus",
+          resolvePlaybackSourceUrl: () => "processed-url",
+          resolveRecordDownloadName: () => "recording.opus",
+          handleSaveRecord: () => {},
+          handleUnsaveRecord: () => {},
+          openRenameDialog: () => {},
+          requestRecordDeletion: () => {},
+          resolveSelectionAnchor: () => "",
+          applySelectionRange: () => false,
+          updateSelectionUI: () => {},
+          applyNowPlayingHighlight: () => {},
+          setNowPlaying: () => {},
+          getPendingSelectionRange: () => null,
+          setPendingSelectionRange: () => {},
+          clearPendingSelectionRange: () => {},
+        };
+        const record = {
+          path: "20240101/test.opus",
+          name: "test",
+          extension: "opus",
+          size_bytes: 1024,
+          duration_seconds: 1.5,
+          raw_audio_path: ".original_wav/20240101/test.wav",
+          collection: "recent",
+        };
+        const row = buildClipListRow(record, context);
+        const nameCell = row.children.find((child) => child.className === "cell-name");
+        const actionsRow = nameCell.children.find(
+          (child) => child.className === "record-actions-row action-buttons",
+        );
+        const summary = actionsRow.children
+          .filter((child) => typeof child.textContent === "string" && child.textContent.startsWith("Download"))
+          .map((child) => ({
+            text: child.textContent,
+            href: child.href || "",
+            download: child.download || "",
+          }));
+        return summary;
+        """
+    )
+
+    result = _run_dashboard_selection_script(script, elements={"recordings-table": True})
+
+    assert result == [
+        {"text": "Download", "href": "processed-url", "download": "recording.opus"},
+        {"text": "Download stereo", "href": "raw-url", "download": "recording-raw.wav"},
+    ]
+
+
+def test_clip_list_processed_download_only_when_no_stereo_available():
+    script = textwrap.dedent(
+        """
+        const registry =
+          (sandbox &&
+            (sandbox.__TRICORDER_COMPONENTS__ ||
+              (sandbox.window && sandbox.window.__TRICORDER_COMPONENTS__))) ||
+          globalThis.__TRICORDER_COMPONENTS__ ||
+          {};
+        const buildClipListRow = registry.buildClipListRow;
+        if (typeof buildClipListRow !== "function") {
+          throw new Error("Clip list component unavailable in sandbox");
+        }
+        const context = {
+          state: sandbox.window.TRICORDER_DASHBOARD_STATE,
+          resolveTriggerFlags: () => ({ manual: false, split: false, rmsVad: false }),
+          isMotionTriggeredEvent: () => false,
+          getRecordStartSeconds: () => 0,
+          formatDate: () => "2024-01-01",
+          formatDuration: () => "1s",
+          formatBytes: () => "1B",
+          ensureTriggerBadge: () => {},
+          recordAudioUrl: () => "processed-url",
+          recordRawAudioUrl: () => "",
+          recordHasRawAudio: () => false,
+          getRawDownloadName: () => "",
+          getProcessedDownloadName: () => "recording.opus",
+          resolvePlaybackSourceUrl: () => "processed-url",
+          resolveRecordDownloadName: () => "recording.opus",
+          handleSaveRecord: () => {},
+          handleUnsaveRecord: () => {},
+          openRenameDialog: () => {},
+          requestRecordDeletion: () => {},
+          resolveSelectionAnchor: () => "",
+          applySelectionRange: () => false,
+          updateSelectionUI: () => {},
+          applyNowPlayingHighlight: () => {},
+          setNowPlaying: () => {},
+          getPendingSelectionRange: () => null,
+          setPendingSelectionRange: () => {},
+          clearPendingSelectionRange: () => {},
+        };
+        const record = {
+          path: "20240101/test.opus",
+          name: "test",
+          extension: "opus",
+          size_bytes: 1024,
+          duration_seconds: 1.5,
+          raw_audio_path: "",
+          collection: "recent",
+        };
+        const row = buildClipListRow(record, context);
+        const nameCell = row.children.find((child) => child.className === "cell-name");
+        const actionsRow = nameCell.children.find(
+          (child) => child.className === "record-actions-row action-buttons",
+        );
+        const summary = actionsRow.children
+          .filter((child) => typeof child.textContent === "string" && child.textContent.startsWith("Download"))
+          .map((child) => ({
+            text: child.textContent,
+            href: child.href || "",
+            download: child.download || "",
+          }));
+        return summary;
+        """
+    )
+
+    result = _run_dashboard_selection_script(script, elements={"recordings-table": True})
+
+    assert result == [
+        {"text": "Download", "href": "processed-url", "download": "recording.opus"},
+    ]
+
+
 def test_dashboard_happy_path_serves_recording(dashboard_env):
     async def runner():
         day_dir = dashboard_env / "20240111"
@@ -2061,6 +2210,15 @@ def test_recordings_clip_overwrite_and_undo(dashboard_env):
             undo_token = data_update.get("undo_token")
             assert isinstance(undo_token, str) and undo_token
 
+            resp_list = await client.get("/api/recordings")
+            assert resp_list.status == 200
+            list_payload = await resp_list.json()
+            assert isinstance(list_payload, dict)
+            items = list_payload.get("items") or []
+            matching_items = [item for item in items if item.get("path") == clip_rel_path]
+            assert matching_items, "Updated clip missing from recordings listing"
+            assert matching_items[0].get("undo_token") == undo_token
+
             updated_waveform = json.loads(clip_waveform.read_text())
             updated_duration = updated_waveform.get("duration_seconds")
             assert isinstance(updated_duration, (int, float))
@@ -2070,6 +2228,14 @@ def test_recordings_clip_overwrite_and_undo(dashboard_env):
             assert resp_undo.status == 200
             data_undo = await resp_undo.json()
             assert data_undo["path"] == clip_rel_path
+
+            resp_list_after = await client.get("/api/recordings")
+            assert resp_list_after.status == 200
+            list_after_payload = await resp_list_after.json()
+            items_after = list_after_payload.get("items") or []
+            matching_after = [item for item in items_after if item.get("path") == clip_rel_path]
+            assert matching_after, "Restored clip missing from recordings listing"
+            assert not matching_after[0].get("undo_token")
 
             restored_waveform = json.loads(clip_waveform.read_text())
             restored_duration = restored_waveform.get("duration_seconds")

@@ -4428,6 +4428,46 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 pass
             shutil.rmtree(entry, ignore_errors=True)
 
+    def _collect_clip_undo_tokens() -> dict[str, str]:
+        _cleanup_clip_undo_storage()
+        if not clip_undo_root.exists():
+            return {}
+
+        tokens: dict[str, tuple[float, str]] = {}
+        try:
+            entries = list(clip_undo_root.iterdir())
+        except OSError:
+            return {}
+
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+
+            token = entry.name
+            if not clip_undo_token_pattern.match(token):
+                continue
+
+            meta_path = entry / "meta.json"
+            try:
+                with meta_path.open("r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            rel_path = metadata.get("path")
+            created_at = metadata.get("created_at")
+            if not isinstance(rel_path, str) or not rel_path:
+                continue
+            if not _is_safe_relative_path(rel_path):
+                continue
+
+            created = float(created_at) if isinstance(created_at, (int, float)) else 0.0
+            previous = tokens.get(rel_path)
+            if previous is None or created >= previous[0]:
+                tokens[rel_path] = (created, token)
+
+        return {path: token for path, (_, token) in tokens.items()}
+
     def _allows_opus_stream_copy(source: Path) -> bool:
         if source.suffix.lower() == ".opus":
             return True
@@ -5908,6 +5948,8 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         total = len(filtered)
         window = filtered[offset : offset + limit]
 
+        undo_tokens = _collect_clip_undo_tokens() if window else {}
+
         payload_items = [
             {
                 "name": str(entry.get("name", "")),
@@ -5960,6 +6002,11 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                     str(entry.get("waveform_path"))
                     if entry.get("waveform_path")
                     else ""
+                ),
+                "undo_token": (
+                    undo_tokens.get(str(entry.get("path", "")))
+                    if undo_tokens
+                    else None
                 ),
                 "start_epoch": (
                     float(entry.get("start_epoch", 0.0))
@@ -7588,7 +7635,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 if chunk:
                     try:
                         await response.write(chunk)
-                    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                    except (
+                        ConnectionResetError,
+                        ConnectionAbortedError,
+                        BrokenPipeError,
+                        ConnectionError,
+                    ):
                         break
                     continue
 
