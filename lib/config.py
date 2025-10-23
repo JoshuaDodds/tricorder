@@ -62,7 +62,7 @@ _DEFAULTS: Dict[str, Any] = {
         "device": "hw:CARD=Device,DEV=0",
         "sample_rate": 48000,
         "frame_ms": 20,
-        "gain": 2.5,
+        "gain": 1.0,
         "vad_aggressiveness": 3,
         "filter_chain": {
             "denoise": {

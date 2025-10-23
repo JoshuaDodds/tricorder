@@ -8,8 +8,8 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 
 <!-- DASHBOARD_SCREENSHOT_START -->
 > Generate a fresh dashboard preview by running `python ci/staging_dashboard_snapshot.py --output docs/images/staging-dashboard.png --readme README.md`.
-> The image is built and saved to `docs/images/staging-dashboard.png` for each pre-release built on staging branch.
-<sub>Last built on 2025-10-22T19:36:28+00:00</sub>
+> The image is built and saved to `docs/images/staging-dashboard.png` for each pre-release built on the staging branch.
+<sub>Last updated 2025-10-23T10:29:22+00:00</sub>
 <!-- DASHBOARD_SCREENSHOT_END -->
 
 ---
@@ -435,7 +435,7 @@ Configuration is merged from multiple sources (first match wins):
 Environment variables override YAML values. Common overrides include:
 
 - `DEV=1` — enable verbose logging.
-- `AUDIO_DEV`, `GAIN` — audio input and software gain.
+- `AUDIO_DEV`, `GAIN` — audio input and optional software gain (defaults to 1.0/unity; raise only when hardware capture is too quiet).
 - `AUDIO_CHANNELS`, `AUDIO_USB_RESET_WORKAROUND` — capture channel count and whether to reset USB audio devices between retries.
 - `REC_DIR`, `TMP_DIR`, `DROPBOX_DIR` — paths for recordings, tmpfs, and dropbox.
 - `INGEST_STABLE_CHECKS`, `INGEST_STABLE_INTERVAL_SEC`, `INGEST_ALLOWED_EXT` — ingest tunables.
@@ -455,7 +455,7 @@ location is customized.
 
 Key configuration sections (see `config.yaml` for defaults and documentation):
 
-- `audio` – device, sample rate, channel count, frame size, gain, USB reset workaround toggle, VAD aggressiveness, optional filter chain for hum/rumble control.
+- `audio` – device, sample rate, channel count, frame size, gain, USB reset workaround toggle, VAD aggressiveness, optional filter chain for hum/rumble control. Software gain now defaults to 1.0/unity so captures are untouched unless you explicitly raise it.
 - `paths` – tmpfs, recordings, dropbox, ingest work directory, encoder script path.
 - `segmenter` – pre/post pads, RMS threshold, debounce windows, optional denoise toggles, filter chain timing budgets, custom event tags. When `segmenter.streaming_encode` is enabled the recorder mirrors audio frames into a background ffmpeg process that writes a `.partial.opus` (or `.partial.webm`) beside the eventual recording so browsers can tail the file while waveform/transcription jobs run. `segmenter.parallel_encode` performs the same mirroring opportunistically even when live streaming is disabled, now writing the partial Opus output into the recordings tree and publishing a live waveform JSON sidecar so the dashboard can render in-progress waveforms. The offline encoder worker pool scales up to `offline_max_workers` when load stays below the configured thresholds, allowing multiple recovery or event encode jobs to run in parallel without waiting for the queue to drain. `segmenter.autosplit_interval_minutes` enforces a maximum continuous clip length (default 15 minutes) so encoder workloads stay bounded, `segmenter.min_clip_seconds` drops final Opus recordings shorter than the configured duration before filters, waveform generation, or archival kick in, and `segmenter.max_pending_encodes` bounds the in-memory encode queue so new jobs are deferred to disk whenever the encoder backlog grows, keeping the capture loop responsive.
 - `segmenter.enable_rms_trigger` and `segmenter.enable_vad_trigger` let operators disable individual automatic triggers without editing code, ensuring installs can rely solely on motion, manual control, or the remaining trigger path when rooms are particularly noisy or speech-heavy.

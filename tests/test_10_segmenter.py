@@ -2073,6 +2073,37 @@ def test_apply_gain_scales_and_clips(monkeypatch):
     assert read_sample(scaled_neg) == -2
 
 
+def test_ingest_passthrough_with_unity_gain(monkeypatch):
+    monkeypatch.setattr(segmenter, "GAIN", 1.0)
+    recorder = TimelineRecorder()
+    frame = make_frame(512)
+
+    try:
+        result = recorder.ingest(frame, 0)
+    finally:
+        recorder.flush(1)
+
+    assert result == frame
+
+
+def test_ingest_logs_when_gain_clips(monkeypatch, capsys):
+    monkeypatch.setattr(segmenter, "GAIN", 4.0)
+    monkeypatch.setattr(segmenter, "GAIN_CLIP_LOG_THROTTLE_SEC", 0.0)
+    monkeypatch.setattr(segmenter, "_GAIN_CLIP_LAST_LOG", 0.0, raising=False)
+    recorder = TimelineRecorder()
+    frame = make_frame(20000)
+
+    try:
+        result = recorder.ingest(frame, 0)
+    finally:
+        recorder.flush(1)
+
+    captured = capsys.readouterr().out
+    assert "software gain" in captured
+    assert "clipping" in captured
+    assert read_sample(result) == segmenter.INT16_MAX
+
+
 def test_filter_chain_metrics_emit_structured_logs(monkeypatch, tmp_path):
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_path))
     monkeypatch.setattr(segmenter, "FILTER_CHAIN_AVG_BUDGET_MS", 0.5)
