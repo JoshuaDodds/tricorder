@@ -4905,9 +4905,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             encode_duration = f"{duration:.6f}".rstrip("0").rstrip(".")
             start_offset = f"{float(start_seconds):.6f}".rstrip("0").rstrip(".")
 
-            # First decode the window to PCM for waveform generation, then use a
-            # second ffmpeg invocation to stream-copy the Opus payload so longer
-            # edits do not pay a full re-encode penalty.
+            # First decode the window to PCM for waveform generation. When the
+            # source is already Opus we can stream copy the payload to avoid an
+            # expensive re-encode. Other codecs must be re-encoded to keep the
+            # `.opus` destination valid.
             decode_cmd = [
                 "ffmpeg",
                 "-hide_banner",
@@ -4936,24 +4937,50 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             except subprocess.SubprocessError as exc:
                 raise ClipError("ffmpeg failed while decoding source") from exc
 
+            stream_copy_allowed = resolved.suffix.lower() == ".opus"
+
             encode_cmd = [
                 "ffmpeg",
                 "-hide_banner",
                 "-loglevel",
                 "error",
                 "-y",
-                "-ss",
-                start_offset,
-                "-i",
-                str(resolved),
-                "-t",
-                encode_duration,
-                "-c:a",
-                "copy",
-                "-avoid_negative_ts",
-                "make_zero",
-                str(tmp_opus),
             ]
+
+            if stream_copy_allowed:
+                encode_cmd.extend(
+                    [
+                        "-ss",
+                        start_offset,
+                        "-i",
+                        str(resolved),
+                        "-t",
+                        encode_duration,
+                        "-c:a",
+                        "copy",
+                        "-avoid_negative_ts",
+                        "make_zero",
+                    ]
+                )
+            else:
+                encode_cmd.extend(
+                    [
+                        "-i",
+                        str(tmp_wav),
+                        "-c:a",
+                        "libopus",
+                        "-b:a",
+                        "48k",
+                        "-vbr",
+                        "on",
+                        "-application",
+                        "audio",
+                        "-frame_duration",
+                        "20",
+                    ]
+                )
+
+            encode_cmd.append(str(tmp_opus))
 
             try:
                 subprocess.run(encode_cmd, check=True)
