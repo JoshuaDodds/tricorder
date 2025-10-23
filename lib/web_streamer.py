@@ -4428,6 +4428,38 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 pass
             shutil.rmtree(entry, ignore_errors=True)
 
+    def _allows_opus_stream_copy(source: Path) -> bool:
+        if source.suffix.lower() == ".opus":
+            return True
+
+        probe_cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ]
+
+        try:
+            result = subprocess.run(
+                probe_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return False
+        except subprocess.SubprocessError:
+            return False
+
+        codec_name = (result.stdout or "").strip().lower()
+        return codec_name == "opus"
+
     def _prepare_clip_backup(
         final_path: Path, final_waveform: Path, rel_path: Path
     ) -> str:
@@ -4917,6 +4949,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             encode_duration = f"{duration:.6f}".rstrip("0").rstrip(".")
             start_offset = f"{float(start_seconds):.6f}".rstrip("0").rstrip(".")
 
+            # First decode the window to PCM for waveform generation. When the
+            # source is already Opus we can stream copy the payload to avoid an
+            # expensive re-encode. Other codecs must be re-encoded to keep the
+            # `.opus` destination valid.
             decode_cmd = [
                 "ffmpeg",
                 "-hide_banner",
@@ -4945,34 +4981,50 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             except subprocess.SubprocessError as exc:
                 raise ClipError("ffmpeg failed while decoding source") from exc
 
+            stream_copy_allowed = _allows_opus_stream_copy(resolved)
+
             encode_cmd = [
                 "ffmpeg",
                 "-hide_banner",
                 "-loglevel",
                 "error",
                 "-y",
-                "-i",
-                str(tmp_wav),
-                "-ac",
-                "1",
-                "-ar",
-                "48000",
-                "-sample_fmt",
-                "s16",
-                "-c:a",
-                "libopus",
-                "-b:a",
-                "48k",
-                "-vbr",
-                "on",
-                "-application",
-                "audio",
-                "-frame_duration",
-                "20",
-                "-threads",
-                "1",
-                str(tmp_opus),
             ]
+
+            if stream_copy_allowed:
+                encode_cmd.extend(
+                    [
+                        "-ss",
+                        start_offset,
+                        "-i",
+                        str(resolved),
+                        "-t",
+                        encode_duration,
+                        "-c:a",
+                        "copy",
+                        "-avoid_negative_ts",
+                        "make_zero",
+                    ]
+                )
+            else:
+                encode_cmd.extend(
+                    [
+                        "-i",
+                        str(tmp_wav),
+                        "-c:a",
+                        "libopus",
+                        "-b:a",
+                        "48k",
+                        "-vbr",
+                        "on",
+                        "-application",
+                        "audio",
+                        "-frame_duration",
+                        "20",
+                    ]
+                )
+
+            encode_cmd.append(str(tmp_opus))
 
             try:
                 subprocess.run(encode_cmd, check=True)
