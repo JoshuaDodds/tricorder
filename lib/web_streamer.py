@@ -7588,7 +7588,12 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 if chunk:
                     try:
                         await response.write(chunk)
-                    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                    except (
+                        ConnectionResetError,
+                        ConnectionAbortedError,
+                        BrokenPipeError,
+                        ConnectionError,
+                    ):
                         break
                     continue
 

@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
+from aiohttp import web
 
 import copy
 import ssl
@@ -597,6 +598,61 @@ async def test_recordings_listing_falls_back_to_raw_when_metadata_missing(
     expected_raw = f"{web_streamer.RAW_AUDIO_DIRNAME}/{day_dir.name}/{raw_path.name}"
     assert entry.get("raw_audio_path") == expected_raw
     assert entry.get("path") == f"{day_dir.name}/{audio_path.name}"
+
+
+@pytest.mark.asyncio
+async def test_partial_recording_stream_handles_connection_loss(
+    monkeypatch, tmp_path, aiohttp_client, caplog
+):
+    recordings_dir = tmp_path / "recordings"
+    tmp_dir = tmp_path / "tmp"
+    day_dir = recordings_dir / "20250103"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+    monkeypatch.setenv("TRICORDER_TMP", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    partial_path = day_dir / "sample.opus.partial"
+    partial_path.write_bytes(b"x" * 65536)
+
+    calls = {"count": 0}
+    original_write = web.StreamResponse.write
+
+    async def flaky_write(self, data):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ConnectionError("simulated disconnect")
+        return await original_write(self, data)
+
+    monkeypatch.setattr(web.StreamResponse, "write", flaky_write)
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    rel_path = partial_path.relative_to(recordings_dir).as_posix()
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="aiohttp.server"):
+        response = await client.get(f"/recordings/{rel_path}")
+        assert response.status == 200
+        try:
+            await response.read()
+        except Exception:
+            pass
+        try:
+            await response.release()
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+
+    assert calls["count"] == 1
+    assert "Error handling request" not in caplog.text
 
 
 @pytest.mark.asyncio
