@@ -84,9 +84,44 @@ ARECORD_CMD = [
     "-"
 ]
 
+ARECORD_XRUN_PATTERNS = {
+    "overrun!!!": "overrun",
+    "underrun!!!": "underrun",
+}
+ARECORD_XRUN_COUNTER = 0
+ARECORD_XRUN_WARNING_INTERVAL = 10.0
+
 stop_requested = False
 split_requested = False
 p = None
+
+
+def _parse_arecord_stderr(chunk: bytes, state: dict[str, str]) -> list[str]:
+    """Decode stderr output from arecord and extract xrun markers."""
+
+    if not chunk:
+        return []
+
+    buffer = state.get("buffer", "")
+    text = chunk.decode("utf-8", errors="ignore")
+    if not text:
+        state["buffer"] = buffer
+        return []
+
+    buffer += text
+    lines = buffer.splitlines(keepends=True)
+    remainder = ""
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        remainder = lines.pop()
+    state["buffer"] = remainder[-128:]
+
+    matches: list[str] = []
+    for line in lines:
+        lower = line.lower()
+        for pattern, label in ARECORD_XRUN_PATTERNS.items():
+            if pattern in lower:
+                matches.append(label)
+    return matches
 
 
 def _manual_record_snapshot(path: str) -> tuple[bool, float]:
@@ -459,7 +494,7 @@ class FilterPipeline:
         return FilterPipelineError(reason, fallback)
 
 def main():
-    global p, stop_requested, split_requested
+    global p, stop_requested, split_requested, ARECORD_XRUN_COUNTER
     stop_requested = False
     split_requested = False
     print(
@@ -645,6 +680,8 @@ def main():
                     os.set_blocking(stderr_fd, False)
                 except Exception:
                     pass
+            stderr_state: dict[str, str] = {"buffer": ""}
+            last_xrun_warning = 0.0
 
             while not stop_requested:
                 if split_requested:
@@ -799,6 +836,17 @@ def main():
                             data = os.read(stderr_fd, 4096)
                             if not data:
                                 break
+                            events = _parse_arecord_stderr(data, stderr_state)
+                            if events:
+                                ARECORD_XRUN_COUNTER += len(events)
+                                warn_now = time.monotonic()
+                                if warn_now - last_xrun_warning >= ARECORD_XRUN_WARNING_INTERVAL:
+                                    labels = "/".join(sorted(set(events)))
+                                    print(
+                                        f"[live] WARN: arecord {labels} detected (total={ARECORD_XRUN_COUNTER})",
+                                        flush=True,
+                                    )
+                                    last_xrun_warning = warn_now
                     except BlockingIOError:
                         pass
                     except Exception:
