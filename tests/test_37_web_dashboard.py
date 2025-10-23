@@ -2061,6 +2061,15 @@ def test_recordings_clip_overwrite_and_undo(dashboard_env):
             undo_token = data_update.get("undo_token")
             assert isinstance(undo_token, str) and undo_token
 
+            resp_list = await client.get("/api/recordings")
+            assert resp_list.status == 200
+            list_payload = await resp_list.json()
+            assert isinstance(list_payload, dict)
+            items = list_payload.get("items") or []
+            matching_items = [item for item in items if item.get("path") == clip_rel_path]
+            assert matching_items, "Updated clip missing from recordings listing"
+            assert matching_items[0].get("undo_token") == undo_token
+
             updated_waveform = json.loads(clip_waveform.read_text())
             updated_duration = updated_waveform.get("duration_seconds")
             assert isinstance(updated_duration, (int, float))
@@ -2070,6 +2079,14 @@ def test_recordings_clip_overwrite_and_undo(dashboard_env):
             assert resp_undo.status == 200
             data_undo = await resp_undo.json()
             assert data_undo["path"] == clip_rel_path
+
+            resp_list_after = await client.get("/api/recordings")
+            assert resp_list_after.status == 200
+            list_after_payload = await resp_list_after.json()
+            items_after = list_after_payload.get("items") or []
+            matching_after = [item for item in items_after if item.get("path") == clip_rel_path]
+            assert matching_after, "Restored clip missing from recordings listing"
+            assert not matching_after[0].get("undo_token")
 
             restored_waveform = json.loads(clip_waveform.read_text())
             restored_duration = restored_waveform.get("duration_seconds")
