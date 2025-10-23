@@ -201,7 +201,7 @@ Uploads run immediately after the encoder finishes so recordings land in the arc
 - Recycle bin view provides inline audio preview before you restore or permanently clear recordings.
 - Audio preview player with waveform visualization, trigger/release markers, and timeline scrubbing.
 - Instant source toggle between processed Opus output and the raw capture for A/B checks without interrupting playback.
-- Adjustable waveform amplitude zoom control (0.25×–10×) for inspecting quiet or loud passages.
+- Adjustable waveform amplitude zoom control (1×–30×) for inspecting quiet or loud passages.
 - Config viewer that renders the merged runtime configuration (post-environment overrides).
 - Recorder configuration modal supports saving individual sections or using the **Save all changes** button to persist every dirty section in one go.
 - Persistent SD card health banner fed by the monitor service when kernel/syslog errors appear.
