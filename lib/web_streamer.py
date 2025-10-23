@@ -4905,6 +4905,9 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             encode_duration = f"{duration:.6f}".rstrip("0").rstrip(".")
             start_offset = f"{float(start_seconds):.6f}".rstrip("0").rstrip(".")
 
+            # First decode the window to PCM for waveform generation, then use a
+            # second ffmpeg invocation to stream-copy the Opus payload so longer
+            # edits do not pay a full re-encode penalty.
             decode_cmd = [
                 "ffmpeg",
                 "-hide_banner",
@@ -4939,26 +4942,16 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "-loglevel",
                 "error",
                 "-y",
+                "-ss",
+                start_offset,
                 "-i",
-                str(tmp_wav),
-                "-ac",
-                "1",
-                "-ar",
-                "48000",
-                "-sample_fmt",
-                "s16",
+                str(resolved),
+                "-t",
+                encode_duration,
                 "-c:a",
-                "libopus",
-                "-b:a",
-                "48k",
-                "-vbr",
-                "on",
-                "-application",
-                "audio",
-                "-frame_duration",
-                "20",
-                "-threads",
-                "1",
+                "copy",
+                "-avoid_negative_ts",
+                "make_zero",
                 str(tmp_opus),
             ]
 
