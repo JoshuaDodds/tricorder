@@ -18,9 +18,10 @@ audio:
   # Frame size in milliseconds. Valid: 10, 20, 30. Default 20ms (WebRTC VAD friendly).
   frame_ms: 20
 
-  # Software gain multiplier (linear). Typical safe range: 0.5 → 4.0
-  # 0.5 halves amplitude; 2.0 doubles (~+6 dB); 4.0 (~+12 dB). Too high can clip and inflate RMS.
-  gain: 2.5
+  # Software gain multiplier (linear). Default 1.0 (unity) leaves samples untouched.
+  # Increase only when the capture hardware is too quiet; prefer physical gain knobs first.
+  # Values above ~2.0 (~+6 dB) can clip and inflate RMS quickly on loud sources.
+  gain: 1.0
 
   # Attempt to reset the USB controller between retries when using USB microphones.
   # Disable for I2S or HAT capture cards so retries wait for the device without toggling USB power.

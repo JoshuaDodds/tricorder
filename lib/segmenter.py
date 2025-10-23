@@ -123,10 +123,14 @@ def pcm16_rms(buf: bytes) -> int:
     return int(math.sqrt(mean_square))
 
 
-def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
-    """Scale signed 16-bit PCM samples by gain with int16 clipping."""
+def pcm16_apply_gain(buf: bytes, gain: float) -> tuple[bytes, bool]:
+    """Scale signed 16-bit PCM samples by gain with int16 clipping.
+
+    Returns the scaled PCM buffer and a flag indicating whether any samples
+    clipped to the int16 range during amplification.
+    """
     if not buf or gain == 1.0:
-        return buf
+        return buf, False
     if len(buf) % SAMPLE_WIDTH:
         raise ValueError("PCM16 buffer length must be a multiple of 2 bytes")
 
@@ -135,18 +139,21 @@ def pcm16_apply_gain(buf: bytes, gain: float) -> bytes:
     if sys.byteorder != 'little':
         samples.byteswap()
 
+    clipped = False
     for idx, sample in enumerate(samples):
         product = sample * gain
         scaled = math.floor(product)
         if scaled > INT16_MAX:
             scaled = INT16_MAX
+            clipped = True
         elif scaled < INT16_MIN:
             scaled = INT16_MIN
+            clipped = True
         samples[idx] = scaled
 
     if sys.byteorder != 'little':
         samples.byteswap()
-    return samples.tobytes()
+    return samples.tobytes(), clipped
 
 
 def _estimate_rms_from_file(path: str | os.PathLike[str]) -> int:
@@ -405,6 +412,8 @@ _apply_queue_limit_bounds()
 
 # Mic Digital Gain
 GAIN = float(cfg["audio"]["gain"])
+GAIN_CLIP_LOG_THROTTLE_SEC = 15.0
+_GAIN_CLIP_LAST_LOG = 0.0
 
 # Noise reduction settings
 USE_RNNOISE = bool(cfg["segmenter"]["use_rnnoise"])
@@ -2905,7 +2914,20 @@ class TimelineRecorder:
 
     @staticmethod
     def _apply_gain(buf: bytes) -> bytes:
-        return pcm16_apply_gain(buf, GAIN)
+        if not buf or math.isclose(GAIN, 1.0, rel_tol=1e-9, abs_tol=1e-12):
+            return buf
+        scaled, clipped = pcm16_apply_gain(buf, GAIN)
+        if clipped:
+            global _GAIN_CLIP_LAST_LOG
+            now = time.monotonic()
+            if now - _GAIN_CLIP_LAST_LOG >= GAIN_CLIP_LOG_THROTTLE_SEC:
+                print(
+                    "[segmenter] WARN: software gain "
+                    f"{GAIN:.2f} is clipping audio; lower audio.gain or rely on hardware gain",
+                    flush=True,
+                )
+                _GAIN_CLIP_LAST_LOG = now
+        return scaled
 
     @staticmethod
     def _denoise(samples: bytes) -> bytes:
