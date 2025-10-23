@@ -1,7 +1,7 @@
 [Unit]
 Description=Tricorder Live Recorder (WebRTC VAD + RMS)
-After=sound.target network-online.target
-Wants=network-online.target
+After=tricorder-audio-restore.service sound.target network-online.target
+Wants=tricorder-audio-restore.service network-online.target
 PartOf=tricorder.target
 
 [Service]
