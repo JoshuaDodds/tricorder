@@ -17,6 +17,7 @@ from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 from lib.audio_filter_chain import AudioFilterChain
 from lib.audio_utils import downmix_to_mono
+from lib.ffmpeg_io import DEFAULT_THREAD_QUEUE_SIZE
 
 cfg = get_cfg()
 
@@ -535,6 +536,7 @@ def main():
             bitrate="64k",
             legacy_extra_ffmpeg_args=LEGACY_HLS_EXTRA_ARGS,
             filter_chain_enabled=AUDIO_FILTER_CHAIN_ENABLED,
+            thread_queue_size=DEFAULT_THREAD_QUEUE_SIZE,
         )
         state_path = os.path.join(hls_dir, "controller_state.json")
         controller.set_state_path(state_path, persist=True)

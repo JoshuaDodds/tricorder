@@ -31,6 +31,10 @@ warnings.filterwarnings(
 )
 import webrtcvad    # noqa
 from lib.config import get_cfg, resolve_event_tags
+from lib.ffmpeg_io import (
+    DEFAULT_THREAD_QUEUE_SIZE,
+    pcm_pipe_input_args,
+)
 from lib.notifications import build_dispatcher
 from lib.segmenter_helpers.display import color_tf
 from lib.segmenter_helpers.system import (
@@ -957,16 +961,11 @@ class StreamingOpusEncoder:
             "-loglevel",
             "error",
             "-y",
-            "-f",
-            "s16le",
-            "-ar",
-            str(SAMPLE_RATE),
-            "-ac",
-            "1",
-            "-thread_queue_size",
-            "8192",
-            "-i",
-            "pipe:0",
+            *pcm_pipe_input_args(
+                SAMPLE_RATE,
+                1,
+                queue_size=DEFAULT_THREAD_QUEUE_SIZE,
+            ),
             "-c:a",
             "libopus",
             "-b:a",
