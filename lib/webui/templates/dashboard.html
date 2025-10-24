@@ -699,7 +699,7 @@
                 >
                   <form id="clipper-form" class="clipper-form" novalidate autocomplete="off">
                     <div class="clipper-grid">
-                      <label class="input-group clipper-group">
+                      <label class="input-group clipper-group clipper-start-group">
                         <span>Start</span>
                         <div class="clipper-input-row">
                           <input
@@ -714,7 +714,7 @@
                           </button>
                         </div>
                       </label>
-                      <label class="input-group clipper-group">
+                      <label class="input-group clipper-group clipper-end-group">
                         <span>End</span>
                         <div class="clipper-input-row">
                           <input
@@ -738,6 +738,14 @@
                           placeholder="New clip name"
                         />
                       </label>
+                      <div
+                        id="clipper-length"
+                        class="clipper-length"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        --
+                      </div>
                       <div class="clipper-overwrite-row">
                         <label class="clipper-overwrite-toggle" for="clipper-overwrite-toggle">
                           <input id="clipper-overwrite-toggle" type="checkbox" checked />
@@ -745,13 +753,10 @@
                           <span class="clipper-overwrite-label">Overwrite existing?</span>
                         </label>
                       </div>
-                    </div>
-                    <div class="clipper-footer">
-                      <div id="clipper-length" class="clipper-length" role="status" aria-live="polite">
-                        --
-                      </div>
                       <div class="clipper-buttons">
-                        <button id="clipper-undo" class="ghost-button small" type="button" hidden>Undo</button>
+                        <button id="clipper-undo" class="ghost-button small" type="button" hidden>
+                          Undo
+                        </button>
                         <button id="clipper-reset" class="ghost-button small" type="button">Reset</button>
                         <button id="clipper-submit" class="primary-button small" type="submit">Save clip</button>
                       </div>
