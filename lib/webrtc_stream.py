@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from fractions import Fraction
@@ -59,6 +60,8 @@ if _AIORTC_IMPORT_ERROR is None:
     MediaStreamTrack = _MediaStreamTrack  # type: ignore[assignment]
     av = _av  # type: ignore[assignment]
 
+    _ENCODE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtc-encoder")
+
     class _PatchedRTCRtpSender(_RTCRtpSender):  # type: ignore[misc]
         async def _next_encoded_frame(self, codec):  # type: ignore[override]
             data = await getattr(self, "_RTCRtpSender__track").recv()
@@ -78,7 +81,10 @@ if _AIORTC_IMPORT_ERROR is None:
 
                 force_keyframe = getattr(self, "_RTCRtpSender__force_keyframe", False)
                 setattr(self, "_RTCRtpSender__force_keyframe", False)
-                payloads, timestamp = encoder.encode(data, force_keyframe)
+                loop = getattr(self, "_RTCRtpSender__loop")
+                payloads, timestamp = await loop.run_in_executor(
+                    _ENCODE_EXECUTOR, encoder.encode, data, force_keyframe
+                )
             else:
                 payloads, timestamp = encoder.pack(data)
 
