@@ -17,7 +17,11 @@ try:
         RTCIceServer as _RTCIceServer,
         RTCSessionDescription as _RTCSessionDescription,
     )
+    from aiortc import rtp as _rtp
+    from aiortc.codecs import get_encoder as _get_encoder
     from aiortc.mediastreams import MediaStreamTrack as _MediaStreamTrack
+    from aiortc.rtcrtpsender import RTCEncodedFrame as _RTCEncodedFrame
+    from aiortc.rtcrtpsender import RTCRtpSender as _RTCRtpSender
     import av as _av
 except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - exercised in environments without aiortc
     _AIORTC_IMPORT_ERROR: Exception | None = exc
@@ -54,6 +58,30 @@ if RTCSessionDescription is None:  # pragma: no cover - dependency missing path
 if _AIORTC_IMPORT_ERROR is None:
     MediaStreamTrack = _MediaStreamTrack  # type: ignore[assignment]
     av = _av  # type: ignore[assignment]
+
+    class _PatchedRTCRtpSender(_RTCRtpSender):  # type: ignore[misc]
+        async def _create_encoded_frame(self, data, codec):  # type: ignore[override]
+            audio_level = None
+
+            if self.__encoder is None:  # type: ignore[attr-defined]
+                self.__encoder = _get_encoder(codec)  # type: ignore[attr-defined]
+
+            if isinstance(data, av.frame.Frame):  # type: ignore[attr-defined]
+                if isinstance(data, av.AudioFrame):  # type: ignore[attr-defined]
+                    audio_level = _rtp.compute_audio_level_dbov(data)
+
+                force_keyframe = self.__force_keyframe  # type: ignore[attr-defined]
+                self.__force_keyframe = False  # type: ignore[attr-defined]
+                payloads, timestamp = self.__encoder.encode(data, force_keyframe)  # type: ignore[attr-defined]
+            else:
+                payloads, timestamp = self.__encoder.pack(data)  # type: ignore[attr-defined]
+
+            if not payloads:
+                return None
+
+            return _RTCEncodedFrame(payloads, timestamp, audio_level)
+
+    _RTCRtpSender._create_encoded_frame = _PatchedRTCRtpSender._create_encoded_frame  # type: ignore[attr-defined]
 
     class PCMStreamTrack(MediaStreamTrack):
         kind = "audio"
