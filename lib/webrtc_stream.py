@@ -63,18 +63,20 @@ if _AIORTC_IMPORT_ERROR is None:
         async def _create_encoded_frame(self, data, codec):  # type: ignore[override]
             audio_level = None
 
-            if self.__encoder is None:  # type: ignore[attr-defined]
-                self.__encoder = _get_encoder(codec)  # type: ignore[attr-defined]
+            encoder = getattr(self, "_RTCRtpSender__encoder", None)
+            if encoder is None:
+                encoder = _get_encoder(codec)
+                setattr(self, "_RTCRtpSender__encoder", encoder)
 
             if isinstance(data, av.frame.Frame):  # type: ignore[attr-defined]
                 if isinstance(data, av.AudioFrame):  # type: ignore[attr-defined]
                     audio_level = _rtp.compute_audio_level_dbov(data)
 
-                force_keyframe = self.__force_keyframe  # type: ignore[attr-defined]
-                self.__force_keyframe = False  # type: ignore[attr-defined]
-                payloads, timestamp = self.__encoder.encode(data, force_keyframe)  # type: ignore[attr-defined]
+                force_keyframe = getattr(self, "_RTCRtpSender__force_keyframe", False)
+                setattr(self, "_RTCRtpSender__force_keyframe", False)
+                payloads, timestamp = encoder.encode(data, force_keyframe)
             else:
-                payloads, timestamp = self.__encoder.pack(data)  # type: ignore[attr-defined]
+                payloads, timestamp = encoder.pack(data)
 
             if not payloads:
                 return None
