@@ -504,8 +504,8 @@ state.seeed2micvoicec {
 	control.36 {
 		iface MIXER
 		name 'ADC HPF Cut-off'
-		value.0 '0.025xFs'
-		value.1 '0.025xFs'
+		value.0 '0.0125xFs'
+		value.1 '0.0125xFs'
 		comment {
 			access 'read write'
 			type ENUMERATED
