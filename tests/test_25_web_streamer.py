@@ -721,6 +721,67 @@ async def test_recordings_api_includes_trigger_metadata(
     assert auto_entry["trigger_sources"] == []
     assert auto_entry["end_reason"] == ""
 
+    counts = payload.get("collection_counts", {})
+    sizes = payload.get("collection_size_bytes", {})
+    expected_recent_bytes = manual_audio.stat().st_size + auto_audio.stat().st_size
+    assert counts.get("recent") == 2
+    assert counts.get("saved") == 0
+    assert counts.get("recycle") == 0
+    assert sizes.get("recent") == expected_recent_bytes
+    assert sizes.get("saved") == 0
+    assert sizes.get("recycle") == 0
+
+
+@pytest.mark.asyncio
+async def test_recordings_api_reports_collection_counts(monkeypatch, tmp_path, aiohttp_client):
+    recordings_dir = tmp_path / "recordings"
+    saved_dir = recordings_dir / web_streamer.SAVED_RECORDINGS_DIRNAME / "20240102"
+    tmp_dir = tmp_path / "tmp"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    saved_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("REC_DIR", str(recordings_dir))
+    monkeypatch.setenv("TMP_DIR", str(tmp_dir))
+
+    from lib import config as config_module
+
+    monkeypatch.setattr(config_module, "_cfg_cache", None, raising=False)
+
+    recent_day = recordings_dir / "20240101"
+    recent_day.mkdir(parents=True, exist_ok=True)
+    recent_audio = recent_day / "recent.opus"
+    recent_audio.write_bytes(b"recent-data")
+    recent_waveform = recent_audio.with_suffix(recent_audio.suffix + ".waveform.json")
+    recent_waveform.write_text(json.dumps({"duration_seconds": 1.0}), encoding="utf-8")
+
+    saved_audio = saved_dir / "saved.opus"
+    saved_audio.write_bytes(b"saved-data")
+    saved_waveform = saved_audio.with_suffix(saved_audio.suffix + ".waveform.json")
+    saved_waveform.write_text(json.dumps({"duration_seconds": 2.0}), encoding="utf-8")
+
+    recycle_source = recordings_dir / "old.opus"
+    recycle_source.write_bytes(b"recycle-data")
+    recycle_move = recycle_bin_utils.move_short_recording_to_recycle_bin(
+        recycle_source,
+        recordings_dir,
+        duration=3.0,
+    )
+
+    client = await aiohttp_client(web_streamer.build_app())
+
+    response = await client.get("/api/recordings?limit=10")
+    assert response.status == 200
+    payload = await response.json()
+
+    counts = payload.get("collection_counts")
+    sizes = payload.get("collection_size_bytes")
+
+    assert counts == {"recent": 1, "saved": 1, "recycle": 1}
+    assert sizes.get("recent") == recent_audio.stat().st_size
+    assert sizes.get("saved") == saved_audio.stat().st_size
+    assert sizes.get("recycle", 0) >= recycle_move.audio_destination.stat().st_size
+
 
 def test_saved_recordings_fallback_raw_path_ignores_prefix(tmp_path):
     recordings_dir = tmp_path / "recordings"

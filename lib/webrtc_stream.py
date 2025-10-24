@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from fractions import Fraction
@@ -17,7 +18,11 @@ try:
         RTCIceServer as _RTCIceServer,
         RTCSessionDescription as _RTCSessionDescription,
     )
+    from aiortc import rtp as _rtp
+    from aiortc.codecs import get_encoder as _get_encoder
     from aiortc.mediastreams import MediaStreamTrack as _MediaStreamTrack
+    from aiortc.rtcrtpsender import RTCEncodedFrame as _RTCEncodedFrame
+    from aiortc.rtcrtpsender import RTCRtpSender as _RTCRtpSender
     import av as _av
 except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - exercised in environments without aiortc
     _AIORTC_IMPORT_ERROR: Exception | None = exc
@@ -54,6 +59,41 @@ if RTCSessionDescription is None:  # pragma: no cover - dependency missing path
 if _AIORTC_IMPORT_ERROR is None:
     MediaStreamTrack = _MediaStreamTrack  # type: ignore[assignment]
     av = _av  # type: ignore[assignment]
+
+    _ENCODE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtc-encoder")
+
+    class _PatchedRTCRtpSender(_RTCRtpSender):  # type: ignore[misc]
+        async def _next_encoded_frame(self, codec):  # type: ignore[override]
+            data = await getattr(self, "_RTCRtpSender__track").recv()
+
+            if not self._enabled:
+                return None
+
+            audio_level = None
+            encoder = getattr(self, "_RTCRtpSender__encoder", None)
+            if encoder is None:
+                encoder = _get_encoder(codec)
+                setattr(self, "_RTCRtpSender__encoder", encoder)
+
+            if isinstance(data, av.frame.Frame):  # type: ignore[attr-defined]
+                if isinstance(data, av.AudioFrame):  # type: ignore[attr-defined]
+                    audio_level = _rtp.compute_audio_level_dbov(data)
+
+                force_keyframe = getattr(self, "_RTCRtpSender__force_keyframe", False)
+                setattr(self, "_RTCRtpSender__force_keyframe", False)
+                loop = getattr(self, "_RTCRtpSender__loop")
+                payloads, timestamp = await loop.run_in_executor(
+                    _ENCODE_EXECUTOR, encoder.encode, data, force_keyframe
+                )
+            else:
+                payloads, timestamp = encoder.pack(data)
+
+            if not payloads:
+                return None
+
+            return _RTCEncodedFrame(payloads, timestamp, audio_level)
+
+    _RTCRtpSender._next_encoded_frame = _PatchedRTCRtpSender._next_encoded_frame  # type: ignore[attr-defined]
 
     class PCMStreamTrack(MediaStreamTrack):
         kind = "audio"

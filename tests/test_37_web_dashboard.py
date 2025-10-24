@@ -3900,7 +3900,7 @@ def test_playback_source_defaults_to_raw_when_available():
     assert result["rawAvailableFlag"] == "true"
     assert result["rawDisabled"] is False
     assert result["hintHidden"] is True
-    assert result["activeLabel"] == "Raw capture (PCM)"
+    assert result["activeLabel"] == "Wav"
 
 
 def test_playback_source_reverts_when_raw_unavailable():
