@@ -141,6 +141,71 @@ def test_zero_prepad_preserves_trigger_frame(tmp_path, monkeypatch):
     assert read_sample(data, samples_per_frame) == expected_second
 
 
+def test_stereo_capture_enqueues_raw_path(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / "tmp"
+    rec_dir = tmp_path / "rec"
+    tmp_dir.mkdir()
+    rec_dir.mkdir()
+
+    monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
+    monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
+    monkeypatch.setattr(segmenter, "PARALLEL_TMP_DIR", str(tmp_dir / "parallel"))
+    monkeypatch.setattr(segmenter, "STREAMING_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "PARALLEL_ENCODE_ENABLED", False)
+    monkeypatch.setattr(segmenter, "ENCODER", "/bin/true")
+    monkeypatch.setattr(segmenter, "START_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "KEEP_CONSECUTIVE", 1)
+    monkeypatch.setattr(segmenter, "POST_PAD_FRAMES", 1)
+    monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 0)
+    monkeypatch.setattr(segmenter, "KEEP_WINDOW", 1)
+    monkeypatch.setattr(segmenter, "NOTIFIER", None)
+    monkeypatch.setattr(segmenter, "_publish_recordings_event", lambda *a, **k: None)
+    monkeypatch.setattr(segmenter, "_schedule_recordings_refresh", lambda *a, **k: None)
+
+    class DummyEncodingStatus:
+        @staticmethod
+        def register_listener(_listener):  # pragma: no cover - behavior stub
+            return None
+
+        @staticmethod
+        def wait_for_start(_job_id, _timeout):
+            return True
+
+    monkeypatch.setattr(segmenter, "ENCODING_STATUS", DummyEncodingStatus())
+
+    captured: dict[str, object] = {}
+
+    def fake_enqueue(tmp_wav_path: str, final_base: str, **kwargs):
+        captured["tmp_wav_path"] = tmp_wav_path
+        captured["final_base"] = final_base
+        captured["raw_path"] = kwargs.get("raw_wav_path")
+        return 321
+
+    monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
+
+    sample_bytes = (2000).to_bytes(2, "little", signed=True)
+    stereo_frame = (sample_bytes + sample_bytes) * (FRAME_BYTES // 2)
+
+    rec = TimelineRecorder(raw_channels=2, raw_sample_width=2)
+    try:
+        rec.ingest(make_frame(2000), 0, raw_capture=stereo_frame)
+        rec.ingest(make_frame(2000), 1, raw_capture=stereo_frame)
+        rec.flush(2)
+    finally:
+        rec.writer._running = False
+        rec.writer.join(timeout=1.0)
+        if rec.raw_writer is not None:
+            rec.raw_writer._running = False
+            rec.raw_writer.join(timeout=1.0)
+
+    raw_path = captured.get("raw_path")
+    assert raw_path, "raw capture path should be provided to encoder"
+    raw_file = Path(raw_path)
+    assert raw_file.exists(), "raw capture file should exist until encoding"
+    with wave.open(str(raw_file), "rb") as wav_file:
+        assert wav_file.getnchannels() == 2
+        assert wav_file.getsampwidth() == 2
+
 def test_writer_queue_expands_with_large_prepad(monkeypatch):
     monkeypatch.setattr(segmenter, "_CONFIG_MAX_QUEUE_FRAMES", 32, raising=False)
     monkeypatch.setattr(segmenter, "PRE_PAD_FRAMES", 120, raising=False)
@@ -293,6 +358,7 @@ def test_manual_split_starts_new_event(tmp_path, monkeypatch):
         existing_opus_path: str | None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ):
         captured_jobs.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(captured_jobs)
@@ -359,6 +425,7 @@ def test_autosplit_limit_rotates_event(tmp_path, monkeypatch):
         existing_opus_path: str | None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ) -> int:
         captured_jobs.append(
             (
@@ -437,6 +504,7 @@ def test_manual_record_toggle_updates_status_and_encode(tmp_path, monkeypatch):
         existing_opus_path: str | None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ):
         manual_flags.append(manual_recording)
         assert target_day is not None
@@ -1018,6 +1086,7 @@ def test_parallel_encode_starts_when_cpu_available(tmp_path, monkeypatch):
         existing_opus_path: str | None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ):
         captured_job["base"] = base_name
         captured_job["existing"] = existing_opus_path
@@ -1338,6 +1407,7 @@ def test_streaming_drop_forces_offline_encode(tmp_path, monkeypatch):
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ):
         captured["tmp_wav_path"] = tmp_wav_path
         captured["base_name"] = base_name
@@ -1395,6 +1465,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ):
         calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(calls)
@@ -1462,6 +1533,7 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ):
         calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
         return len(calls)
@@ -1631,6 +1703,7 @@ def test_encode_job_uses_event_day_when_crossing_midnight(tmp_path, monkeypatch)
         existing_opus_path: str | None = None,
         manual_recording: bool = False,
         target_day: str | None = None,
+        raw_wav_path: str | None = None,
     ) -> int | None:
         captured["target_day"] = target_day
         return 7
@@ -2221,6 +2294,8 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     transcript.write_text("{}", encoding="utf-8")
     wav_path = tmp_path / "capture.wav"
     wav_path.write_bytes(b"wavdata")
+    stereo_path = tmp_path / "capture.stereo.wav"
+    stereo_path.write_bytes(b"stereodata")
 
     env = os.environ.copy()
     env["PATH"] = f"{stub_bin}:{env['PATH']}"
@@ -2230,6 +2305,7 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     env["STREAMING_CONTAINER_FORMAT"] = "opus"
     env["STREAMING_EXTENSION"] = ".opus"
     env["ENCODER_RECORDINGS_DIR"] = str(recordings_dir)
+    env["RAW_CAPTURE_PATH"] = str(stereo_path)
 
     result = subprocess.run(
         [str(script_path), str(wav_path), "sample", str(existing_opus)],
@@ -2247,6 +2323,8 @@ def test_encode_script_fast_path_skips_ffmpeg(tmp_path):
     raw_dir = tmp_path / "recordings" / ".original_wav" / day
     raw_files = list(raw_dir.glob("sample*.wav"))
     assert len(raw_files) == 1, "original WAV should be preserved"
+    assert not stereo_path.exists(), "stereo capture should be moved"
+    assert raw_files[0].read_bytes() == b"stereodata"
 
     metadata = json.loads(waveform.read_text(encoding="utf-8"))
     expected_rel = f".original_wav/{day}/{raw_files[0].name}"

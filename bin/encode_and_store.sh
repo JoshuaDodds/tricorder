@@ -17,6 +17,10 @@ LAST_CLIP_DURATION=""
 in_wav="$1"     # abs path in tmpfs
 base="$2"       # e.g. 08-57-34_Both_1
 existing_opus="${3:-}"
+preserve_source="$in_wav"
+if [[ -n "${RAW_CAPTURE_PATH:-}" && -f "$RAW_CAPTURE_PATH" ]]; then
+  preserve_source="$RAW_CAPTURE_PATH"
+fi
 ORIGINAL_AUDIO_DIRNAME=".original_wav"
 ORIGINAL_REL_PATH=""
 VENV="/apps/tricorder/venv"
@@ -289,9 +293,10 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
     if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; then
       log_journal "[encode] transcription failed for $base"
     fi
-    if ! preserve_original_wav "$in_wav" "$day" "$base"; then
-      rm -f "$in_wav"
+    if ! preserve_original_wav "$preserve_source" "$day" "$base"; then
+      rm -f "$preserve_source"
     fi
+    rm -f "$in_wav"
     annotate_original_wav "$waveform_file" "$ORIGINAL_REL_PATH"
     if ! run_python_module lib.archival "$outfile" "$waveform_file" "$transcript_file"; then
       log_journal "[encode] archival upload failed for $outfile"
@@ -332,9 +337,10 @@ if ! run_python_module lib.transcription "$in_wav" "$transcript_file" "$base"; t
   log_journal "[encode] transcription failed for $base"
 fi
 
-if ! preserve_original_wav "$in_wav" "$day" "$base"; then
-  rm -f "$in_wav"
+if ! preserve_original_wav "$preserve_source" "$day" "$base"; then
+  rm -f "$preserve_source"
 fi
+rm -f "$in_wav"
 
 annotate_original_wav "$waveform_file" "$ORIGINAL_REL_PATH"
 
