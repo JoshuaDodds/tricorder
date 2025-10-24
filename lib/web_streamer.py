@@ -72,6 +72,7 @@ DEFAULT_RECORDINGS_LIMIT = 200
 # WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
 WEB_STREAMER_EXECUTOR_MAX_WORKERS = 1  # hardcoded to 1 for this project to save RAM
 CLIP_EXECUTOR_MAX_WORKERS = 1  # serialize long-running clip jobs off the main executor
+GLOBAL_THREADPOOL_MAX_WORKERS = 2  # upper bound for any implicit thread pools
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
@@ -101,6 +102,39 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 ]
 
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
+
+
+def _cap_threadpool_default(max_workers_cap: int) -> None:
+    """Clamp ThreadPoolExecutor defaults so implicit pools stay tiny."""
+
+    if max_workers_cap < 1:
+        raise ValueError("max_workers_cap must be >= 1")
+
+    original_init = ThreadPoolExecutor.__init__
+    if getattr(original_init, "__tricorder_cap__", False):
+        return
+
+    def _capped_init(self, max_workers=None, *args, **kwargs):
+        requested = max_workers
+        if requested is None:
+            requested = os.cpu_count() or 1
+        try:
+            requested_int = int(requested)
+        except (TypeError, ValueError):
+            return original_init(self, max_workers, *args, **kwargs)
+
+        if max_workers is not None and requested_int <= 0:
+            # Preserve the original ValueError behaviour for explicit inputs.
+            return original_init(self, max_workers, *args, **kwargs)
+
+        capped = max(1, min(max_workers_cap, requested_int))
+        return original_init(self, capped, *args, **kwargs)
+
+    setattr(_capped_init, "__tricorder_cap__", True)
+    ThreadPoolExecutor.__init__ = _capped_init  # type: ignore[assignment]
+
+
+_cap_threadpool_default(GLOBAL_THREADPOOL_MAX_WORKERS)
 
 
 def _quiet_noisy_dependencies(ice_level: int = logging.WARNING) -> None:

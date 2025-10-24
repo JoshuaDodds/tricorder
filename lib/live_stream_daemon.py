@@ -17,6 +17,7 @@ from lib.hls_controller import controller  # NEW
 from lib.webrtc_buffer import WebRTCBufferWriter
 from lib.audio_filter_chain import AudioFilterChain
 from lib.audio_utils import downmix_to_mono
+from lib.ffmpeg_io import DEFAULT_THREAD_QUEUE_SIZE
 
 cfg = get_cfg()
 
@@ -78,8 +79,8 @@ ARECORD_CMD = [
     "-c", str(CAPTURE_CHANNELS),
     "-f", "S16_LE",
     "-r", str(SAMPLE_RATE),
-    "--buffer-size", "48000",
-    "--period-size", "2400",
+    "--buffer-size", "192000",
+    "--period-size", "9600",
     "-t", "raw",
     "-"
 ]
@@ -535,6 +536,7 @@ def main():
             bitrate="64k",
             legacy_extra_ffmpeg_args=LEGACY_HLS_EXTRA_ARGS,
             filter_chain_enabled=AUDIO_FILTER_CHAIN_ENABLED,
+            thread_queue_size=DEFAULT_THREAD_QUEUE_SIZE,
         )
         state_path = os.path.join(hls_dir, "controller_state.json")
         controller.set_state_path(state_path, persist=True)
@@ -600,7 +602,10 @@ def main():
             auto_record_enabled, auto_record_mtime = _auto_record_snapshot(
                 AUTO_RECORD_PATH
             )
-            rec = TimelineRecorder()
+            rec = TimelineRecorder(
+                raw_channels=CAPTURE_CHANNELS,
+                raw_sample_width=SAMPLE_WIDTH_BYTES,
+            )
             try:
                 rec.set_auto_recording_enabled(auto_record_enabled)
             except Exception as exc:
@@ -617,6 +622,7 @@ def main():
                         flush=True,
                     )
             buf = bytearray()
+            raw_frame_queue: deque[bytes] = deque()
             stereo_mismatch_logged = False
             frame_idx = 0
             last_frame_time = time.monotonic()
@@ -639,7 +645,14 @@ def main():
                             filter_chain_error_logged = True
                     elif filter_chain_error_logged:
                         filter_chain_error_logged = False
-                    stream_frame = rec.ingest(processed_frame, frame_idx)
+                    raw_payload = None
+                    if CAPTURE_CHANNELS > 1 and raw_frame_queue:
+                        raw_payload = raw_frame_queue.popleft()
+                    stream_frame = rec.ingest(
+                        processed_frame,
+                        frame_idx,
+                        raw_capture=raw_payload,
+                    )
                     if isinstance(stream_frame, memoryview):
                         stream_payload = stream_frame.tobytes()
                     elif isinstance(stream_frame, bytearray):
@@ -771,6 +784,8 @@ def main():
                             stereo_mismatch_logged = False
                     else:
                         frame = capture_frame
+                    if CAPTURE_CHANNELS > 1:
+                        raw_frame_queue.append(capture_frame)
                     if filter_pipeline is not None:
                         try:
                             drained = filter_pipeline.push(frame)
