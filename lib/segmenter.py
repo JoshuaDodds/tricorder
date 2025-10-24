@@ -657,7 +657,18 @@ def perform_startup_recovery() -> StartupRecoveryReport:
     handled_stems: set[str] = set()
     active_final_bases: set[str] = set()
 
+    stereo_suffix = ".stereo.wav"
+    stereo_candidates: dict[str, Path] = {}
+    for raw_path in sorted(tmp_root.glob(f"*{stereo_suffix}")):
+        if not raw_path.is_file():
+            continue
+        mono_stem = raw_path.name[: -len(stereo_suffix)]
+        stereo_candidates[mono_stem] = raw_path
+
     for wav_path in sorted(tmp_root.glob("*.wav")):
+        if wav_path.name.endswith(stereo_suffix):
+            # recovery will pair this with its mono companion when present
+            continue
         if not wav_path.is_file():
             continue
         handled_stems.add(wav_path.stem)
@@ -747,6 +758,11 @@ def perform_startup_recovery() -> StartupRecoveryReport:
             continue
 
         day_dir.mkdir(parents=True, exist_ok=True)
+        raw_wav_path: str | None = None
+        raw_candidate = stereo_candidates.pop(wav_path.stem, None)
+        if raw_candidate is not None:
+            raw_wav_path = str(raw_candidate)
+
         try:
             assert final_base is not None
             job_id = _enqueue_encode_job(
@@ -756,6 +772,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 existing_opus_path=existing_opus_path,
                 manual_recording=False,
                 target_day=day_dir.name,
+                raw_wav_path=raw_wav_path,
             )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
@@ -774,6 +791,9 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         report.requeued.append(final_base)
         active_final_bases.add(final_base)
         _log_recovery(f"Requeued encode for {final_base}")
+
+    for leftover_raw in stereo_candidates.values():
+        _remove_file(leftover_raw, report, category="wav")
 
     _cleanup_orphan_partials(rec_root, handled_stems, active_final_bases, report)
     return report

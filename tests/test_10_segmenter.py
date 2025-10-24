@@ -1455,7 +1455,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None, bool, str | None]] = []
+    calls: list[tuple[str, str, str, str | None, bool, str | None, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -1467,7 +1467,17 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
         target_day: str | None = None,
         raw_wav_path: str | None = None,
     ):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
+        calls.append(
+            (
+                tmp_wav_path,
+                base_name,
+                source,
+                existing_opus_path,
+                manual_recording,
+                target_day,
+                raw_wav_path,
+            )
+        )
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
@@ -1476,6 +1486,9 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     _write_constant_wav(wav_path, sample=1000, frames=segmenter.SAMPLE_RATE // 10)
     ts = datetime(2025, 1, 1, 12, 0, 0).timestamp()
     os.utime(wav_path, (ts, ts))
+
+    stereo_path = tmp_dir / "12-00-00_Both_1.stereo.wav"
+    stereo_path.write_bytes(b"raw")
 
     day_dir = rec_dir / "20250101"
     day_dir.mkdir()
@@ -1492,7 +1505,7 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     report = segmenter.perform_startup_recovery()
 
     assert calls, "expected encode job to be requeued"
-    tmp_arg, base_arg, source_arg, existing_arg, manual_flag, target_day = calls[0]
+    tmp_arg, base_arg, source_arg, existing_arg, manual_flag, target_day, raw_arg = calls[0]
     assert tmp_arg == str(wav_path)
     assert base_arg == expected_final_base
     assert source_arg == "recovery"
@@ -1503,12 +1516,14 @@ def test_startup_recovery_requeues_and_cleans(tmp_path, monkeypatch):
     expected_opus = day_dir / f"{expected_final_base}{expected_extension}"
     assert target_day == day_dir.name
     assert existing_arg == str(expected_opus)
+    assert raw_arg == str(stereo_path)
 
     assert report.requeued == [expected_final_base]
     assert not partial_path.exists()
     assert not partial_waveform.exists()
     assert not filtered_path.exists()
     assert wav_path.exists()
+    assert stereo_path.exists()
     assert str(partial_path) not in report.removed_artifacts
     assert str(partial_waveform) not in report.removed_artifacts
     assert report.removed_wavs == []
@@ -1523,7 +1538,7 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(segmenter, "REC_DIR", str(rec_dir))
     monkeypatch.setattr(segmenter, "TMP_DIR", str(tmp_dir))
 
-    calls: list[tuple[str, str, str, str | None, bool, str | None]] = []
+    calls: list[tuple[str, str, str, str | None, bool, str | None, str | None]] = []
 
     def fake_enqueue(
         tmp_wav_path: str,
@@ -1535,7 +1550,17 @@ def test_startup_recovery_skips_when_final_exists(tmp_path, monkeypatch):
         target_day: str | None = None,
         raw_wav_path: str | None = None,
     ):
-        calls.append((tmp_wav_path, base_name, source, existing_opus_path, manual_recording, target_day))
+        calls.append(
+            (
+                tmp_wav_path,
+                base_name,
+                source,
+                existing_opus_path,
+                manual_recording,
+                target_day,
+                raw_wav_path,
+            )
+        )
         return len(calls)
 
     monkeypatch.setattr(segmenter, "_enqueue_encode_job", fake_enqueue)
