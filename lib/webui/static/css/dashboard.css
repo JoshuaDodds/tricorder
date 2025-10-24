@@ -356,6 +356,13 @@ body[data-theme="light"] .app-menu-toggle {
   width: 100%;
 }
 
+.status-primary-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
 .rms-indicator {
   display: inline-flex;
   align-items: center;
@@ -377,6 +384,26 @@ body[data-theme="light"] .app-menu-toggle {
 .rms-indicator .value {
   font-variant-numeric: tabular-nums;
   color: inherit;
+}
+
+.status-rms-indicator .trend {
+  display: none;
+  font-variant-numeric: normal;
+  font-size: 0.75rem;
+}
+
+.status-rms-indicator .trend[data-visible="true"] {
+  display: inline;
+}
+
+.status-rms-indicator[data-trend="up"] {
+  background: rgba(34, 197, 94, 0.25);
+  color: var(--success-strong, #166534);
+}
+
+.status-rms-indicator[data-trend="down"] {
+  background: rgba(239, 68, 68, 0.25);
+  color: var(--danger, #dc2626);
 }
 
 .status-pill {

@@ -295,23 +295,42 @@
           </div>
           <div class="header-status-group">
             <div class="status-labels">
-              <div
-                id="recording-indicator"
-                class="status-pill recording-indicator"
-                role="status"
-                aria-live="polite"
-                aria-hidden="false"
-                data-state="unknown"
-              >
-                <span class="indicator-dot" aria-hidden="true"></span>
+              <div class="status-primary-row">
                 <span
-                  id="recording-indicator-motion"
-                  class="indicator-tag motion-tag"
-                  hidden
+                  id="status-rms-indicator"
+                  class="rms-indicator status-rms-indicator"
+                  aria-hidden="true"
+                  data-visible="false"
+                  data-trend="none"
                 >
-                  Motion
+                  <span class="label">RMS</span>
+                  <span id="status-rms-indicator-value" class="value">--</span>
+                  <span
+                    id="status-rms-indicator-trend"
+                    class="trend"
+                    aria-hidden="true"
+                    data-visible="false"
+                  ></span>
+                  <span id="status-rms-indicator-trend-text" class="sr-only"></span>
                 </span>
-                <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+                <div
+                  id="recording-indicator"
+                  class="status-pill recording-indicator"
+                  role="status"
+                  aria-live="polite"
+                  aria-hidden="false"
+                  data-state="unknown"
+                >
+                  <span class="indicator-dot" aria-hidden="true"></span>
+                  <span
+                    id="recording-indicator-motion"
+                    class="indicator-tag motion-tag"
+                    hidden
+                  >
+                    Motion
+                  </span>
+                  <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
+                </div>
               </div>
               <div
                 id="recording-meta"
