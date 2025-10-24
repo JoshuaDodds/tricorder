@@ -31,6 +31,10 @@ warnings.filterwarnings(
 )
 import webrtcvad    # noqa
 from lib.config import get_cfg, resolve_event_tags
+from lib.ffmpeg_io import (
+    DEFAULT_THREAD_QUEUE_SIZE,
+    pcm_pipe_input_args,
+)
 from lib.notifications import build_dispatcher
 from lib.segmenter_helpers.display import color_tf
 from lib.segmenter_helpers.system import (
@@ -657,7 +661,18 @@ def perform_startup_recovery() -> StartupRecoveryReport:
     handled_stems: set[str] = set()
     active_final_bases: set[str] = set()
 
+    stereo_suffix = ".stereo.wav"
+    stereo_candidates: dict[str, Path] = {}
+    for raw_path in sorted(tmp_root.glob(f"*{stereo_suffix}")):
+        if not raw_path.is_file():
+            continue
+        mono_stem = raw_path.name[: -len(stereo_suffix)]
+        stereo_candidates[mono_stem] = raw_path
+
     for wav_path in sorted(tmp_root.glob("*.wav")):
+        if wav_path.name.endswith(stereo_suffix):
+            # recovery will pair this with its mono companion when present
+            continue
         if not wav_path.is_file():
             continue
         handled_stems.add(wav_path.stem)
@@ -747,6 +762,11 @@ def perform_startup_recovery() -> StartupRecoveryReport:
             continue
 
         day_dir.mkdir(parents=True, exist_ok=True)
+        raw_wav_path: str | None = None
+        raw_candidate = stereo_candidates.pop(wav_path.stem, None)
+        if raw_candidate is not None:
+            raw_wav_path = str(raw_candidate)
+
         try:
             assert final_base is not None
             job_id = _enqueue_encode_job(
@@ -756,6 +776,7 @@ def perform_startup_recovery() -> StartupRecoveryReport:
                 existing_opus_path=existing_opus_path,
                 manual_recording=False,
                 target_day=day_dir.name,
+                raw_wav_path=raw_wav_path,
             )
         except Exception as exc:  # noqa: BLE001 - log and keep file for manual follow-up
             print(
@@ -774,6 +795,9 @@ def perform_startup_recovery() -> StartupRecoveryReport:
         report.requeued.append(final_base)
         active_final_bases.add(final_base)
         _log_recovery(f"Requeued encode for {final_base}")
+
+    for leftover_raw in stereo_candidates.values():
+        _remove_file(leftover_raw, report, category="wav")
 
     _cleanup_orphan_partials(rec_root, handled_stems, active_final_bases, report)
     return report
@@ -863,14 +887,26 @@ class _WriterWorker(threading.Thread):
                 if isinstance(item, tuple):
                     tag = item[0]
                     if tag == 'open':
-                        _, base, path = item
+                        _, base, path, *opts = item
                         self._close_file()
                         self.base = base
                         self.path = path
                         os.makedirs(os.path.dirname(path), exist_ok=True)
                         self.wav = wave.open(path, "wb")
-                        self.wav.setnchannels(1)
-                        self.wav.setsampwidth(SAMPLE_WIDTH)
+                        channels = 1
+                        sample_width = SAMPLE_WIDTH
+                        if opts:
+                            try:
+                                channels = max(1, int(opts[0]))
+                            except Exception:
+                                channels = 1
+                        if len(opts) >= 2:
+                            try:
+                                sample_width = max(1, int(opts[1]))
+                            except Exception:
+                                sample_width = SAMPLE_WIDTH
+                        self.wav.setnchannels(channels)
+                        self.wav.setsampwidth(sample_width)
                         self.wav.setframerate(SAMPLE_RATE)
                         self.buf.clear()
                     elif tag == 'close':
@@ -925,14 +961,11 @@ class StreamingOpusEncoder:
             "-loglevel",
             "error",
             "-y",
-            "-f",
-            "s16le",
-            "-ar",
-            str(SAMPLE_RATE),
-            "-ac",
-            "1",
-            "-i",
-            "pipe:0",
+            *pcm_pipe_input_args(
+                SAMPLE_RATE,
+                1,
+                queue_size=DEFAULT_THREAD_QUEUE_SIZE,
+            ),
             "-c:a",
             "libopus",
             "-b:a",
@@ -1629,31 +1662,54 @@ class _EncoderWorker(threading.Thread):
                 existing_opus: str | None = None
                 manual_recording = False
                 target_day: str | None = None
-                if isinstance(item, tuple) and len(item) >= 6:
-                    job_id, wav_path, base_name, existing_opus, manual_flag, target_day = item[:6]
-                    manual_recording = bool(manual_flag)
-                    target_day = str(target_day) if target_day else None
-                elif isinstance(item, tuple) and len(item) >= 5:
-                    job_id, wav_path, base_name, existing_opus, manual_flag = item[:5]
-                    manual_recording = bool(manual_flag)
-                elif isinstance(item, tuple) and len(item) == 4:
-                    job_id, wav_path, base_name, existing_opus = item
-                elif isinstance(item, tuple) and len(item) == 3:
-                    job_id, wav_path, base_name = item
-                else:
-                    job_id = None
-                    if isinstance(item, tuple):
+                raw_capture_path: str | None = None
+                if isinstance(item, tuple):
+                    length = len(item)
+                    if length >= 7:
+                        (
+                            job_id,
+                            wav_path,
+                            base_name,
+                            existing_opus,
+                            manual_flag,
+                            target_day,
+                            raw_capture_path,
+                        ) = item[:7]
+                        manual_recording = bool(manual_flag)
+                        target_day = str(target_day) if target_day else None
+                        raw_capture_path = str(raw_capture_path) if raw_capture_path else None
+                    elif length == 6:
+                        (
+                            job_id,
+                            wav_path,
+                            base_name,
+                            existing_opus,
+                            manual_flag,
+                            target_day,
+                        ) = item
+                        manual_recording = bool(manual_flag)
+                        target_day = str(target_day) if target_day else None
+                    elif length == 5:
+                        job_id, wav_path, base_name, existing_opus, manual_flag = item
+                        manual_recording = bool(manual_flag)
+                    elif length == 4:
+                        job_id, wav_path, base_name, existing_opus = item
+                    elif length == 3:
+                        job_id, wav_path, base_name = item
+                    else:
+                        job_id = None
                         wav_path = item[0]
                         base_name = item[1]
-                        if len(item) >= 3:
+                        if length >= 3:
                             existing_opus = item[2]
-                        if len(item) >= 4:
+                        if length >= 4:
                             manual_recording = bool(item[3])
-                        if len(item) >= 5:
+                        if length >= 5:
                             candidate_day = item[4]
                             target_day = str(candidate_day) if candidate_day else None
-                    else:
-                        wav_path, base_name = item  # type: ignore[assignment]
+                else:
+                    job_id = None
+                    wav_path, base_name = item  # type: ignore[assignment]
                 if job_id is not None:
                     ENCODING_STATUS.mark_started(job_id, base_name)
                 self._wait_for_cpu()
@@ -1670,6 +1726,8 @@ class _EncoderWorker(threading.Thread):
                     day_component = target_day.strip()
                     if len(day_component) == 8 and day_component.isdigit():
                         env["ENCODER_TARGET_DAY"] = day_component
+                if raw_capture_path:
+                    env["RAW_CAPTURE_PATH"] = raw_capture_path
                 preexec: Callable[[], None] | None = None
                 if os.name == "posix":
                     preexec = _set_single_core_affinity
@@ -1728,6 +1786,7 @@ def _enqueue_encode_job(
     existing_opus_path: str | None = None,
     manual_recording: bool = False,
     target_day: str | None = None,
+    raw_wav_path: str | None = None,
 ) -> int | None:
     if not tmp_wav_path or not base_name:
         return None
@@ -1739,15 +1798,16 @@ def _enqueue_encode_job(
         if len(candidate) == 8 and candidate.isdigit():
             day_component = candidate
 
-    payload = (
+    payload_items: list[object] = [
         job_id,
         tmp_wav_path,
         base_name,
         existing_opus_path,
         bool(manual_recording),
-    )
-    if day_component:
-        payload += (day_component,)
+        day_component,
+        raw_wav_path,
+    ]
+    payload = tuple(payload_items)
     if _try_submit_encode_payload(payload):
         print(f"[segmenter] queued encode job for {base_name}", flush=True)
         return job_id
@@ -2087,6 +2147,8 @@ class TimelineRecorder:
         *,
         status_mode: str = "live",
         recording_source: str = "live",
+        raw_channels: int = 1,
+        raw_sample_width: int | None = None,
     ):
         # Always buffer at least the current frame so trigger events never
         # drop their first chunk when pre-roll is disabled (PRE_PAD=0).
@@ -2113,6 +2175,36 @@ class TimelineRecorder:
         self.done_q: queue.Queue = queue.Queue(maxsize=2)
         self.writer = _WriterWorker(self.audio_q, self.done_q, FLUSH_THRESHOLD)
         self.writer.start()
+
+        self.raw_audio_q: queue.Queue | None = None
+        self.raw_done_q: queue.Queue | None = None
+        self.raw_writer: _WriterWorker | None = None
+        self.raw_prebuf: collections.deque[bytes] | None = None
+        self.tmp_raw_path: str | None = None
+        self._raw_active = False
+        self._raw_channels = 1
+        self._raw_sample_width = SAMPLE_WIDTH
+        self.raw_writer_queue_drops = 0
+        try:
+            candidate_channels = int(raw_channels)
+        except Exception:
+            candidate_channels = 1
+        if candidate_channels > 1:
+            self._raw_channels = max(1, candidate_channels)
+            if raw_sample_width is not None:
+                try:
+                    self._raw_sample_width = max(1, int(raw_sample_width))
+                except Exception:
+                    self._raw_sample_width = SAMPLE_WIDTH
+            self.raw_audio_q = queue.Queue(maxsize=MAX_QUEUE_FRAMES)
+            self.raw_done_q = queue.Queue(maxsize=2)
+            self.raw_writer = _WriterWorker(
+                self.raw_audio_q,
+                self.raw_done_q,
+                FLUSH_THRESHOLD,
+            )
+            self.raw_writer.start()
+            self.raw_prebuf = collections.deque(maxlen=max(1, PRE_PAD_FRAMES))
 
         self._streaming_enabled = STREAMING_ENCODE_ENABLED
         self._streaming_encoder: StreamingOpusEncoder | None = None
@@ -3033,7 +3125,20 @@ class TimelineRecorder:
         except queue.Full:
             self.writer_queue_drops += 1
 
-    def ingest(self, buf: bytes, idx: int) -> bytes:
+    def _raw_q_send(self, item) -> None:
+        if not self.raw_audio_q:
+            return
+        try:
+            self.raw_audio_q.put_nowait(item)
+        except queue.Full:
+            self.raw_writer_queue_drops += 1
+
+    def ingest(
+        self,
+        buf: bytes,
+        idx: int,
+        raw_capture: bytes | None = None,
+    ) -> bytes:
         force_restart = False
         if (
             self._autosplit_limit_frames is not None
@@ -3083,6 +3188,14 @@ class TimelineRecorder:
                 self._manual_stop_requested = False
 
         self._refresh_motion_state()
+
+        raw_frame_bytes: bytes | None = None
+        if raw_capture is not None:
+            raw_frame_bytes = bytes(raw_capture)
+            if self._raw_active:
+                self._raw_q_send(raw_frame_bytes)
+            elif self.raw_prebuf is not None:
+                self.raw_prebuf.append(raw_frame_bytes)
 
         start = time.perf_counter()
         buf = self._apply_gain(buf)
@@ -3262,6 +3375,30 @@ class TimelineRecorder:
                 self.trigger_rms = int(rms_val)
                 self.base_name = f"{start_time}_Both_{count}"
                 self.tmp_wav_path = os.path.join(TMP_DIR, f"{self.base_name}.wav")
+                raw_prebuf_bytes: list[bytes] = []
+                if self.raw_prebuf is not None and self.raw_prebuf:
+                    raw_prebuf_bytes = [bytes(frame) for frame in self.raw_prebuf]
+                    self.raw_prebuf.clear()
+                if self.raw_writer is not None and self.raw_audio_q is not None:
+                    self.tmp_raw_path = os.path.join(
+                        TMP_DIR,
+                        f"{self.base_name}.stereo.wav",
+                    )
+                    self._raw_q_send(
+                        (
+                            'open',
+                            self.base_name,
+                            self.tmp_raw_path,
+                            self._raw_channels,
+                            self._raw_sample_width,
+                        )
+                    )
+                    for raw_bytes in raw_prebuf_bytes:
+                        self._raw_q_send(raw_bytes)
+                    self._raw_active = True
+                else:
+                    self.tmp_raw_path = None
+                    self._raw_active = False
                 self.event_started_epoch = start_epoch
                 self.event_day = time.strftime("%Y%m%d", time.localtime(start_epoch))
 
@@ -3484,6 +3621,7 @@ class TimelineRecorder:
         manual_event = bool(self._event_manual_recording)
         day_dir = self._streaming_day_dir
         final_base: str = self.base_name or ""
+        raw_tmp_path: str | None = None
         if self._streaming_encoder:
             try:
                 streaming_result = self._streaming_encoder.close(timeout=5.0)
@@ -3577,7 +3715,24 @@ class TimelineRecorder:
         except queue.Empty:
             print("[segmenter] WARN: writer did not close file within 5s", flush=True)
 
-        total_queue_drops = self.writer_queue_drops + self.streaming_queue_drops
+        if self.raw_writer and self.raw_audio_q and self.tmp_raw_path:
+            self._raw_q_send(('close', self.base_name))
+            try:
+                if self.raw_done_q is not None:
+                    raw_tmp_path, _ = self.raw_done_q.get(timeout=5.0)
+                else:
+                    raw_tmp_path = self.tmp_raw_path
+            except queue.Empty:
+                print("[segmenter] WARN: raw writer did not close file within 5s", flush=True)
+                raw_tmp_path = self.tmp_raw_path
+            finally:
+                self._raw_active = False
+
+        total_queue_drops = (
+            self.writer_queue_drops
+            + self.streaming_queue_drops
+            + self.raw_writer_queue_drops
+        )
         print(
             f"[segmenter] Event ended ({reason}). type={etype_label}, avg_rms={avg_rms:.1f}, frames={self.frames_written}"
             + (f", q_drops={total_queue_drops}" if total_queue_drops else ""),
@@ -3673,6 +3828,7 @@ class TimelineRecorder:
                 existing_opus_path=final_stream_path if reuse_mode else None,
                 manual_recording=manual_event,
                 target_day=day,
+                raw_wav_path=raw_tmp_path,
             )
             _schedule_recordings_refresh(
                 job_id,
@@ -3993,6 +4149,7 @@ class TimelineRecorder:
         self.tmp_wav_path = None
         self.writer_queue_drops = 0
         self.streaming_queue_drops = 0
+        self.raw_writer_queue_drops = 0
         self.event_timestamp = None
         self.event_counter = None
         self.trigger_rms = None
@@ -4009,6 +4166,10 @@ class TimelineRecorder:
         self._current_motion_event_end = None
         self._reset_motion_segments()
         self._cleanup_live_waveform()
+        if self.raw_prebuf is not None:
+            self.raw_prebuf.clear()
+        self.tmp_raw_path = None
+        self._raw_active = False
 
     def flush(self, idx: int):
         if self.active:
@@ -4018,6 +4179,11 @@ class TimelineRecorder:
             self.audio_q.put_nowait(None)
         except Exception:
             pass
+        if self.raw_audio_q is not None:
+            try:
+                self.raw_audio_q.put_nowait(None)
+            except Exception:
+                pass
 
         last_event = None
         if isinstance(self._status_cache, dict):
