@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+from lib.ffmpeg_io import DEFAULT_THREAD_QUEUE_SIZE
 from lib.segmenter import StreamingOpusEncoder
 
 
@@ -53,4 +54,17 @@ def test_streaming_encoder_replaces_stale_file(tmp_path: Path):
     result = encoder.close(timeout=2.0)
     assert result.success
     assert partial_path.read_bytes() == b"fresh"
+
+
+def test_streaming_encoder_thread_queue_size_precedes_input(tmp_path: Path):
+    encoder = StreamingOpusEncoder(str(tmp_path / "stream.partial.opus"))
+
+    cmd = encoder._build_command()
+
+    queue_idx = cmd.index("-thread_queue_size")
+    input_idx = cmd.index("-i")
+
+    assert queue_idx < input_idx
+    assert cmd[queue_idx + 1] == str(DEFAULT_THREAD_QUEUE_SIZE)
+    assert cmd[input_idx + 1] == "pipe:0"
 

@@ -267,9 +267,10 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
     fi
     temp_outfile="${temp_outdir}/.${temp_stem}.filtered.$$${temp_ext}"
     if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
+      -thread_queue_size 8192 \
       -i "$existing_opus" \
       "${FILTERS[@]}" \
-      -ac 1 -ar 48000 -sample_fmt s16 -thread_queue_size 8192 \
+      -ac 1 -ar 48000 -sample_fmt s16 \
       -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
       "$temp_outfile"; then
         log_journal "[encode] ffmpeg failed for $existing_opus"
@@ -307,9 +308,10 @@ if [[ -n "$existing_opus" && -f "$existing_opus" ]]; then
   fi
 else
   if ! nice -n 15 ionice -c3 ffmpeg -hide_banner -loglevel error -y -threads 1 \
+    -thread_queue_size 8192 \
     -i "$in_wav" \
     "${FILTERS[@]}" \
-    -ac 1 -ar 48000 -sample_fmt s16 -thread_queue_size 8192 \
+    -ac 1 -ar 48000 -sample_fmt s16 \
     -c:a libopus -b:a 48k -vbr on -application audio -frame_duration 20 \
     "$outfile"; then
       log_journal "[encode] ffmpeg failed for $in_wav"
