@@ -311,15 +311,6 @@
                 >
                   Motion
                 </span>
-                <span
-                  id="rms-indicator"
-                  class="rms-indicator"
-                  aria-hidden="true"
-                  data-visible="false"
-                >
-                  <span class="label">RMS</span>
-                  <span id="rms-indicator-value" class="value">0</span>
-                </span>
                 <span id="recording-indicator-text" class="indicator-text">Loading status…</span>
               </div>
               <div
@@ -356,14 +347,25 @@
       </header>
       <section class="status-bar">
         <div class="stat stat-counts">
-          <div class="stat-count-row">
-            <span class="label">Recordings</span>
-            <span class="value" id="recording-count">0</span>
+          <span class="stat-counts-title">Recordings</span>
+          <div class="stat-count-list">
+            <div class="stat-count-item">
+              <span class="label">Recent</span>
+              <span class="value" id="recording-count-recent">0</span>
+            </div>
+            <div class="stat-count-item">
+              <span class="label">Saved</span>
+              <span class="value" id="recording-count-saved">0</span>
+            </div>
+            <div class="stat-count-item">
+              <span class="label">Recycle Bin</span>
+              <span class="value" id="recording-count-recycle">0</span>
+            </div>
           </div>
-          <div class="stat-count-row">
-            <span class="label">Selected</span>
-            <span class="value" id="selected-count">0</span>
-          </div>
+        </div>
+        <div class="stat stat-selected">
+          <span class="label">Selected</span>
+          <span class="value" id="selected-count">0</span>
         </div>
         <div class="stat stat-resource stat-cpu">
           <span class="label">CPU</span>
@@ -473,10 +475,10 @@
                 id="transport-forward"
                 class="transport-button"
                 type="button"
-                aria-label="Forward 30 seconds"
+                aria-label="Forward 10 seconds"
               >
                 <span class="transport-button-icon" aria-hidden="true">⏩</span>
-                <span class="transport-button-text sr-only">Forward 30 seconds</span>
+                <span class="transport-button-text sr-only">Forward 10 seconds</span>
               </button>
               <button id="transport-end" class="transport-button" type="button" aria-label="Skip to end">
                 <span class="transport-button-icon" aria-hidden="true">⏭</span>
@@ -517,7 +519,7 @@
                     data-source="processed"
                     aria-pressed="true"
                   >
-                    Processed (Opus)
+                    Opus
                   </button>
                   <button
                     id="playback-source-raw"
@@ -527,7 +529,7 @@
                     aria-pressed="false"
                     aria-disabled="true"
                   >
-                    Raw capture (PCM)
+                    Wav
                   </button>
                 </div>
                 <span
@@ -572,6 +574,16 @@
                 aria-hidden="true"
                 data-active="false"
               >--:--:--</div>
+              <span class="waveform-clock-divider" aria-hidden="true">•</span>
+              <span
+                id="rms-indicator"
+                class="rms-indicator waveform-rms-indicator"
+                aria-hidden="true"
+                data-visible="false"
+              >
+                <span class="label">RMS</span>
+                <span id="rms-indicator-value" class="value">0</span>
+              </span>
             </div>
             <div class="waveform-container" id="waveform-container" hidden tabindex="-1">
               <canvas id="waveform-canvas"></canvas>
@@ -620,130 +632,116 @@
               </div>
               <div id="waveform-cursor" class="waveform-cursor" aria-hidden="true"></div>
             </div>
-            <div class="waveform-rms-row" id="waveform-rms-row" data-active="false">
+            <div class="player-meta" id="player-meta">
+              <div class="player-meta-text" id="player-meta-text">Select a recording to preview.</div>
               <div
-                id="waveform-rms-value"
-                class="waveform-rms"
-                aria-hidden="true"
-                data-active="false"
+                id="clipper-container"
+                class="clipper-container"
+                data-enabled="false"
+                data-available="false"
               >
-                RMS --
+                <div class="clipper-header">
+                  <div class="clipper-heading">
+                    <h3>Clip editor</h3>
+                    <span
+                      id="clipper-status"
+                      class="clipper-status"
+                      role="status"
+                      aria-live="polite"
+                      aria-hidden="true"
+                    ></span>
+                  </div>
+                  <button
+                    id="clipper-toggle"
+                    class="ghost-button small"
+                    type="button"
+                    aria-expanded="false"
+                    aria-pressed="false"
+                    aria-controls="clipper-section"
+                  >
+                    Enable clip editor
+                  </button>
+                </div>
+                <div
+                  id="clipper-summary"
+                  class="clipper-summary"
+                  role="status"
+                  aria-live="polite"
+                  aria-hidden="false"
+                >
+                  Select a recording to use the clip editor.
+                </div>
+                <section
+                  id="clipper-section"
+                  class="clipper-section"
+                  hidden
+                  data-active="false"
+                  aria-hidden="true"
+                >
+                  <form id="clipper-form" class="clipper-form" novalidate autocomplete="off">
+                    <div class="clipper-grid">
+                      <label class="input-group clipper-group">
+                        <span>Start</span>
+                        <div class="clipper-input-row">
+                          <input
+                            id="clipper-start"
+                            type="text"
+                            inputmode="decimal"
+                            placeholder="0:00.000"
+                            autocomplete="off"
+                          />
+                          <button id="clipper-set-start" class="ghost-button small" type="button">
+                            Set from playhead
+                          </button>
+                        </div>
+                      </label>
+                      <label class="input-group clipper-group">
+                        <span>End</span>
+                        <div class="clipper-input-row">
+                          <input
+                            id="clipper-end"
+                            type="text"
+                            inputmode="decimal"
+                            placeholder="0:00.000"
+                            autocomplete="off"
+                          />
+                          <button id="clipper-set-end" class="ghost-button small" type="button">
+                            Set from playhead
+                          </button>
+                        </div>
+                      </label>
+                      <label class="input-group clipper-group clipper-name-group">
+                        <span>Clip name</span>
+                        <input
+                          id="clipper-name"
+                          type="text"
+                          autocomplete="off"
+                          placeholder="New clip name"
+                        />
+                      </label>
+                      <div class="clipper-overwrite-row">
+                        <label class="clipper-overwrite-toggle" for="clipper-overwrite-toggle">
+                          <input id="clipper-overwrite-toggle" type="checkbox" checked />
+                          <span class="clipper-overwrite-slider" aria-hidden="true"></span>
+                          <span class="clipper-overwrite-label">Overwrite existing?</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div class="clipper-footer">
+                      <div id="clipper-length" class="clipper-length" role="status" aria-live="polite">
+                        --
+                      </div>
+                      <div class="clipper-buttons">
+                        <button id="clipper-undo" class="ghost-button small" type="button" hidden>Undo</button>
+                        <button id="clipper-reset" class="ghost-button small" type="button">Reset</button>
+                        <button id="clipper-submit" class="primary-button small" type="submit">Save clip</button>
+                      </div>
+                    </div>
+                  </form>
+                </section>
               </div>
             </div>
             <div class="waveform-empty" id="waveform-empty">Select a recording to render its waveform.</div>
-          </div>
-          <div class="player-meta" id="player-meta">
-            <div class="player-meta-text" id="player-meta-text">Select a recording to preview.</div>
-            <div class="player-meta-actions action-buttons" id="player-meta-actions" hidden>
-              <a id="player-download" class="ghost-button small" download>Download</a>
-              <button id="player-rename" class="ghost-button small" type="button">Rename</button>
-              <button id="player-delete" class="danger-button small" type="button">Delete</button>
-            </div>
-          </div>
-          <div
-            id="clipper-container"
-            class="clipper-container"
-            data-enabled="false"
-            data-available="false"
-          >
-            <div class="clipper-header">
-              <div class="clipper-heading">
-                <h3>Clip editor</h3>
-                <span
-                  id="clipper-status"
-                  class="clipper-status"
-                  aria-live="polite"
-                  aria-hidden="true"
-                ></span>
-              </div>
-              <button
-                id="clipper-toggle"
-                class="ghost-button small"
-                type="button"
-                aria-expanded="false"
-                aria-pressed="false"
-                aria-controls="clipper-section"
-              >
-                Enable clip editor
-              </button>
-            </div>
-            <div
-              id="clipper-summary"
-              class="clipper-summary"
-              role="status"
-              aria-live="polite"
-              aria-hidden="false"
-            >
-              Select a recording to use the clip editor.
-            </div>
-            <section
-              id="clipper-section"
-              class="clipper-section"
-              hidden
-              data-active="false"
-              aria-hidden="true"
-            >
-              <form id="clipper-form" class="clipper-form" novalidate autocomplete="off">
-                <div class="clipper-grid">
-                  <label class="input-group clipper-group">
-                    <span>Start</span>
-                    <div class="clipper-input-row">
-                      <input
-                        id="clipper-start"
-                        type="text"
-                        inputmode="decimal"
-                        placeholder="0:00.000"
-                        autocomplete="off"
-                      />
-                      <button id="clipper-set-start" class="ghost-button small" type="button">
-                        Set from playhead
-                      </button>
-                    </div>
-                  </label>
-                  <label class="input-group clipper-group">
-                    <span>End</span>
-                    <div class="clipper-input-row">
-                      <input
-                        id="clipper-end"
-                        type="text"
-                        inputmode="decimal"
-                        placeholder="0:00.000"
-                        autocomplete="off"
-                      />
-                      <button id="clipper-set-end" class="ghost-button small" type="button">
-                        Set from playhead
-                      </button>
-                    </div>
-                  </label>
-                  <label class="input-group clipper-group clipper-name-group">
-                    <span>Clip name</span>
-                    <input
-                      id="clipper-name"
-                      type="text"
-                      autocomplete="off"
-                      placeholder="New clip name"
-                    />
-                  </label>
-                  <div class="clipper-overwrite-row">
-                    <label class="clipper-overwrite-toggle" for="clipper-overwrite-toggle">
-                      <input id="clipper-overwrite-toggle" type="checkbox" checked />
-                      <span class="clipper-overwrite-slider" aria-hidden="true"></span>
-                      <span class="clipper-overwrite-label">Overwrite existing?</span>
-                    </label>
-                  </div>
-                </div>
-                <div class="clipper-footer">
-                  <div id="clipper-length" class="clipper-length" role="status" aria-live="polite">
-                    --
-                  </div>
-                  <div class="clipper-buttons">
-                    <button id="clipper-undo" class="ghost-button small" type="button" hidden>Undo</button>
-                    <button id="clipper-reset" class="ghost-button small" type="button">Reset</button>
-                    <button id="clipper-submit" class="primary-button small" type="submit">Save clip</button>
-                  </div>
-                </div>
-              </form>
-            </section>
           </div>
         </div>
         <div class="card table-card">
