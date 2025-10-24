@@ -214,6 +214,7 @@ class HLSTee:
             "-f", "s16le",
             "-ar", str(self.sr),
             "-ac", str(self.ch),
+            "-thread_queue_size", "8192",
             "-i", "pipe:0",
             "-c:a", "aac",
             "-b:a", self.bitrate,

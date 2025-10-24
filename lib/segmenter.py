@@ -963,6 +963,8 @@ class StreamingOpusEncoder:
             str(SAMPLE_RATE),
             "-ac",
             "1",
+            "-thread_queue_size",
+            "8192",
             "-i",
             "pipe:0",
             "-c:a",
