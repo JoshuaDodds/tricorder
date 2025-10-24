@@ -9,7 +9,7 @@ This project targets **single-purpose deployments** on low-power hardware. The r
 <!-- DASHBOARD_SCREENSHOT_START -->
 > Generate a fresh dashboard preview by running `python ci/staging_dashboard_snapshot.py --output docs/images/staging-dashboard.png --readme README.md`.
 > The image is built and saved to `docs/images/staging-dashboard.png` for each pre-release built on the staging branch.
-<sub>Last updated 2025-10-24T10:46:32+00:00</sub>
+<sub>Last updated 2025-10-24T17:16:35+00:00</sub>
 <!-- DASHBOARD_SCREENSHOT_END -->
 
 ---
