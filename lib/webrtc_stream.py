@@ -60,9 +60,13 @@ if _AIORTC_IMPORT_ERROR is None:
     av = _av  # type: ignore[assignment]
 
     class _PatchedRTCRtpSender(_RTCRtpSender):  # type: ignore[misc]
-        async def _create_encoded_frame(self, data, codec):  # type: ignore[override]
-            audio_level = None
+        async def _next_encoded_frame(self, codec):  # type: ignore[override]
+            data = await getattr(self, "_RTCRtpSender__track").recv()
 
+            if not self._enabled:
+                return None
+
+            audio_level = None
             encoder = getattr(self, "_RTCRtpSender__encoder", None)
             if encoder is None:
                 encoder = _get_encoder(codec)
@@ -83,7 +87,7 @@ if _AIORTC_IMPORT_ERROR is None:
 
             return _RTCEncodedFrame(payloads, timestamp, audio_level)
 
-    _RTCRtpSender._create_encoded_frame = _PatchedRTCRtpSender._create_encoded_frame  # type: ignore[attr-defined]
+    _RTCRtpSender._next_encoded_frame = _PatchedRTCRtpSender._next_encoded_frame  # type: ignore[attr-defined]
 
     class PCMStreamTrack(MediaStreamTrack):
         kind = "audio"
