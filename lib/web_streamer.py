@@ -72,6 +72,7 @@ DEFAULT_RECORDINGS_LIMIT = 200
 # WEB_STREAMER_EXECUTOR_MAX_WORKERS = max(2, min(4, (os.cpu_count() or 1)))
 WEB_STREAMER_EXECUTOR_MAX_WORKERS = 1  # hardcoded to 1 for this project to save RAM
 CLIP_EXECUTOR_MAX_WORKERS = 1  # serialize long-running clip jobs off the main executor
+GLOBAL_THREADPOOL_MAX_WORKERS = 2  # upper bound for any implicit thread pools
 MAX_RECORDINGS_LIMIT = 1000
 RECORDINGS_TIME_RANGE_SECONDS = {
     "1h": 60 * 60,
@@ -101,6 +102,39 @@ DEFAULT_WEBRTC_ICE_SERVERS: list[dict[str, object]] = [
 ]
 
 VOICE_RECORDER_SERVICE_UNIT = "voice-recorder.service"
+
+
+def _cap_threadpool_default(max_workers_cap: int) -> None:
+    """Clamp ThreadPoolExecutor defaults so implicit pools stay tiny."""
+
+    if max_workers_cap < 1:
+        raise ValueError("max_workers_cap must be >= 1")
+
+    original_init = ThreadPoolExecutor.__init__
+    if getattr(original_init, "__tricorder_cap__", False):
+        return
+
+    def _capped_init(self, max_workers=None, *args, **kwargs):
+        requested = max_workers
+        if requested is None:
+            requested = os.cpu_count() or 1
+        try:
+            requested_int = int(requested)
+        except (TypeError, ValueError):
+            return original_init(self, max_workers, *args, **kwargs)
+
+        if max_workers is not None and requested_int <= 0:
+            # Preserve the original ValueError behaviour for explicit inputs.
+            return original_init(self, max_workers, *args, **kwargs)
+
+        capped = max(1, min(max_workers_cap, requested_int))
+        return original_init(self, capped, *args, **kwargs)
+
+    setattr(_capped_init, "__tricorder_cap__", True)
+    ThreadPoolExecutor.__init__ = _capped_init  # type: ignore[assignment]
+
+
+_cap_threadpool_default(GLOBAL_THREADPOOL_MAX_WORKERS)
 
 
 def _quiet_noisy_dependencies(ice_level: int = logging.WARNING) -> None:
@@ -3661,6 +3695,21 @@ def _calculate_directory_usage(
 def _calculate_recycle_bin_usage(recycle_root: Path) -> int:
     return _calculate_directory_usage(recycle_root)
 
+
+def _count_recycle_bin_entries(recycle_root: Path) -> int:
+    if not recycle_root.exists():
+        return 0
+    try:
+        candidates = list(recycle_root.iterdir())
+    except OSError:
+        return 0
+    count = 0
+    for entry_dir in candidates:
+        data = _read_recycle_entry(entry_dir)
+        if data:
+            count += 1
+    return count
+
 def _service_label_from_unit(unit: str) -> str:
     base = unit.split(".", 1)[0]
     tokens = [segment for segment in base.replace("_", "-").split("-") if segment]
@@ -6079,12 +6128,36 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
     async def recordings_api(request: web.Request) -> web.Response:
         raw_collection = request.rel_url.query.get("collection", "").strip().lower()
+        recent_task = asyncio.create_task(_scan_recordings())
+        saved_task = asyncio.create_task(_scan_saved_recordings())
+        (
+            recent_entries,
+            recent_available_days,
+            recent_available_exts,
+            recent_total_bytes,
+        ) = await recent_task
+        (
+            saved_entries,
+            saved_available_days,
+            saved_available_exts,
+            saved_total_bytes,
+        ) = await saved_task
+
         if raw_collection == "saved":
-            entries, available_days, available_exts, total_bytes = await _scan_saved_recordings()
+            entries = saved_entries
+            available_days = saved_available_days
+            available_exts = saved_available_exts
+            total_bytes = saved_total_bytes
             collection = "saved"
         else:
-            entries, available_days, available_exts, total_bytes = await _scan_recordings()
+            entries = recent_entries
+            available_days = recent_available_days
+            available_exts = recent_available_exts
+            total_bytes = recent_total_bytes
             collection = "recent"
+
+        recent_count = len(recent_entries)
+        saved_count = len(saved_entries)
         payload = _filter_recordings(entries, request)
         payload["collection"] = collection
         payload["available_days"] = available_days
@@ -6114,6 +6187,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             None,
             functools.partial(_calculate_recycle_bin_usage, recycle_root),
         )
+        recycle_count_task = loop.run_in_executor(
+            None,
+            functools.partial(_count_recycle_bin_entries, recycle_root),
+        )
         try:
             payload["recordings_total_bytes"] = int(await recordings_usage_task)
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -6123,13 +6200,32 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
             )
             payload["recordings_total_bytes"] = int(total_bytes)
         try:
-            payload["recycle_bin_total_bytes"] = int(await recycle_usage_task)
+            recycle_total_bytes = int(await recycle_usage_task)
         except Exception as exc:  # pragma: no cover - defensive logging
             log.warning(
                 "recordings_api: unable to calculate recycle bin usage: %s",
                 exc,
             )
-            payload["recycle_bin_total_bytes"] = 0
+            recycle_total_bytes = 0
+        payload["recycle_bin_total_bytes"] = recycle_total_bytes
+        try:
+            recycle_count = int(await recycle_count_task)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.warning(
+                "recordings_api: unable to count recycle bin entries: %s",
+                exc,
+            )
+            recycle_count = 0
+        payload["collection_counts"] = {
+            "recent": int(recent_count),
+            "saved": int(saved_count),
+            "recycle": recycle_count,
+        }
+        payload["collection_size_bytes"] = {
+            "recent": int(recent_total_bytes),
+            "saved": int(saved_total_bytes),
+            "recycle": int(recycle_total_bytes),
+        }
         payload["capture_status"] = _read_capture_status()
         payload["motion_state"] = _motion_state_snapshot()
         return web.json_response(payload)
@@ -8048,6 +8144,30 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
         }
 
     def _read_device_temperature() -> dict[str, float | str | None] | None:
+        def _read_throttle_status() -> tuple[bool | None, list[str]]:
+            throttle_path = Path("/sys/devices/platform/soc/fe000000.clock/throttled")
+            try:
+                raw_value = throttle_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None, []
+            if raw_value.lower().startswith("0x"):
+                raw_value = raw_value[2:]
+            try:
+                flags = int(raw_value, 16)
+            except ValueError:
+                return None, []
+            active_reasons: list[str] = []
+            if flags & 0x1:
+                active_reasons.append("voltage")
+            if flags & 0x2:
+                active_reasons.append("frequency")
+            if flags & 0x4:
+                active_reasons.append("power")
+            if flags & 0x8:
+                active_reasons.append("temperature")
+            active = bool(flags & 0xF)
+            return active, active_reasons
+
         def _iter_zone_paths() -> list[Path]:
             seen: set[Path] = set()
             zones: list[Path] = []
@@ -8063,6 +8183,7 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
 
         best: dict[str, float | str | None] | None = None
         fallback: dict[str, float | str | None] | None = None
+        throttle_active, throttle_reasons = _read_throttle_status()
 
         for temp_path in _iter_zone_paths():
             label: str | None = None
@@ -8101,6 +8222,10 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                 "fahrenheit": fahrenheit,
                 "sensor": sensor_name,
             }
+            if throttle_active is not None:
+                reading["throttled"] = throttle_active
+            if throttle_reasons:
+                reading["throttle_reasons"] = throttle_reasons
 
             normalized_label = (label or "").lower()
             if normalized_label:

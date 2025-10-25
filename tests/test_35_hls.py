@@ -6,6 +6,7 @@ import queue
 import shutil
 import time
 
+from lib.ffmpeg_io import DEFAULT_THREAD_QUEUE_SIZE
 from lib.hls_controller import _HLSController
 from lib.hls_mux import HLSTee
 
@@ -60,6 +61,19 @@ def test_hlstee_ignores_legacy_extra_args(tmp_path, caplog):
 
     assert "--legacy-flag" not in cmd
     assert any("deprecated" in record.message for record in caplog.records)
+
+
+def test_hlstee_thread_queue_size_precedes_input(tmp_path):
+    tee = HLSTee(out_dir=str(tmp_path), sample_rate=48000)
+
+    cmd = tee._build_ffmpeg_command()
+
+    queue_idx = cmd.index("-thread_queue_size")
+    input_idx = cmd.index("-i")
+
+    assert queue_idx < input_idx
+    assert cmd[queue_idx + 1] == str(DEFAULT_THREAD_QUEUE_SIZE)
+    assert cmd[input_idx + 1] == "pipe:0"
 
 
 def test_hlstee_warns_on_filter_args_when_chain_enabled(tmp_path, caplog):

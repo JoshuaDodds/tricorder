@@ -17,6 +17,11 @@ import logging
 import shutil
 from typing import Optional, Sequence, List
 
+from lib.ffmpeg_io import (
+    DEFAULT_THREAD_QUEUE_SIZE,
+    pcm_pipe_input_args,
+)
+
 
 class HLSTee:
     def __init__(
@@ -31,6 +36,7 @@ class HLSTee:
         log_level: int = logging.INFO,
         legacy_extra_ffmpeg_args: Optional[Sequence[str]] = None,
         filter_chain_enabled: bool = False,
+        thread_queue_size: int = DEFAULT_THREAD_QUEUE_SIZE,
     ):
         assert bits_per_sample == 16, "S16_LE expected"
         self.out_dir = out_dir
@@ -42,6 +48,7 @@ class HLSTee:
         self.bitrate = bitrate
         self._log = logging.getLogger("hls_mux")
         self._log.setLevel(log_level)
+        self._thread_queue_size = int(thread_queue_size)
 
         self._legacy_extra: List[str] = []
         if legacy_extra_ffmpeg_args:
@@ -210,11 +217,13 @@ class HLSTee:
         cmd = [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel", "warning",
-            "-f", "s16le",
-            "-ar", str(self.sr),
-            "-ac", str(self.ch),
-            "-i", "pipe:0",
+            "-loglevel",
+            "warning",
+            *pcm_pipe_input_args(
+                self.sr,
+                self.ch,
+                queue_size=self._thread_queue_size,
+            ),
             "-c:a", "aac",
             "-b:a", self.bitrate,
             "-profile:a", "aac_low",
