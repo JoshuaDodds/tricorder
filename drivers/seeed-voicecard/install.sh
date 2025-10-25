@@ -21,13 +21,14 @@ TARGET_KERNEL="6.8.0-1040-raspi"
 KERNEL_DIR="$SCRIPT_DIR/kernel-6.8.0-1040"
 KERNEL_IMAGE="$KERNEL_DIR/linux-image-6.8.0-1040-raspi_6.8.0-1040.44_arm64.deb"
 KERNEL_HEADERS="$KERNEL_DIR/linux-headers-6.8.0-1040-raspi_6.8.0-1040.44_arm64.deb"
+KERNEL_MODULES="$KERNEL_DIR/linux-modules-6.8.0-1040-raspi_6.8.0-1040.44_arm64.deb"
 MODULE_ARCHIVE="$SCRIPT_DIR/snd-soc-tlv320aic3x-i2c.ko.tar.gz"
 OVERLAY_SRC="$SCRIPT_DIR/respeaker-2mic-v2_0-overlay.dtbo"
 ASOUND_STATE="$SCRIPT_DIR/asound.state"
 
 require_files() {
   local missing=0
-  for f in "$KERNEL_IMAGE" "$KERNEL_HEADERS" "$MODULE_ARCHIVE" "$OVERLAY_SRC" "$ASOUND_STATE"; do
+  for f in "$KERNEL_IMAGE" "$KERNEL_HEADERS" "$KERNEL_MODULES" "$MODULE_ARCHIVE" "$OVERLAY_SRC" "$ASOUND_STATE"; do
     if [[ ! -f "$f" ]]; then
       echo "[seeed-voicecard] Missing required asset: $f" >&2
       missing=1
@@ -56,20 +57,23 @@ ensure_packages() {
   fi
 }
 
-ensure_kernel_package() {
-  local package="$1"
-  local deb_path="$2"
-  if dpkg -s "$package" >/dev/null 2>&1; then
-    say "$package already installed"
-    return
-  fi
-  say "Installing $package from bundled deb"
-  dpkg -i "$deb_path"
-}
-
 ensure_kernel() {
-  ensure_kernel_package "linux-image-$TARGET_KERNEL" "$KERNEL_IMAGE"
-  ensure_kernel_package "linux-headers-$TARGET_KERNEL" "$KERNEL_HEADERS"
+  local to_install=()
+  if ! dpkg -s "linux-modules-$TARGET_KERNEL" >/dev/null 2>&1; then
+    to_install+=("$KERNEL_MODULES")
+  fi
+  if ! dpkg -s "linux-image-$TARGET_KERNEL" >/dev/null 2>&1; then
+    to_install+=("$KERNEL_IMAGE")
+  fi
+  if ! dpkg -s "linux-headers-$TARGET_KERNEL" >/dev/null 2>&1; then
+    to_install+=("$KERNEL_HEADERS")
+  fi
+  if ((${#to_install[@]})); then
+    say "Installing kernel packages from bundle"
+    dpkg -i "${to_install[@]}"
+  else
+    say "Target kernel packages already installed"
+  fi
   local running_kernel
   running_kernel=$(uname -r)
   if [[ "$running_kernel" != "$TARGET_KERNEL" ]]; then
