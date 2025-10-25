@@ -90,7 +90,7 @@ deploy_module() {
 install_overlay() {
   local overlay_dir="/boot/firmware/overlays"
   mkdir -p "$overlay_dir"
-  install -m 0644 "$OVERLAY_SRC" "$overlay_dir/respeaker-2mic-v2_0.dtbo"
+  install -m 0644 "$OVERLAY_SRC" "$overlay_dir/respeaker-2mic-v2_0-overlay.dtbo"
   local config="/boot/firmware/config.txt"
   touch "$config"
   if ! grep -q '^dtoverlay=respeaker-2mic-v2_0-overlay' "$config"; then
