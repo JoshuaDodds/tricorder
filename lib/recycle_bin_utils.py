@@ -14,6 +14,9 @@ from typing import Iterable
 
 RECYCLE_BIN_DIRNAME = ".recycle_bin"
 RECYCLE_METADATA_FILENAME = "metadata.json"
+RAW_AUDIO_DIRNAME = ".original_wav"
+RAW_AUDIO_SUFFIXES: tuple[str, ...] = (".wav",)
+SAVED_RECORDINGS_DIRNAME = "Saved"
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,86 @@ def _normalize_motion_segments(value: object) -> list[dict[str, float | None]]:
     return segments
 
 
+def _extract_day_component(relative_audio: Path) -> str:
+    parts = relative_audio.parts
+    if not parts:
+        return ""
+    candidate = parts[0]
+    if candidate == SAVED_RECORDINGS_DIRNAME and len(parts) > 1:
+        candidate = parts[1]
+    if len(candidate) == 8 and candidate.isdigit():
+        return candidate
+    return ""
+
+
+def _match_raw_audio_candidate(raw_dir: Path, base_stem: str) -> Path | None:
+    exact_candidate = raw_dir / f"{base_stem}.wav"
+    try:
+        if exact_candidate.is_file():
+            return exact_candidate
+    except OSError:
+        pass
+
+    try:
+        candidates = list(raw_dir.iterdir())
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+    fallback: Path | None = None
+    for candidate in candidates:
+        try:
+            if not candidate.is_file():
+                continue
+        except OSError:
+            continue
+        if candidate.suffix.lower() not in RAW_AUDIO_SUFFIXES:
+            continue
+        stem = candidate.stem
+        if stem == base_stem:
+            return candidate
+        if stem.startswith(f"{base_stem}."):
+            fallback = candidate if fallback is None else fallback
+            continue
+        if fallback is None and stem.split(".", 1)[0] == base_stem:
+            fallback = candidate
+    return fallback
+
+
+def infer_raw_audio_source(
+    recordings_root_path: Path,
+    recordings_root_resolved: Path,
+    relative_audio: Path,
+    audio_resolved: Path,
+) -> tuple[str, Path | None]:
+    """Infer the original WAV path for a recording if metadata is missing."""
+
+    day_component = _extract_day_component(relative_audio)
+    if not day_component:
+        return "", None
+
+    raw_dir = recordings_root_path / RAW_AUDIO_DIRNAME / day_component
+    candidate = _match_raw_audio_candidate(raw_dir, audio_resolved.stem)
+    if candidate is None:
+        return "", None
+
+    try:
+        candidate_resolved = candidate.resolve()
+    except OSError:
+        candidate_resolved = candidate
+
+    try:
+        relative = candidate_resolved.relative_to(recordings_root_resolved)
+    except Exception:
+        try:
+            relative = candidate.relative_to(recordings_root_path)
+        except Exception:
+            return "", None
+
+    return relative.as_posix(), candidate_resolved
+
+
 def move_short_recording_to_recycle_bin(
     audio_path: str | os.PathLike[str],
     recordings_root: str | os.PathLike[str],
@@ -170,6 +253,17 @@ def move_short_recording_to_recycle_bin(
                         raw_audio_rel = candidate_resolved.relative_to(
                             recordings_root_resolved
                         ).as_posix()
+
+    if (raw_audio_source is None or not raw_audio_source.is_file()) and not raw_audio_rel:
+        fallback_rel, fallback_source = infer_raw_audio_source(
+            recordings_root_path,
+            recordings_root_resolved,
+            relative_audio,
+            audio_resolved,
+        )
+        if fallback_source is not None and fallback_source.is_file():
+            raw_audio_source = fallback_source
+            raw_audio_rel = fallback_rel
 
     start_epoch_value: float | None = None
     started_at_value = ""
