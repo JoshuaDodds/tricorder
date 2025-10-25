@@ -2807,7 +2807,7 @@ from aiohttp.web import AppKey
 web_fileresponse.NOSENDFILE = True
 
 from lib.hls_controller import controller
-from lib import dashboard_events, sd_card_health, webui
+from lib import dashboard_events, recycle_bin_utils, sd_card_health, webui
 from lib.config import (
     ConfigPersistenceError,
     apply_config_migrations,
@@ -6351,6 +6351,17 @@ def build_app(lets_encrypt_manager: LetsEncryptManager | None = None) -> web.App
                         else:
                             raw_audio_rel = candidate_str
                             raw_audio_source = candidate_path
+
+            if (raw_audio_source is None or not raw_audio_source.exists()) and not raw_audio_rel:
+                fallback_rel, fallback_source = recycle_bin_utils.infer_raw_audio_source(
+                    recordings_root,
+                    recordings_root_resolved,
+                    Path(rel_posix),
+                    resolved,
+                )
+                if fallback_source is not None and fallback_source.exists():
+                    raw_audio_source = fallback_source
+                    raw_audio_rel = fallback_rel
 
             now = datetime.now(timezone.utc)
             entry_dir: Path | None = None
