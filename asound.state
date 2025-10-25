@@ -477,8 +477,8 @@ state.seeed2micvoicec {
 	control.34 {
 		iface MIXER
 		name 'PGA Capture Volume'
-		value.0 92
-		value.1 92
+		value.0 80
+		value.1 80
 		comment {
 			access 'read write'
 			type INTEGER
@@ -486,8 +486,8 @@ state.seeed2micvoicec {
 			range '0 - 119'
 			dbmin 0
 			dbmax 5950
-			dbvalue.0 4600
-			dbvalue.1 4600
+			dbvalue.0 4000
+			dbvalue.1 4000
 		}
 	}
 	control.35 {
@@ -504,8 +504,8 @@ state.seeed2micvoicec {
 	control.36 {
 		iface MIXER
 		name 'ADC HPF Cut-off'
-		value.0 '0.0125xFs'
-		value.1 '0.0125xFs'
+		value.0 '0.0045xFs'
+		value.1 '0.0045xFs'
 		comment {
 			access 'read write'
 			type ENUMERATED
