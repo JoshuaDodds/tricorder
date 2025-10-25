@@ -4,8 +4,8 @@ set -euo pipefail
 # Restore ALSA state from project baseline
 # Safe reapply for ReSpeaker 2-Mic Pi HAT v2
 
-STATE_FILE="${STATE_FILE:-/apps/tricorder/asound.state}"
-DEFAULT_FILE="${DEFAULT_STATE_FILE:-/apps/tricorder/asound.state.default}"
+STATE_FILE="${STATE_FILE:-/apps/tricorder/drivers/seeed-voicecard/asound.state}"
+DEFAULT_FILE="${DEFAULT_STATE_FILE:-/apps/tricorder/drivers/seeed-voicecard/asound.state.default}"
 
 if [[ ! -f "$STATE_FILE" && -f "$DEFAULT_FILE" ]]; then
     echo "[restore-alsa] No state file at $STATE_FILE; seeding from default"
