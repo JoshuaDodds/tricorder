@@ -16,10 +16,25 @@ SYSTEMD_DIR="/etc/systemd/system"
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE=$VENV/lib/python$PY_VER/site-packages
 DEV_SENTINEL="$BASE/.dev-mode"
+VOICECARD_DIR="$SCRIPT_DIR/drivers/seeed-voicecard"
+VOICECARD_INSTALL="$VOICECARD_DIR/install.sh"
 
 UNITS=(voice-recorder.service web-streamer.service sd-card-monitor.service dropbox.service dropbox.path tmpfs-guard.service tmpfs-guard.timer tricorder-auto-update.service tricorder-auto-update.timer tricorder-audio-restore.service tricorder.target)
 
 say(){ echo "[Tricorder] $*"; }
+
+voicecard_active() {
+  if grep -qi 'seeed2micvoicec' /proc/asound/cards 2>/dev/null; then
+    return 0
+  fi
+  if [[ -e /proc/device-tree/overlays/respeaker-2mic-v2_0-overlay ]]; then
+    return 0
+  fi
+  if [[ -f /boot/firmware/config.txt ]] && grep -q '^dtoverlay=respeaker-2mic-v2_0-overlay' /boot/firmware/config.txt 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
 
 # ---------- uninstall ----------
 if [[ "${1:-}" == "--remove" ]]; then
@@ -87,6 +102,21 @@ if [[ "${DEV:-0}" != "1" ]]; then
   fi
 else
   say "DEV=1: skipping apt-get installation"
+fi
+
+if [[ -x "$VOICECARD_INSTALL" ]]; then
+  if [[ "${DEV:-0}" == "1" ]]; then
+    say "DEV=1: skipping Seeed voicecard installer"
+  else
+    if voicecard_active; then
+      say "Seeed voicecard already configured; skipping hardware installer"
+    else
+      say "Provisioning Seeed voicecard hardware"
+      sudo "$VOICECARD_INSTALL"
+    fi
+  fi
+else
+  say "Voicecard installer not found at $VOICECARD_INSTALL; skipping hardware provisioning"
 fi
 
 # venv
@@ -353,19 +383,38 @@ chmod 755 "$BASE"/lib/* 2>/dev/null || true
 cp -f *.py "$BASE" 2>/dev/null || true
 chmod 755 "$BASE"/*.py 2>/dev/null || true
 
-if [[ -f asound.state ]]; then
-  baseline_dst="$BASE/asound.state.default"
-  cp -f asound.state "$baseline_dst" 2>/dev/null || true
-  chmod 644 "$baseline_dst" 2>/dev/null || true
-  if [[ ! -f "$BASE/asound.state" ]]; then
-    cp -f asound.state "$BASE/asound.state" 2>/dev/null || true
-    chmod 644 "$BASE/asound.state" 2>/dev/null || true
-    say "Installed ALSA baseline at $BASE/asound.state"
-  else
-    say "Keeping existing ALSA state at $BASE/asound.state"
+if [[ -d "$VOICECARD_DIR" ]]; then
+  voicecard_target="$BASE/drivers/seeed-voicecard"
+  mkdir -p "$voicecard_target"
+  for entry in "$VOICECARD_DIR"/*; do
+    name=$(basename "$entry")
+    if [[ "$name" == "asound.state" ]]; then
+      continue
+    fi
+    dest="$voicecard_target/$name"
+    if [[ -d "$entry" ]]; then
+      rm -rf "$dest"
+      cp -a "$entry" "$dest"
+    else
+      cp -f "$entry" "$dest"
+    fi
+  done
+
+  if [[ -f "$VOICECARD_DIR/asound.state" ]]; then
+    baseline_dst="$voicecard_target/asound.state.default"
+    cp -f "$VOICECARD_DIR/asound.state" "$baseline_dst" 2>/dev/null || true
+    chmod 644 "$baseline_dst" 2>/dev/null || true
+    if [[ ! -f "$voicecard_target/asound.state" ]]; then
+      cp -f "$VOICECARD_DIR/asound.state" "$voicecard_target/asound.state" 2>/dev/null || true
+      chmod 644 "$voicecard_target/asound.state" 2>/dev/null || true
+      say "Installed ALSA baseline at $voicecard_target/asound.state"
+    else
+      say "Keeping existing ALSA state at $voicecard_target/asound.state"
+    fi
   fi
+
   if [[ -n "$INSTALL_OWNER" ]]; then
-    chown "$INSTALL_OWNER":"$INSTALL_OWNER" "$baseline_dst" "$BASE/asound.state" 2>/dev/null || true
+    chown -R "$INSTALL_OWNER":"$INSTALL_OWNER" "$BASE/drivers" 2>/dev/null || true
   fi
 fi
 
